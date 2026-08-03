@@ -1,6 +1,6 @@
 ---
 name: tuicr
-description: Use tuicr's review CLI to read and add comments in active TUI review sessions, and launch tuicr in cmux, tmux, Zellij, or Herdr when a user needs an interactive review pane.
+description: Use tuicr's review CLI to read and add comments in active TUI review sessions, and launch tuicr in cmux, tmux, Zellij, Herdr, or Orca when a user needs an interactive review pane.
 ---
 
 # tuicr Review Workflow
@@ -67,7 +67,7 @@ If the user's intent is ambiguous, ask which workflow they want.
      `"active": true` as a convenience signal. If slug resolution fails, ask the
      user for the slug or repo path used by the session.
 
-The CLI works even if the agent is not running inside tmux, Zellij, or Herdr,
+The CLI works even if the agent is not running inside tmux, Zellij, Herdr, or Orca,
 so do not require a multiplexer just to connect to an existing active session.
 
 ## Start A Session
@@ -80,6 +80,7 @@ When the user needs an interactive tuicr pane and no active session exists:
 | `$TMUX` is set | Run `tuicr-wrapper.sh /path/to/repo -- <scope>` |
 | `$ZELLIJ` is set | Run `tuicr-wrapper-zellij.sh /path/to/repo -- <scope>` |
 | `$HERDR_ENV` is `1` | Run `tuicr-wrapper-herdr.sh /path/to/repo -- <scope>` |
+| `$TERM_PROGRAM` is `Orca` or `$ORCA_TERMINAL_HANDLE` is set | Run `tuicr-wrapper-orca.sh /path/to/repo -- <scope>` |
 | None is set | Tell the user you are waiting for them to start `tuicr` in the repo, then attach with `tuicr review list` after they say it is ready |
 
 `<scope>` is `-w` for uncommitted working-tree changes or `-r <revset>` for a
@@ -102,10 +103,12 @@ Wrapper paths are relative to this skill directory:
 <skill-directory>/tuicr-wrapper.sh /path/to/repo -- -w
 <skill-directory>/tuicr-wrapper-zellij.sh /path/to/repo -- -w
 <skill-directory>/tuicr-wrapper-herdr.sh /path/to/repo -- -w
+<skill-directory>/tuicr-wrapper-orca.sh /path/to/repo -- -w
 ```
 
 The Herdr wrapper requires `jq` to read pane IDs and completion results from
-Herdr's JSON responses.
+Herdr's JSON responses. The Orca wrapper requires `jq` and the `orca` CLI; it
+splits the current Orca terminal, so run it from inside an Orca-managed pane.
 
 Every wrapper accepts pass-through tuicr arguments after `--`, which is how
 you scope the review instead of leaving the scope selector for the user to
@@ -289,12 +292,19 @@ Herdr:
 - Select a pane: click it in the Herdr UI
 - Close tuicr: press `q`; the wrapper then closes the review pane
 
+Orca:
+
+- Select a pane: click it in the Orca UI
+- Close tuicr: press `q`; the wrapper then closes the review pane
+- Split direction: set `TUICR_PANE_DIRECTION` to `horizontal` (side by side) or
+  `vertical` (stacked)
+
 ## Error Handling
 
 | Situation | Action |
 |-----------|--------|
 | Multiple plausible active sessions | Ask which session slug to use |
-| No active session, cmux/tmux/Zellij/Herdr available | Start a new tuicr pane with the matching wrapper |
+| No active session, cmux/tmux/Zellij/Herdr/Orca available | Start a new tuicr pane with the matching wrapper |
 | No active session, no multiplexer | Tell the user you are waiting for them to start `tuicr` |
 | cmux wrapper printed no surface ref | Run `cmux list-panes` to find the pane, or ask the user to start `tuicr` themselves |
 | `tuicr` not installed | Tell the user to install tuicr |
