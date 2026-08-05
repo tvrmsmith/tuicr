@@ -18,6 +18,12 @@ section then re-runs the same harness on a changeset from a deliberately
 different repo, and is where the transfer verdicts live — read it before
 trusting anything above it.
 
+> **The current numbers are in [Fixing the defects](#fixing-the-defects-gd-26r21),
+> at the bottom.** The two sections above it are kept as the record of what was
+> measured when, and several of their findings are superseded there: four engine
+> defects turned out to be *causing* results the earlier sections read as facts
+> about grouping.
+
 ## Headline numbers
 
 | grouping | F1 | precision | recall | groups | largest |
@@ -469,3 +475,213 @@ that **constants are the wrong shape of answer**, and that a result from one
 changeset should be assumed local until a second one says otherwise. That is now
 cheap to check: the harness is fixture-parameterised, so a third fixture is a
 directory drop, not a code change.
+
+---
+
+# Fixing the defects (`gd-26r.21`)
+
+`gd-26r.20` closed with four defects and no fixes. They are fixed here, each in
+its own commit, with both fixtures rescored after each one so no change is
+bundled. That mattered more than usual: `gd-26r.11` measures a model pass
+against the heuristic number, and a baseline depressed by known bugs would
+flatter it.
+
+## Attribution, per fix
+
+Heuristic F1 after each commit, both fixtures:
+
+| # | fix | fixture 1 | fixture 2 |
+| --- | --- | --- | --- |
+| — | before (`gd-26r.20` state) | 0.391 | 0.282 |
+| 1 | tokeniser extension list audited | 0.391 | 0.296 (+0.014) |
+| 2 | directory evidence on, under the stoplist | 0.394 (+0.003) | **0.378** (+0.082) |
+| 3 | config-ci narrowed to CI directories | 0.394 | 0.378 |
+| 4 | rename pass deleted | 0.394 | 0.378 |
+
+Fixes 3 and 4 move nothing by construction: neither hand-grouped fixture carries
+a CI file, and the rename pass had never executed on any input. They are
+correctness and honesty, not score.
+
+Nearly all of the movement is fix 2, and only because fix 1 came first — see
+below.
+
+## The headline numbers now
+
+| grouping | fixture 1 F1 | fixture 2 F1 |
+| --- | --- | --- |
+| all-one-group | 0.241 | 0.153 |
+| one-file-per-group | 0.000 | 0.000 |
+| top-level-directory | 0.255 | 0.155 |
+| parent-directory | 0.219 | 0.312 |
+| **heuristic passes** | **0.394** | **0.378** |
+| best agglomerative | 0.310 | 0.315 |
+| expected (self-score) | 1.000 | 1.000 |
+
+Full rows: fixture 1 P 0.479 / R 0.334 / 19 groups / largest 22.4%; fixture 2
+P 0.425 / R 0.340 / 29 groups / largest 14.6%.
+
+**The recorded inversion is gone.** The heuristics now beat every baseline on
+both fixtures, where before they lost to parent-directory on fixture 2 (0.282
+against 0.312). `second_fixture_loses_to_parent_directory` is replaced by
+`directory_evidence_carries_the_second_fixture`, which locks the ablation rather
+than the inversion, and `heuristic_beats_every_baseline_on_the_first_fixture`
+becomes `..._on_both_fixtures`.
+
+The directory-fallback bucket — rule 6's smell counter — shrinks from 16 to 7
+files on fixture 1 and 19 to 15 on fixture 2.
+
+## Fix 1: the tokeniser extension list
+
+`.cs` was missing, so it survived tokenisation and clustered C# files by layer
+suffix: `handler-cs`, `port-cs`, `program-cs` — groups of "files that are
+handlers" across unrelated concerns, which is precisely what rule 1 forbids. The
+brief was to audit the list rather than add one entry, and the list was
+web-stack-shaped: no .NET, no JVM, no C family, no shell, no SQL, no Terraform,
+no project or build files. It now covers those.
+
+Worth 0.014 F1 on fixture 2 and nothing on fixture 1 — which is the point, since
+fixture 1 is the repo shape the list was written against. Two tests hold it:
+`extensions_never_survive_as_concern_tokens` over a table of filenames from
+several ecosystems, and `no_group_is_named_after_an_extension` over both
+fixtures.
+
+**A finding fell out of it.** With `.cs` stripped, the ubiquity stoplist became
+*completely inert* on fixture 2 — identical F1 at every threshold from 0.05 to
+off. The "stoplist is load-bearing on both fixtures" result from `gd-26r.20` was,
+on fixture 2, the stoplist catching `cs` on 58% of the files: it was cleaning up
+after the tokeniser bug, not finding repo vocabulary. The stoplist only became
+load-bearing there again after fix 2 gave it directory tokens to judge.
+
+## Fix 2: directory evidence, and why it looked marginal
+
+`gd-26r.20` recommended turning directory evidence on because it was the one
+ablation that helped both fixtures — but only just: 0.394 vs 0.391 and 0.294 vs
+0.282. After fix 1 the fixture-2 gain shrank to 0.001, which nearly killed the
+recommendation.
+
+The reason it looked marginal is a second defect, found while measuring it:
+**directory tokens bypassed the ubiquity stoplist entirely.** `ubiquitous_tokens`
+computed document frequency over `name_tokens()` only, while `candidate_keys`
+admitted `dir_tokens()` as cluster keys. So every directory token — `src`, `app`,
+`apps`, the repo's own product directory — was a free key exempt from the one
+mechanism that stops layer and repo vocabulary being used as a concern.
+
+Subjecting directory tokens to the same stoplist changes the value of directory
+evidence on fixture 2 from **+0.001 to +0.082**:
+
+| | fixture 1 | fixture 2 |
+| --- | --- | --- |
+| directory tokens off | 0.391 | 0.296 |
+| on, leaking past the stoplist | 0.394 | 0.297 |
+| **on, under the stoplist** | **0.394** | **0.378** |
+
+**Verdict: directory evidence helps both fixtures and is on by default. It does
+not need to be derived per changeset.** The honest form of `gd-26r.20`'s
+"whether path or filename carries the concern is a property of the repo" is that
+the engine does not have to choose: with both admitted as evidence and both
+subject to the stoplist, the changeset's own token distribution decides which
+one carries, per repo, for free. On fixture 1 (concerns in filenames) directory
+tokens cost 0.073 precision and buy 0.031 recall, netting +0.003; on fixture 2
+(the tree *is* the concern tree) they are the difference between losing to
+parent-directory and beating it.
+
+Consistent with that, the derived group names on fixture 2 stop being layer
+nouns: `pacf-rcm`, `event`, `rule`, `pipeline`, `patient`, `claim` where the old
+run produced `handler-cs`, `port-cs`, `program-cs`, `use`, `sc`.
+
+**The ubiquity threshold verdict softens.** `gd-26r.20` found the two fixtures'
+optima disjoint, each in the other's dead zone, and concluded the threshold must
+be derived per changeset. With both defects fixed they now overlap:
+
+| threshold | fixture 1 | fixture 2 |
+| --- | --- | --- |
+| 0.05 | 0.250 | 0.295 |
+| 0.10 | 0.258 | 0.302 |
+| 0.15 | 0.258 | **0.378** |
+| 0.20 | 0.315 | **0.378** |
+| 0.25 | **0.394** | **0.378** |
+| 0.30 | **0.394** | 0.320 |
+| 0.50 | **0.394** | 0.297 |
+| off | 0.214 | 0.297 |
+
+The shipped 0.25 is now optimal for both — but it is the *only* value that is,
+sitting on fixture 1's rising edge and fixture 2's falling one. That is a
+coincidence to be honest about, not a calibration, so deriving the cut from the
+changeset's own frequency distribution remains the right direction; it is just
+no longer forced by a contradiction. Min-cluster still refuses to agree
+(fixture 1 prefers 2, fixture 2 prefers 4), and both fixtures now prefer a
+stricter absorption threshold than the shipped 2.0 (0.399 and 0.382 at 3.0) —
+tuning, deliberately not done here.
+
+## Fix 3: config-ci — narrowed
+
+**Verdict: narrowed, not deleted.** The `.github/` `.circleci/` `.husky/`
+directory rule is kept; the `CONFIG_NAMES` filename list is deleted outright.
+
+The list was guarded by `!path.contains('/')`, so it could only ever match at the
+repo root — dead in exactly the monorepo shape that has the most build config.
+Unguarding it was measured before deciding: it claims **one** extra file on
+fixture 2 and moves F1 by nothing. Growing it to cover .NET would make things
+worse, not better — fixture 2's 18 `.csproj` files are one hand-grouped
+*concern* (`rcm-service-scaffold`), and a config bucket would shred it. Nested
+build config is better served by the token and directory evidence that fix 2
+turned on.
+
+The directory half survives because it is cheap and precise and rule 8 asks for
+it, and because the 1200-commit finding — no PR in that repo touches both
+100–300 files and a `.github/` file — argues the pass will rarely fire, not that
+it is wrong when it does. A pass that fires rarely and correctly costs nothing.
+The fire-check changeset still fires it.
+
+## Fix 4: rename-pair — deleted, rule 11 recast
+
+**Verdict: deleted.** `enforce_rename_pairs` looked the *old* path up in
+`assigned`, but git reports a rename as a single entry keyed by the new path, so
+the old path was never a key and the branch could not be taken on any input.
+
+The fix is not to rewrite it. There is no pair to reunite: a rename's two halves
+are **one file** in the diff, so rule 11 is satisfied by construction. Rule 11 is
+recast in `docs/GROUPING.md` as a constraint on the representation — any
+representation that splits a rename into a delete and an add is wrong, rather
+than a case to reconcile afterwards — and `a_rename_is_one_file_in_one_group`
+replaces the pass.
+
+Using the old path as *evidence* (a renamed file also carrying its former name's
+tokens) was considered and rejected: neither hand-grouped fixture contains a
+rename, so it would be another unscoreable bet, and `gd-26r.20`'s clearest
+lesson is that unfired passes are untested passes.
+
+## The pass set now
+
+1. **mechanical** — lockfiles, vendored trees, generated output (rule 8).
+2. **config-ci** — CI directories only.
+3. **whole-change docs** — a `docs/` or root `.md` file (rule 9).
+4. **token-cluster** — filename *and* directory tokens, both under the ubiquity
+   stoplist.
+5. **test-pairing** — a test joins its production file's group (rule 4).
+6. **absorb-leftovers**.
+7. **directory-fallback** — last resort and smell counter.
+
+Seven passes, all of which fire on at least one real changeset. That was not
+true before.
+
+## What this leaves
+
+- **The engine is no longer a TypeScript-app grouper.** It beats every baseline
+  on both fixtures, and the gap on the .NET fixture (0.378 against 0.312) is
+  similar in size to the gap on the TS one (0.394 against 0.255). Two of the
+  three things `gd-26r.20` read as "the pass set does not transfer" were bugs.
+- **`gd-26r.11`'s bar is the honest one now**: 0.394 and 0.378, both of which
+  already clear the best baseline per changeset, rather than a number depressed
+  by known defects.
+- **What is genuinely unsolved is the ceiling.** Best-key F1 per expected group
+  is unchanged in character: fixture 2 still has ten of fourteen groups in a
+  0.40–0.57 mush, and no filename or directory token reaches them. That is the
+  case for a pass that reads code, and it is exactly where `gd-26r.11` should
+  aim.
+- **Still not addressed, deliberately.** Group sizing (soft/hard caps, coarser
+  as the changeset shrinks) — separate fog. The ubiquity stoplist measuring
+  frequency when the question is layer-versus-concern — a design question, not a
+  defect, and fix 2 blunts it rather than answering it: directory tokens give
+  the stoplist a second population to judge, which is why `use` and the layer
+  suffixes stopped dominating, but nothing here makes frequency the right proxy.
