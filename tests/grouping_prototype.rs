@@ -15,10 +15,12 @@
 
 mod grouping;
 
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use grouping::changeset::{self, ChangeKind, ChangedFile, Changeset};
 use grouping::passes::{self, GroupingConfig};
+use grouping::refine::{self, RunRecord, Shape};
 use grouping::score::{Partition, Score};
 
 const ORCA_FILES: &str = include_str!("fixtures/grouping/orca-971b16754.files");
@@ -308,6 +310,372 @@ fn a_rename_is_one_file_in_one_group() {
             .iter()
             .any(|m| Some(m.as_str()) == renamed.rename_from.as_deref())),
         "the old path is not a file in the changeset and must not be grouped"
+    );
+}
+
+// --- the model refine pass (`gd-26r.11`) ------------------------------------
+//
+// The call itself is nondeterministic and costs money, so no test makes one.
+// `emit_refine_prompts` writes what would be sent, `scripts/grouping-refine-runs.sh`
+// sends it N times per shape and records each answer, and `refine_report` scores
+// the recorded answers with the same scorer every other pass is graded by.
+
+/// Prompts land here, regenerable, never committed.
+fn prompt_dir() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target/grouping-refine/prompts")
+}
+
+/// Recorded runs for the checked-in fixture are evidence and live with it.
+/// Runs against the private fixture carry its paths in both prompt and answer,
+/// so they live beside it, outside the repo.
+fn run_dir(fixture: &str) -> PathBuf {
+    if fixture == ORCA_FIXTURE {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/grouping/refine")
+    } else {
+        fixture_dir().join("refine")
+    }
+    .join(fixture)
+}
+
+const ORCA_FIXTURE: &str = "orca-971b16754";
+
+/// Writes one prompt per fixture per shape for the run script to send. Not an
+/// assertion — run it, then run the script.
+#[test]
+fn emit_refine_prompts() {
+    for (label, changeset, _) in fixtures() {
+        let grouping = passes::group(&changeset, GroupingConfig::default());
+        let dir = prompt_dir().join(&label);
+        std::fs::create_dir_all(&dir).expect("create prompt dir");
+        for shape in Shape::ALL {
+            let text = refine::prompt(&changeset, &grouping, shape);
+            let path = dir.join(format!("{}.txt", shape.slug()));
+            std::fs::write(&path, &text).expect("write prompt");
+            println!(
+                "  {label:<22} {:<12} {:>6} chars -> {}",
+                shape.slug(),
+                text.len(),
+                path.display()
+            );
+        }
+    }
+}
+
+struct Run {
+    record: RunRecord,
+    refined: refine::Refined,
+}
+
+fn load_runs(fixture: &str, changeset: &Changeset, shape: Shape) -> Vec<Run> {
+    let dir = run_dir(fixture);
+    let Ok(entries) = std::fs::read_dir(&dir) else {
+        return Vec::new();
+    };
+    let mut paths: Vec<PathBuf> = entries
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| {
+            // Recorded runs are named `<shape>-<model>-<nn>.json`, and one shape
+            // slug is a prefix of another ("full", "full-coarse"), so match the
+            // shape segment exactly rather than by prefix.
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .and_then(|name| name.strip_suffix(".json"))
+                .and_then(|stem| stem.rsplitn(3, '-').nth(2))
+                .is_some_and(|slug| slug == shape.slug())
+        })
+        .collect();
+    paths.sort();
+
+    let grouping = passes::group(changeset, GroupingConfig::default());
+    paths
+        .iter()
+        .filter_map(|path| {
+            let envelope = std::fs::read_to_string(path).ok()?;
+            let record = match RunRecord::parse(&envelope) {
+                Ok(record) => record,
+                Err(error) => {
+                    println!("  !! {}: {error}", path.display());
+                    return None;
+                }
+            };
+            match refine::apply(&record.body, changeset, &grouping, shape) {
+                Ok(refined) => Some(Run { record, refined }),
+                Err(error) => {
+                    println!("  !! {}: unusable answer: {error}", path.display());
+                    None
+                }
+            }
+        })
+        .collect()
+}
+
+#[test]
+fn refine_report() {
+    for (label, changeset, expected) in fixtures() {
+        println!("\n\n########## refine: {label} ##########");
+        let heuristic = passes::group(&changeset, GroupingConfig::default())
+            .partition()
+            .score_against(&expected);
+        let best_baseline = [
+            passes::baseline::all_one_group(&changeset),
+            passes::baseline::top_level_directory(&changeset),
+            passes::baseline::parent_directory(&changeset),
+        ]
+        .iter()
+        .map(|baseline| baseline.score_against(&expected).f1)
+        .fold(0.0f64, f64::max);
+        let bar = heuristic.f1.max(best_baseline);
+        println!(
+            "  bar to clear: {bar:.3}  (heuristics {:.3}, best baseline {best_baseline:.3})",
+            heuristic.f1
+        );
+
+        for shape in Shape::ALL {
+            let all = load_runs(&label, &changeset, shape);
+            if all.is_empty() {
+                println!("\n=== {} (no runs recorded) ===", shape.slug());
+                println!("  none on this machine; see scripts/grouping-refine-runs.sh");
+                continue;
+            }
+            // A run is only comparable with runs of the same model, so the
+            // arms are reported apart rather than averaged together.
+            let mut by_model: BTreeMap<String, Vec<&Run>> = BTreeMap::new();
+            for run in &all {
+                by_model
+                    .entry(run.record.model.clone())
+                    .or_default()
+                    .push(run);
+            }
+            for (model, runs) in by_model {
+                println!(
+                    "\n=== {} · {model} ({} runs recorded) ===",
+                    shape.slug(),
+                    runs.len()
+                );
+
+                let mut partitions = Vec::new();
+                for (index, run) in runs.iter().enumerate() {
+                    let score = run.refined.partition.score_against(&expected);
+                    row(&format!("  run {index}"), score);
+                    for repair in &run.refined.repairs {
+                        println!("      repair: {repair}");
+                    }
+                    partitions.push(run.refined.partition.clone());
+                }
+
+                let f1s: Vec<f64> = partitions
+                    .iter()
+                    .map(|p| p.score_against(&expected).f1)
+                    .collect();
+                let mean = f1s.iter().sum::<f64>() / f1s.len() as f64;
+                let worst = f1s.iter().copied().fold(f64::INFINITY, f64::min);
+                let best = f1s.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+                println!("  F1 mean {mean:.3}  worst {worst:.3}  best {best:.3}  bar {bar:.3}");
+
+                match refine::agreement(&partitions) {
+                    Some(agreement) => println!(
+                        "  run-to-run agreement: mean {:.3}  worst {:.3}  best {:.3}",
+                        agreement.mean, agreement.worst, agreement.best
+                    ),
+                    None => println!("  run-to-run agreement: needs 2+ runs"),
+                }
+                if let Some(stability) = refine::file_stability(&partitions) {
+                    println!(
+                        "  per file: {:.1}% identical group-mates in every run, \
+                     mean group-mate overlap {:.3}",
+                        stability.identical_share * 100.0,
+                        stability.mean_overlap
+                    );
+                }
+                // Consensus is the obvious answer to nondeterminism and costs one
+                // call per vote, so the cheapest useful number of votes is the
+                // decision, not whether consensus works at all.
+                for votes in [3, partitions.len()] {
+                    if votes < 3 || votes > partitions.len() {
+                        continue;
+                    }
+                    if let Some(consensus) = refine::consensus(&partitions[..votes]) {
+                        row(
+                            &format!("  consensus of {votes}"),
+                            consensus.score_against(&expected),
+                        );
+                    }
+                }
+
+                let calls = runs.len() as f64;
+                let sum = |f: fn(&RunRecord) -> f64| runs.iter().map(|r| f(&r.record)).sum::<f64>();
+                println!(
+                    "  per call: {:.0} input + {:.0} cached tokens, {:.0} output, ${:.3}, {:.1}s",
+                    sum(|r| r.input_tokens) / calls,
+                    sum(|r| r.cached_tokens) / calls,
+                    sum(|r| r.output_tokens) / calls,
+                    sum(|r| r.cost_usd) / calls,
+                    sum(|r| r.wall_clock_ms) / calls / 1000.0,
+                );
+                println!(
+                    "  repairs per call: {:.1}",
+                    runs.iter().map(|r| r.refined.repairs.len()).sum::<usize>() as f64 / calls
+                );
+                println!(
+                    "  names, run 0 reading order: {}",
+                    runs[0].refined.order.join(", ")
+                );
+
+                if matches!(shape, Shape::Full | Shape::FullCoarse) {
+                    println!(
+                        "  where it wins and loses, per expected group (heuristic -> refine):"
+                    );
+                    let heuristic_recall = refine::recall_per_expected_group(
+                        &passes::group(&changeset, GroupingConfig::default()).partition(),
+                        &expected,
+                    );
+                    let refined_recall =
+                        refine::recall_per_expected_group(&partitions[0], &expected);
+                    let mut rows: Vec<_> = heuristic_recall
+                        .iter()
+                        .zip(&refined_recall)
+                        .map(|((name, size, before), (_, _, after))| {
+                            (name.clone(), *size, *before, *after)
+                        })
+                        .collect();
+                    rows.sort_by_key(|row| std::cmp::Reverse(row.1));
+                    for (name, size, before, after) in rows {
+                        println!(
+                            "    {name:<28} {size:>3} files   {before:.2} -> {after:.2}  {:+.2}",
+                            after - before
+                        );
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// The scorer ignores group names, so a shape that only renames cannot move it
+/// — not "did not", *cannot*. The value of naming-only is therefore invisible
+/// to this harness by construction, and saying so is part of the answer rather
+/// than a caveat on it.
+#[test]
+fn naming_only_cannot_move_the_metric() {
+    for (label, changeset, expected) in fixtures() {
+        let runs = load_runs(&label, &changeset, Shape::NamingOnly);
+        if runs.is_empty() {
+            println!("no naming-only runs for {label}");
+            continue;
+        }
+        let heuristic = passes::group(&changeset, GroupingConfig::default())
+            .partition()
+            .score_against(&expected);
+        for run in &runs {
+            let score = run.refined.partition.score_against(&expected);
+            assert!(
+                (score.f1 - heuristic.f1).abs() < 1e-9,
+                "{label}: naming-only moved F1 {:.6} from {:.6}, so it changed the partition",
+                score.f1,
+                heuristic.f1
+            );
+        }
+    }
+}
+
+/// Merging whole groups can only coarsen the partition, so it can only trade
+/// precision away for recall. Locked because it bounds what the cheap shape is
+/// able to buy, whatever a particular run happens to score.
+#[test]
+fn merge_only_can_only_coarsen() {
+    for (label, changeset, _) in fixtures() {
+        let runs = load_runs(&label, &changeset, Shape::MergeOnly);
+        if runs.is_empty() {
+            println!("no merge-only runs for {label}");
+            continue;
+        }
+        let heuristic = passes::group(&changeset, GroupingConfig::default()).partition();
+        for run in &runs {
+            for members in heuristic.groups.values() {
+                let holders: std::collections::BTreeSet<&String> = run
+                    .refined
+                    .partition
+                    .groups
+                    .iter()
+                    .filter(|(_, refined)| refined.iter().any(|p| members.contains(p)))
+                    .map(|(name, _)| name)
+                    .collect();
+                assert_eq!(
+                    holders.len(),
+                    1,
+                    "{label}: merge-only split a heuristic group across {holders:?}"
+                );
+            }
+        }
+    }
+}
+
+/// Whatever a run answers, the strict partition of GROUPING.md survives it.
+/// This is the property that makes an unreliable pass shippable at all: the
+/// repairs in `refine::apply` are load-bearing, not defensive decoration.
+#[test]
+fn every_recorded_run_yields_a_strict_partition() {
+    for (label, changeset, _) in fixtures() {
+        for shape in Shape::ALL {
+            for (index, run) in load_runs(&label, &changeset, shape).iter().enumerate() {
+                assert_eq!(
+                    run.refined.partition.file_count(),
+                    changeset.len(),
+                    "{label} {} run {index}: every file assigned exactly once",
+                    shape.slug()
+                );
+                let mut seen = std::collections::BTreeSet::new();
+                for members in run.refined.partition.groups.values() {
+                    for path in members {
+                        assert!(
+                            seen.insert(path.clone()),
+                            "{label} {} run {index}: {path} in two groups",
+                            shape.slug()
+                        );
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// The verdict in docs/GROUPING_PASSES.md, locked against the committed runs.
+/// A single full call is below the bar on this fixture (0.361 mean vs 0.394)
+/// and only the consensus of three clears it, so the shape that ships is three
+/// calls and a vote, not one call. If this test fails the verdict has moved.
+#[test]
+fn consensus_of_three_clears_the_bar_where_one_call_does_not() {
+    let (label, changeset, expected) = fixtures()
+        .into_iter()
+        .find(|(label, _, _)| label == ORCA_FIXTURE)
+        .expect("the checked-in fixture is always present");
+    let runs = load_runs(&label, &changeset, Shape::Full);
+    assert!(runs.len() >= 3, "need three recorded full runs to vote");
+
+    let bar = passes::group(&changeset, GroupingConfig::default())
+        .partition()
+        .score_against(&expected)
+        .f1;
+    for run in &runs {
+        let f1 = run.refined.partition.score_against(&expected).f1;
+        assert!(
+            f1 < bar,
+            "a single full call scored {f1:.3}, at or over {bar:.3}"
+        );
+    }
+
+    let partitions: Vec<_> = runs
+        .iter()
+        .map(|run| run.refined.partition.clone())
+        .collect();
+    let voted = refine::consensus(&partitions[..3])
+        .expect("three partitions vote")
+        .score_against(&expected)
+        .f1;
+    assert!(
+        voted > bar,
+        "consensus of three scored {voted:.3}, under {bar:.3}"
     );
 }
 

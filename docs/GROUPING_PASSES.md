@@ -685,3 +685,278 @@ true before.
   defect, and fix 2 blunts it rather than answering it: directory tokens give
   the stoplist a second population to judge, which is why `use` and the layer
   suffixes stopped dominating, but nothing here makes frequency the right proxy.
+
+# The model refine pass (`gd-26r.11`)
+
+`gd-26r.4` already settled that refine is an *optional, async agent-CLI call that
+degrades to heuristics-only*. This ticket asks the four questions that decide
+whether to build it at all: how much closer to the gold standard it gets, what a
+run costs, how much it moves between runs, and whether a cheaper shape captures
+most of the benefit.
+
+## How it was measured
+
+A nondeterministic paid call cannot live inside `cargo test`, so the prototype is
+cut in three:
+
+1. `emit_refine_prompts` writes one prompt per fixture per shape into
+   `target/grouping-refine/prompts/`. Input is the changeset, the heuristic
+   groups, and a digest of the eleven rules from `docs/GROUPING.md`.
+2. `scripts/grouping-refine-runs.sh` sends each prompt N times and records the
+   CLI's own `--output-format json` envelope — answer, token counts, cost, wall
+   clock. Runs from a `mktemp -d` with `--setting-sources '' --tools ''`, so the
+   model cannot read the repo it is grouping.
+3. `refine_report` replays the recorded envelopes deterministically and scores
+   them with the same harness that scores the heuristics.
+
+So the pass is nondeterministic but its *evidence* is not: the twenty orca
+envelopes are committed under `tests/fixtures/grouping/refine/`, and any of the
+numbers below can be re-derived offline with no API key. The twenty meridian
+envelopes carry private paths in both prompt and answer, so they stay beside the
+fixture under `$TUICR_GROUPING_FIXTURES/refine/` and are never committed.
+
+Five runs per shape per fixture, `claude-opus-5`, forty calls in total.
+
+**Overlap with `gd-26r.13`.** That ticket — shelling out to an agent CLI from
+Rust — is still open and unclaimed. This prototype needs the mechanism, so it
+does the shelling in a shell script *on purpose*, to use it without deciding it.
+Nothing here constrains `gd-26r.13`'s answer.
+
+## The four shapes
+
+| shape | what the model may do |
+| --- | --- |
+| **full** | regroup freely: merge, split, move single files, rename |
+| **full-coarse** | as full, plus "prefer fewer, larger groups; no concern group under four files" |
+| **merge-only** | merge whole heuristic groups; never split one |
+| **naming-only** | rename groups and order them; the partition is fixed |
+
+`apply` enforces the strict partition of rule 3 on the way back in — every file
+exactly once — and counts repairs. **Repairs were 0.0 across all forty runs**:
+the model never dropped, duplicated or invented a path. The enforcement stays
+anyway, because that is what makes an unreliable pass shippable.
+
+## Accuracy
+
+Bar per fixture is the better of heuristics and baselines, per `gd-26r.21`:
+0.394 on fixture 1 (orca, 161 files, TypeScript) and 0.378 on fixture 2
+(meridian, 158 files, .NET).
+
+**Fixture 1 — bar 0.394:**
+
+| shape | F1 mean | worst | best | consensus of 3 | consensus of 5 |
+| --- | --- | --- | --- | --- | --- |
+| full | 0.361 | 0.350 | 0.373 | **0.411** | 0.409 |
+| full-coarse | 0.402 | 0.344 | 0.475 | 0.420 | 0.444 |
+| merge-only | 0.410 | 0.385 | 0.430 | 0.438 | 0.351 |
+| naming-only | 0.394 | 0.394 | 0.394 | 0.394 | 0.394 |
+
+**Fixture 2 — bar 0.378:**
+
+| shape | F1 mean | worst | best | consensus of 3 | consensus of 5 |
+| --- | --- | --- | --- | --- | --- |
+| full | **0.783** | 0.677 | 0.844 | **0.847** | 0.830 |
+| full-coarse | 0.732 | 0.671 | 0.784 | 0.683 | 0.742 |
+| merge-only | 0.398 | 0.372 | 0.420 | 0.388 | 0.388 |
+| naming-only | 0.378 | 0.378 | 0.378 | 0.378 | 0.378 |
+
+Consensus is a majority co-membership vote across runs, resolved into groups by
+union-find: two files are grouped if most runs grouped them.
+
+**The headline is the split.** On fixture 2 full refine is transformational —
+0.783 against a bar of 0.378, more than double, and 0.847 voted. On fixture 1 a
+single full call is *below* the bar, 0.361 against 0.394, and only voting brings
+it over, to 0.411. Refine is not uniformly better than the heuristics; it is
+enormously better on one changeset and roughly a wash on the other.
+
+### Where fixture 1 goes wrong
+
+Per-expected-group recall, heuristics against one full run:
+
+| expected group | files | heuristic | refine |
+| --- | --- | --- | --- |
+| github-client-plumbing | 38 | 0.05 | 0.17 |
+| pr-actions | 29 | 0.45 | **0.29** |
+| project-view | 28 | 0.75 | **0.35** |
+| enterprise-host-routing | 18 | 0.20 | 0.25 |
+| gh-auth | 5 | 0.60 | 1.00 |
+| settings-repo-icon | 5 | 0.20 | 1.00 |
+
+The whole loss is two groups — `pr-actions` and `project-view`, 57 of 161 files
+— and both are groups the token heuristics *already find*. The model splits them
+into finer, individually-coherent concerns; the fixture keeps them whole.
+
+Two things follow, and they pull in opposite directions. Fixture 1's expected
+grouping is itself provisional and was drawn with the token evidence in view
+(`tests/fixtures/grouping/README.md`), so on this fixture the heuristics are
+partly being graded against their own reasoning. But that is an explanation, not
+an excuse: the metric is the metric, and by it a single call loses here.
+
+`full-coarse` exists to test whether the loss is *granularity* — it instructs the
+model toward fewer, larger groups without naming a number, to avoid fitting the
+prompt to the answers. It lifts fixture 1 to 0.402 and drops fixture 2 to 0.732,
+and on fixture 1 it does not repair the two lost groups (`project-view` still
+0.34). So the disagreement is judgement about where one concern ends, not group
+size, and the coarseness instruction just trades one fixture for the other.
+
+### Where fixture 2 goes right
+
+Thirteen of fourteen expected groups improve, seven to a perfect 1.00:
+`web-shell` 0.07 → 1.00, `rcm-web-worklist` 0.18 → 1.00, `rcm-authorization`
+0.20 → 1.00, `resident-registration` 0.26 → 1.00, `rcm-service-scaffold`
+0.27 → 1.00, `rcm-rules` 0.51 → 1.00, `rcm-pipeline-realtime` 0.61 → 1.00. Only
+`dependencies` (2 files) stays at 0.00.
+
+This is the direct answer to the ceiling `gd-26r.21` left open. Ten of fourteen
+groups sat in a 0.40–0.57 best-key mush no filename or directory token reaches —
+**and the model reached them from paths alone.** The mush was never evidence that
+code-reading is required; it was evidence that *token matching* is the wrong
+reader of paths. A path carries domain meaning that a tokeniser cannot see and a
+model can.
+
+## Cost
+
+Per call, averaged over the five runs, from the CLI's own accounting:
+
+| fixture | shape | input | cached | output | cost | wall clock |
+| --- | --- | --- | --- | --- | --- | --- |
+| 1 | full | 5,373 | 8,068 | 16,502 | $0.490 | 146.8s |
+| 1 | full-coarse | 5,466 | 8,160 | 15,463 | $0.465 | 142.4s |
+| 1 | merge-only | 5,404 | 8,096 | 2,313 | $0.135 | 27.5s |
+| 1 | naming-only | 5,353 | 8,045 | 1,937 | $0.125 | 19.8s |
+| 2 | full | 9,497 | 12,188 | 20,626 | $0.639 | 182.7s |
+| 2 | full-coarse | 9,590 | 12,285 | 19,941 | $0.623 | 177.0s |
+| 2 | merge-only | 9,528 | 12,223 | 4,146 | $0.228 | 47.7s |
+| 2 | naming-only | 9,477 | 12,169 | 3,787 | $0.218 | 40.6s |
+
+Cost is dominated by *output*, not input: a full regrouping restates every path,
+so output is 3–4× input and scales with file count. Input is small and nearly
+flat, which is why a 100–400 file changeset stays affordable.
+
+Two and a half to three minutes per call, on a review the user is waiting to
+start, is the empirical confirmation of `gd-26r.4`: this cannot be synchronous.
+The heuristics must render immediately and refine must arrive later or not at
+all.
+
+## Stability
+
+Treated as first class, because run-to-run movement is exactly what `gd-26r.8`
+has to hold state across.
+
+| fixture | shape | agreement mean | worst | files with identical group-mates every run | mean group-mate overlap |
+| --- | --- | --- | --- | --- | --- |
+| 1 | full | 0.830 | 0.739 | 27.3% | 0.797 |
+| 1 | full-coarse | 0.836 | 0.762 | 18.6% | 0.790 |
+| 1 | merge-only | 0.790 | 0.676 | 1.2% | 0.710 |
+| 2 | full | 0.802 | 0.632 | 21.5% | 0.756 |
+| 2 | full-coarse | 0.802 | 0.726 | 3.2% | 0.733 |
+| 2 | merge-only | 0.817 | 0.737 | 1.3% | 0.738 |
+| both | naming-only | 1.000 | 1.000 | 100% | 1.000 |
+
+Agreement is pairwise F1 of one run scored against another, so it is the same
+metric as accuracy with a run standing in for the gold standard.
+
+**Refine agrees with itself about as much as it agrees with the truth.** On
+fixture 2, accuracy 0.783 against self-agreement 0.802: the pass has essentially
+reached its own noise floor, and nondeterminism — not capability — is now the
+binding constraint. On fixture 1 accuracy is well *below* self-agreement, so
+there the limit is judgement.
+
+Two consequences for `gd-26r.8`:
+
+- **Only about a quarter of files land with exactly the same group-mates in
+  every run.** Not a quarter of files move — mean group-mate overlap is 0.76–0.80
+  — but most files see *some* churn at their group's edges. Any state keyed on
+  "the group a file is in" will be invalidated wholesale by a re-run.
+- **Merge-only is by far the least stable per file**: 1.2% identical, despite
+  respectable whole-partition agreement. Merging is all-or-nothing at group
+  granularity, so one different merge decision relocates a whole group at once.
+  Whole-partition agreement hides this; the per-file number is the one that
+  matters for held state.
+
+Voting is the lever: consensus of three lifts fixture 1 from 0.361 to 0.411 and
+fixture 2 from 0.783 to 0.847, and it is deterministic given its inputs. Three
+votes is enough — consensus of five is no better on either fixture (0.409 and
+0.830), so the extra two calls buy nothing.
+
+## The cheaper shapes
+
+**Naming-only cannot move the metric.** Not "did not" — *cannot*. The scorer
+ignores group names by design, so a shape that only renames scores exactly the
+heuristic number on every run, on both fixtures, forever.
+`naming_only_cannot_move_the_metric` locks this. It is also the one shape that is
+perfectly stable and costs $0.12–0.22 for 20–40s.
+
+This is a real limit on the answer, not a result: **naming-only is the shape this
+harness is structurally blind to.** The heuristic group names are mechanical
+token joins (`github-client-work-item-queries`), and the model's are readable
+concern names. That may well be worth $0.15 on its own — the point of grouping is
+a review order a human can follow — but nothing in these fixtures can say so. It
+needs a different kind of evaluation.
+
+**Merge-only clears the bar on both fixtures, barely**: 0.410 against 0.394 and
+0.398 against 0.378, so +0.016 and +0.020 for about a quarter of the cost of
+full. It is genuinely the best value if the choice is one call. But it captures
+almost none of the fixture-2 benefit — 0.398 against full's 0.783 — because the
+win there comes from *re-cutting* groups the heuristics drew wrong, and merge-only
+is constrained to coarsen (`merge_only_can_only_coarsen` locks that it can only
+trade precision for recall). Its consensus is also erratic: 0.438 at three votes,
+0.351 at five, worse than a single call.
+
+So no, the cheap shapes do not capture most of the benefit. The benefit *is* the
+splitting.
+
+## What the paths-only fixtures could not measure
+
+Stated plainly, because it is a large hole:
+
+- **Nothing here tested a pass that reads hunks.** Both fixtures are paths and
+  status only, since the source repos are private. Every number above is for a
+  model reading file paths, change kinds, and the heuristic grouping. Whether
+  reading the diff would add to 0.783, and what that would cost, is unmeasured
+  and cannot be measured on these fixtures at all.
+- **The cost of a hunk-reading pass is out of reach anyway, on this evidence.**
+  Fixture 1's diff is roughly 11.9k changed lines, on the order of 120–200k
+  tokens, which is at or past `claude-opus-5`'s context window before any output.
+  A code-reading refine could not be one call over a 161-file changeset; it would
+  need chunking or summarisation, which is a different pass with a different
+  design.
+- **Naming quality is invisible here**, as above. It may be the largest
+  user-visible benefit and it scores zero on this harness.
+- **Reading order is invisible here.** Refine returns groups in a proposed
+  reading order (rule 10) and the report prints it, but the scorer is
+  order-blind, so no number in this document says whether the order is good.
+- **Two fixtures, one model, five runs.** Both are single feature-branch PRs of
+  ~160 files. Nothing here speaks to a 400-file changeset, a merge commit, a
+  refactor sweep, or a cheaper model — `sonnet` resolves on this deployment and
+  was not run.
+- **Fixture 1's expected grouping is provisional** and was drawn with token
+  evidence in view. It is the harsher of the two bars for a reason that is at
+  least partly an artefact.
+
+## Verdict
+
+**Ship it, opt-in, as full refine with a consensus of three calls.**
+
+- **Full, not the cheap shapes.** Merge-only clears the bar by a hair and misses
+  the entire fixture-2 win; naming-only cannot move the metric by construction.
+  The value is in re-cutting groups, which only full can do.
+- **Not `full-coarse`.** It buys fixture 1 by selling fixture 2 and does not fix
+  the actual disagreement.
+- **Three calls, voted.** A single call is below the bar on fixture 1. Consensus
+  of three clears it on both (0.411 and 0.847), makes the result deterministic
+  given its inputs, and five votes add nothing. Cost is roughly $1.50–1.90 and,
+  run in parallel, about the wall clock of one call — 150–185s.
+  `consensus_of_three_clears_the_bar_where_one_call_does_not` locks this against
+  the committed runs.
+- **Opt-in and async, degrading to heuristics-only**, exactly as `gd-26r.4`
+  settled. The wall-clock numbers are the empirical case for it, not a
+  re-litigation.
+- **Honest summary of the accuracy claim:** refine is worth roughly nothing on
+  fixture 1 and worth a doubling on fixture 2. It should be offered, not
+  defaulted, until a third fixture says which of the two is typical. That is the
+  strongest claim two changesets support.
+
+`gd-26r.8` should assume group membership is not stable across re-runs: about a
+quarter of files keep identical group-mates, and held state keyed on group
+identity will not survive a refresh.

@@ -25,6 +25,23 @@ makes during actual reviews of repos they know. See the follow-up ticket.
 | --- | --- |
 | `orca-971b16754.files` | the changeset: `<status>\t<path>`, one line per file |
 | `orca-971b16754.groups` | expected grouping: `[group]` headers, indented paths |
+| `refine/orca-971b16754/` | recorded agent-CLI runs of the model refine pass |
+
+### The recorded refine runs
+
+`refine/<fixture>/<shape>-<model>-<nn>.json` is the agent CLI's own
+`--output-format json` envelope from one run of the refine pass (`gd-26r.11`):
+the answer, the token counts, the cost and the wall clock, exactly as the CLI
+reported them.
+
+They are committed as *evidence*. The pass itself is nondeterministic and costs
+money, so no test calls it; `refine_report` replays these envelopes and scores
+them with the same harness that scores the heuristics, which means every number
+in the refine section of `docs/GROUPING_PASSES.md` can be re-derived offline
+with no API key. Re-record with `scripts/grouping-refine-runs.sh`.
+
+Runs against fixture 2 carry its private paths in both prompt and answer, so
+they live beside it under `$TUICR_GROUPING_FIXTURES/refine/` and are not here.
 
 ### The second fixture lives outside this repo
 
@@ -95,8 +112,9 @@ report, on the same fixture:
 A pass that does not clearly beat all four is not doing useful work, whatever
 its absolute F1. Parent-directory is the one that bites: it is weak on a
 TypeScript app, where directories are layers, and strong on a monorepo where
-the tree *is* the concern tree — and on fixture 2 it beats the heuristic passes
-outright.
+the tree *is* the concern tree — it is the strongest baseline on fixture 2 by a
+wide margin (0.312, against 0.155 for top-level directory), and it beat the
+heuristic passes outright until `gd-26r.21` fixed the defects behind that.
 
 ### Report the shape too
 
