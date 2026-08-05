@@ -17,7 +17,7 @@ mod grouping;
 
 use std::path::PathBuf;
 
-use grouping::changeset::{ChangeKind, Changeset};
+use grouping::changeset::{self, ChangeKind, ChangedFile, Changeset};
 use grouping::passes::{self, GroupingConfig};
 use grouping::score::{Partition, Score};
 
@@ -479,6 +479,74 @@ fn recorded_numbers_hold() {
         no_stoplist.f1,
         score.f1
     );
+}
+
+/// An extension names a file's language or role, never its concern, so one that
+/// survives tokenisation becomes a cluster key and groups files by layer —
+/// exactly what GROUPING.md rule 1 forbids. `.cs` did this on fixture 2
+/// (`handler-cs`, `port-cs`, `program-cs`), so the whole list is under test, not
+/// the one entry that was caught.
+#[test]
+fn extensions_never_survive_as_concern_tokens() {
+    let cases = [
+        ("src/Api/Program.cs", "Program", vec!["program"]),
+        (
+            "src/Data/Migrations/20240101_Init.Designer.cs",
+            "20240101_Init-Designer",
+            vec!["20240101", "init", "designer"],
+        ),
+        (
+            "src/Billing/Northwind.Billing.Api.csproj",
+            "Northwind-Billing-Api",
+            vec!["northwind", "billing", "api"],
+        ),
+        (
+            "Directory.Build.props",
+            "Directory-Build",
+            vec!["directory", "build"],
+        ),
+        ("src/main/java/Claim.java", "Claim", vec!["claim"]),
+        (
+            "web/src/hooks/use-patient.ts",
+            "use-patient",
+            vec!["use", "patient"],
+        ),
+        ("web/src/pages/Worklist.razor", "Worklist", vec!["worklist"]),
+        (
+            "api/appsettings.Development.json",
+            "appsettings-Development",
+            vec!["appsetting", "development"],
+        ),
+        ("infra/main.tf", "main", vec!["main"]),
+    ];
+
+    for (path, stem, tokens) in cases {
+        let file = ChangedFile {
+            path: path.to_string(),
+            kind: ChangeKind::Modified,
+            rename_from: None,
+        };
+        assert_eq!(file.stem(), stem, "stem of {path}");
+        assert_eq!(file.name_tokens(), tokens, "tokens of {path}");
+    }
+}
+
+/// The same guarantee where it actually bites: no group the engine produces may
+/// be named after a file extension.
+#[test]
+fn no_group_is_named_after_an_extension() {
+    for (label, changeset, _) in fixtures() {
+        let grouping = passes::group(&changeset, GroupingConfig::default());
+        for assignment in &grouping.assignments {
+            for token in assignment.group.split('-') {
+                assert!(
+                    !changeset::EXTENSIONS.contains(&token),
+                    "{label}: group `{}` is named after the extension `{token}`",
+                    assignment.group
+                );
+            }
+        }
+    }
 }
 
 #[test]
