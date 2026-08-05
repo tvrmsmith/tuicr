@@ -57,7 +57,8 @@ no multi-membership.
 
 ## Ambiguous assignments
 
-Every file still lands in exactly one group — rule 1's strict partition holds
+Every file still lands in exactly one group — the strict partition assumed
+above, before the numbered rules, holds
 unconditionally. But where the call was close, the engine records the
 assignment it made alongside the alternative it rejected:
 

@@ -70,6 +70,22 @@ impl Shape {
             Shape::NamingOnly => "naming-only",
         }
     }
+
+    /// The shape a recorded run's file stem names. A run is
+    /// `<shape>-<model>-<nn>`, and the model segment carries hyphens of its own
+    /// (`claude-sonnet-4-5`), so counting hyphens from the right reads the
+    /// wrong segment as soon as a second arm is recorded. Match on the slug
+    /// instead; one slug is a prefix of another ("full", "full-coarse"), so the
+    /// longest match wins.
+    pub fn from_run_stem(stem: &str) -> Option<Shape> {
+        Shape::ALL
+            .into_iter()
+            .filter(|shape| {
+                stem.strip_prefix(shape.slug())
+                    .is_some_and(|rest| rest.starts_with('-'))
+            })
+            .max_by_key(|shape| shape.slug().len())
+    }
 }
 
 /// The rules the call is held to. A digest of `docs/GROUPING.md` rather than
@@ -231,22 +247,23 @@ pub fn apply(
     let mut order = Vec::new();
     let mut assigned: BTreeMap<String, String> = BTreeMap::new();
     let mut repairs = Vec::new();
+    // Two returned groups are two groups even when the model gives them the
+    // same name, and `Partition` buckets by name, so every name a group is
+    // filed under is reserved as it is taken.
+    let mut used: BTreeSet<String> = BTreeSet::new();
 
     match shape {
         Shape::Full | Shape::FullCoarse => {
-            for group in groups {
-                let name = group
-                    .get("name")
-                    .and_then(Value::as_str)
-                    .unwrap_or("unnamed");
-                order.push(name.to_string());
+            for (index, group) in groups.iter().enumerate() {
+                let name = group_name(group, index, &mut used, &mut repairs);
+                order.push(name.clone());
                 let files = group.get("files").and_then(Value::as_array);
                 for path in files.into_iter().flatten().filter_map(Value::as_str) {
                     if !all_paths.contains(path) {
                         repairs.push(format!("invented path dropped: {path}"));
                         continue;
                     }
-                    if let Some(previous) = assigned.insert(path.to_string(), name.to_string()) {
+                    if let Some(previous) = assigned.insert(path.to_string(), name.clone()) {
                         repairs.push(format!(
                             "duplicate path kept in `{previous}`, not `{name}`: {path}"
                         ));
@@ -262,12 +279,9 @@ pub fn apply(
                 "was"
             };
             let mut claimed: BTreeSet<String> = BTreeSet::new();
-            for group in groups {
-                let name = group
-                    .get("name")
-                    .and_then(Value::as_str)
-                    .unwrap_or("unnamed");
-                order.push(name.to_string());
+            for (index, group) in groups.iter().enumerate() {
+                let name = group_name(group, index, &mut used, &mut repairs);
+                order.push(name.clone());
                 let sources: Vec<String> = match shape {
                     Shape::MergeOnly => group
                         .get(key)
@@ -296,28 +310,40 @@ pub fn apply(
                         continue;
                     }
                     for path in members {
-                        assigned.insert(path.clone(), name.to_string());
+                        assigned.insert(path.clone(), name.clone());
                     }
                 }
             }
             for (source, members) in &heuristic.groups {
                 if !claimed.contains(source) {
+                    let name = free_name(source, &used);
+                    used.insert(name.clone());
                     repairs.push(format!("input group never claimed, kept as-is: {source}"));
                     for path in members {
-                        assigned
-                            .entry(path.clone())
-                            .or_insert_with(|| source.clone());
+                        assigned.entry(path.clone()).or_insert_with(|| name.clone());
                     }
                 }
             }
         }
     }
 
+    // Restoring several dropped paths that share a heuristic group must put
+    // them back together, so the name chosen for that group is chosen once.
+    let mut restored: BTreeMap<&str, String> = BTreeMap::new();
     for path in &all_paths {
         if !assigned.contains_key(*path) {
             let fallback = heuristic_group.get(path).copied().unwrap_or("unassigned");
-            repairs.push(format!("dropped path restored to `{fallback}`: {path}"));
-            assigned.insert(path.to_string(), fallback.to_string());
+            let name = match restored.get(fallback) {
+                Some(name) => name.clone(),
+                None => {
+                    let name = free_name(fallback, &used);
+                    used.insert(name.clone());
+                    restored.insert(fallback, name.clone());
+                    name
+                }
+            };
+            repairs.push(format!("dropped path restored to `{name}`: {path}"));
+            assigned.insert(path.to_string(), name);
         }
     }
 
@@ -326,6 +352,44 @@ pub fn apply(
         order,
         repairs,
     })
+}
+
+/// The name a returned group is filed under, which is not always the name the
+/// model gave it. `Partition` buckets by name, so a reused name would silently
+/// union two groups the model returned separately and a missing name would
+/// union every group that lacks one — both changing the answer being scored.
+/// Each is uniquified and counted as a repair instead.
+fn group_name(
+    group: &Value,
+    index: usize,
+    used: &mut BTreeSet<String>,
+    repairs: &mut Vec<String>,
+) -> String {
+    let base = match group.get("name").and_then(Value::as_str) {
+        Some(name) if !name.trim().is_empty() => name.to_string(),
+        _ => {
+            repairs.push(format!(
+                "group {index} has no `name`, called `unnamed-{index}`"
+            ));
+            format!("unnamed-{index}")
+        }
+    };
+    let name = free_name(&base, used);
+    if name != base {
+        repairs.push(format!("group name `{base}` reused, filed as `{name}`"));
+    }
+    used.insert(name.clone());
+    name
+}
+
+fn free_name(base: &str, used: &BTreeSet<String>) -> String {
+    if !used.contains(base) {
+        return base.to_string();
+    }
+    (2..)
+        .map(|suffix| format!("{base}-{suffix}"))
+        .find(|candidate| !used.contains(candidate))
+        .expect("a free name exists")
 }
 
 /// How far two runs of the same prompt moved, as pairwise co-membership F1 of
@@ -547,6 +611,25 @@ pub struct RunRecord {
 impl RunRecord {
     pub fn parse(envelope: &str) -> Result<RunRecord, String> {
         let value = first_value(envelope)?;
+
+        // The recorder writes a full envelope for any zero-exit CLI call, and
+        // an errored one still carries a `result` — the error text. Scoring
+        // that as an answer, or dropping it quietly, both shrink N without
+        // saying so, so a failed call is rejected by name.
+        let subtype = value
+            .get("subtype")
+            .and_then(Value::as_str)
+            .unwrap_or("missing");
+        let is_error = value
+            .get("is_error")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        if is_error || subtype != "success" {
+            return Err(format!(
+                "CLI envelope is not a successful call: subtype `{subtype}`, is_error {is_error}"
+            ));
+        }
+
         let body = value
             .get("result")
             .and_then(Value::as_str)

@@ -1,0 +1,17 @@
+# A synthetic changeset, not a calibration fixture: there is no hand grouping
+# for it and nothing here is scored. It exists so the passes that matched
+# nothing in fixture 1 — mechanical, config-ci — meet the input they are for,
+# and so rule 11's "a rename is one file" meets a rename, without needing the
+# private fixture on the machine. Invented paths, no repository.
+M	pnpm-lock.yaml
+M	.github/workflows/ci.yml
+A	.github/workflows/release.yml
+M	.husky/pre-commit
+M	src/billing/invoice-total.ts
+A	src/billing/invoice-total.test.ts
+M	src/billing/invoice-lines.ts
+R094	src/billing/legacy-tax.ts	src/billing/tax-rules.ts
+M	src/shipping/label-printer.ts
+M	src/shipping/carrier-rates.ts
+A	src/shipping/carrier-rates.test.ts
+M	docs/BILLING.md

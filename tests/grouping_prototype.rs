@@ -25,6 +25,9 @@ use grouping::score::{Partition, Score};
 
 const ORCA_FILES: &str = include_str!("fixtures/grouping/orca-971b16754.files");
 const ORCA_GROUPS: &str = include_str!("fixtures/grouping/orca-971b16754.groups");
+/// A synthetic changeset with no ground truth, checked in so the passes that
+/// fire on nothing in fixture 1 are exercised without the private fixture.
+const FIRE_CHECK_FILES: &str = include_str!("fixtures/grouping/fire-check-synthetic.files");
 
 /// The second, hand-grouped fixture: one .NET-dominant PR, 158 files.
 const SECOND_FIXTURE: &str = "meridian-6c22fda02";
@@ -62,8 +65,11 @@ fn external_changeset(name: &str) -> Option<Changeset> {
     Some(Changeset::parse(&files))
 }
 
+/// On stderr, not stdout: `cargo test` swallows stdout unless `--nocapture` is
+/// passed, and a skipped fixture that reports nothing is a test that goes green
+/// having asserted nothing.
 fn skip_notice(name: &str) {
-    println!(
+    eprintln!(
         "skipping {name}: no fixture in {} (set TUICR_GROUPING_FIXTURES)",
         fixture_dir().display()
     );
@@ -102,7 +108,10 @@ fn fixture_is_well_formed() {
     );
 }
 
+/// A printer, not a test: it asserts nothing and is read with `--nocapture`.
+/// Ignored so a `cargo test` run is not paying for it.
 #[test]
+#[ignore = "printer; run with --ignored --nocapture report"]
 fn report() {
     let (changeset, expected) = orca();
     report_fixture("orca 971b16754 (161 files)", &changeset, &expected);
@@ -230,17 +239,25 @@ fn report_fixture(label: &str, changeset: &Changeset, expected: &Partition) {
 }
 
 /// The three passes that matched nothing in fixture 1 were kept as unscored
-/// bets. This is the changeset that makes them fire or exposes them as dead
-/// code: it carries a lockfile, a CI workflow and a rename. There is no hand
-/// grouping for it, so nothing here is scored — only whether a pass fires.
+/// bets. These are the changesets that make them fire or expose them as dead
+/// code: each carries a lockfile, a CI workflow and a rename. There is no hand
+/// grouping for either, so nothing here is scored — only whether a pass fires.
+///
+/// The synthetic one is checked in precisely so this runs in CI, where the
+/// private fixture is absent and neither calibration fixture carries a lockfile
+/// or a `.github/` path — without it both passes go unverified on every run.
 #[test]
 fn unfired_passes_meet_a_changeset_that_should_fire_them() {
-    let Some(changeset) = external_changeset(FIRE_CHECK_FIXTURE) else {
-        skip_notice(FIRE_CHECK_FIXTURE);
-        return;
-    };
+    check_unfired_passes_fire("fire-check-synthetic", &Changeset::parse(FIRE_CHECK_FILES));
 
-    println!("\n\n########## {FIRE_CHECK_FIXTURE} (fire check, no ground truth) ##########");
+    match external_changeset(FIRE_CHECK_FIXTURE) {
+        Some(changeset) => check_unfired_passes_fire(FIRE_CHECK_FIXTURE, &changeset),
+        None => skip_notice(FIRE_CHECK_FIXTURE),
+    }
+}
+
+fn check_unfired_passes_fire(label: &str, changeset: &Changeset) {
+    println!("\n\n########## {label} (fire check, no ground truth) ##########");
     println!("  {} files", changeset.len());
 
     let renamed: Vec<_> = changeset
@@ -250,7 +267,7 @@ fn unfired_passes_meet_a_changeset_that_should_fire_them() {
         .collect();
     println!("  {} renames in the changeset", renamed.len());
 
-    let grouping = passes::group(&changeset, GroupingConfig::default());
+    let grouping = passes::group(changeset, GroupingConfig::default());
     println!("\n=== which passes fired ===");
     for (pass, count) in grouping.pass_hits() {
         println!("  {pass:<20} {count:>3} files");
@@ -259,20 +276,20 @@ fn unfired_passes_meet_a_changeset_that_should_fire_them() {
     let hits = grouping.pass_hits();
     assert!(
         hits.contains_key("mechanical"),
-        "the changeset carries a lockfile, so the mechanical pass must fire"
+        "{label}: the changeset carries a lockfile, so the mechanical pass must fire"
     );
     assert!(
         hits.contains_key("config-ci"),
-        "the changeset carries a CI workflow, so the config-ci pass must fire"
+        "{label}: the changeset carries a CI workflow, so the config-ci pass must fire"
     );
 
     assert!(
         !renamed.is_empty(),
-        "the fire-check changeset is supposed to carry a rename"
+        "{label}: the fire-check changeset is supposed to carry a rename"
     );
     assert!(
         !hits.contains_key("rename-pair"),
-        "there is no rename pass any more: rule 11 holds by construction"
+        "{label}: there is no rename pass any more: rule 11 holds by construction"
     );
 }
 
@@ -340,8 +357,11 @@ fn run_dir(fixture: &str) -> PathBuf {
 const ORCA_FIXTURE: &str = "orca-971b16754";
 
 /// Writes one prompt per fixture per shape for the run script to send. Not an
-/// assertion — run it, then run the script.
+/// assertion but a side effect on `target/`, so it is ignored by default and
+/// invoked deliberately — run it, then run the script. What the prompt must
+/// *say* is pinned by `the_emitted_prompt_carries_the_contract` instead.
 #[test]
+#[ignore = "writes prompts for scripts/grouping-refine-runs.sh; run with --ignored"]
 fn emit_refine_prompts() {
     for (label, changeset, _) in fixtures() {
         let grouping = passes::group(&changeset, GroupingConfig::default());
@@ -361,28 +381,408 @@ fn emit_refine_prompts() {
     }
 }
 
+/// The prompt is the one part of this pass that deterministic CI can pin: it is
+/// a generated interface handed to an agent, and `emit_refine_prompts` only
+/// writes it to disk. What the model then does with it is not testable here.
+#[test]
+fn the_emitted_prompt_carries_the_contract() {
+    let changeset = Changeset::parse(FIRE_CHECK_FILES);
+    let grouping = passes::group(&changeset, GroupingConfig::default());
+    let partition = grouping.partition();
+    let group_count = partition.groups.len();
+
+    for shape in Shape::ALL {
+        let prompt = refine::prompt(&changeset, &grouping, shape);
+        let slug = shape.slug();
+
+        let rules: std::collections::BTreeSet<u32> = prompt
+            .lines()
+            .filter_map(|line| line.split_once('.'))
+            .filter_map(|(head, _)| head.parse::<u32>().ok())
+            .collect();
+        assert_eq!(
+            rules,
+            (1..=11).collect::<std::collections::BTreeSet<u32>>(),
+            "{slug}: every numbered rule of GROUPING.md reaches the model"
+        );
+
+        let mut listed: Vec<&str> = prompt
+            .lines()
+            .filter_map(|line| line.strip_prefix("  "))
+            .filter_map(|line| line.split_once(' '))
+            .filter(|(status, _)| matches!(*status, "A" | "M" | "D" | "R"))
+            .map(|(_, path)| path)
+            .collect();
+        listed.sort_unstable();
+        let mut expected: Vec<&str> = changeset
+            .files
+            .iter()
+            .map(|file| file.path.as_str())
+            .collect();
+        expected.sort_unstable();
+        assert_eq!(
+            listed, expected,
+            "{slug}: the prompt shows every changed file exactly once"
+        );
+
+        for name in partition.groups.keys() {
+            assert!(
+                prompt.contains(&format!("[{name}]")),
+                "{slug}: heuristic group `{name}` is missing from the prompt"
+            );
+        }
+
+        match shape {
+            Shape::Full | Shape::FullCoarse => assert!(
+                prompt.contains(&format!("of the {} input paths", changeset.len())),
+                "{slug}: the prompt must state the file count it demands back"
+            ),
+            Shape::MergeOnly | Shape::NamingOnly => assert!(
+                prompt.contains(&format!("of the {group_count} input group")),
+                "{slug}: the prompt must state the group count it demands back"
+            ),
+        }
+    }
+}
+
+// --- what `apply` does with an answer that breaks the shape ------------------
+//
+// No recorded run has yet needed a repair, so every branch below is reachable
+// only from a hand-written body. That is the point: the repairs are what make a
+// nondeterministic pass shippable, and a claim of 0.0 repairs is only
+// meaningful if a repair could have been counted.
+
+/// A changeset and a hand-built heuristic grouping over it, so a repair branch
+/// can be aimed at a known partition rather than at whatever the passes happen
+/// to produce.
+fn refine_case(groups: &[(&str, &[&str])]) -> (Changeset, passes::Grouping) {
+    let mut text = String::new();
+    let mut assignments = Vec::new();
+    for (name, members) in groups {
+        for path in *members {
+            text.push_str(&format!("M\t{path}\n"));
+            assignments.push(passes::Assignment {
+                path: (*path).to_string(),
+                group: (*name).to_string(),
+                pass: "fixture",
+                runner_up: None,
+            });
+        }
+    }
+    (Changeset::parse(&text), passes::Grouping { assignments })
+}
+
+fn two_groups() -> (Changeset, passes::Grouping) {
+    refine_case(&[
+        ("alpha", &["src/a.ts", "src/b.ts"]),
+        ("beta", &["src/c.ts", "src/d.ts"]),
+    ])
+}
+
+/// Group name to sorted members, which is all the scorer sees.
+fn buckets(refined: &refine::Refined) -> Vec<(String, Vec<String>)> {
+    refined
+        .partition
+        .groups
+        .iter()
+        .map(|(name, members)| {
+            let mut members = members.clone();
+            members.sort();
+            (name.clone(), members)
+        })
+        .collect()
+}
+
+fn refine_with(body: &str, shape: Shape) -> refine::Refined {
+    let (changeset, grouping) = two_groups();
+    refine::apply(body, &changeset, &grouping, shape).expect("a well-formed body applies")
+}
+
+#[test]
+fn a_dropped_path_is_restored_to_its_heuristic_group() {
+    let refined = refine_with(
+        r#"{"groups":[{"name":"one","files":["src/a.ts","src/b.ts","src/c.ts"]}]}"#,
+        Shape::Full,
+    );
+    assert_eq!(
+        buckets(&refined),
+        vec![
+            ("beta".to_string(), vec!["src/d.ts".to_string()]),
+            (
+                "one".to_string(),
+                vec![
+                    "src/a.ts".to_string(),
+                    "src/b.ts".to_string(),
+                    "src/c.ts".to_string()
+                ]
+            ),
+        ]
+    );
+    assert_eq!(
+        refined.repairs,
+        vec!["dropped path restored to `beta`: src/d.ts"]
+    );
+}
+
+#[test]
+fn a_duplicated_path_stays_in_the_group_that_claimed_it_first() {
+    let refined = refine_with(
+        r#"{"groups":[
+            {"name":"one","files":["src/a.ts","src/b.ts"]},
+            {"name":"two","files":["src/b.ts","src/c.ts","src/d.ts"]}]}"#,
+        Shape::Full,
+    );
+    assert_eq!(
+        buckets(&refined),
+        vec![
+            (
+                "one".to_string(),
+                vec!["src/a.ts".to_string(), "src/b.ts".to_string()]
+            ),
+            (
+                "two".to_string(),
+                vec!["src/c.ts".to_string(), "src/d.ts".to_string()]
+            ),
+        ]
+    );
+    assert_eq!(
+        refined.repairs,
+        vec!["duplicate path kept in `one`, not `two`: src/b.ts"]
+    );
+}
+
+#[test]
+fn an_invented_path_is_dropped() {
+    let refined = refine_with(
+        r#"{"groups":[
+            {"name":"one","files":["src/a.ts","src/b.ts","src/nowhere.ts"]},
+            {"name":"two","files":["src/c.ts","src/d.ts"]}]}"#,
+        Shape::Full,
+    );
+    assert_eq!(
+        buckets(&refined),
+        vec![
+            (
+                "one".to_string(),
+                vec!["src/a.ts".to_string(), "src/b.ts".to_string()]
+            ),
+            (
+                "two".to_string(),
+                vec!["src/c.ts".to_string(), "src/d.ts".to_string()]
+            ),
+        ]
+    );
+    assert_eq!(
+        refined.repairs,
+        vec!["invented path dropped: src/nowhere.ts"]
+    );
+}
+
+/// Two returned groups are two groups. Filing both under the name the model
+/// reused would union them and score a partition it never proposed.
+#[test]
+fn two_groups_sharing_a_name_stay_two_groups() {
+    let refined = refine_with(
+        r#"{"groups":[
+            {"name":"one","files":["src/a.ts","src/b.ts"]},
+            {"name":"one","files":["src/c.ts","src/d.ts"]}]}"#,
+        Shape::Full,
+    );
+    assert_eq!(
+        buckets(&refined),
+        vec![
+            (
+                "one".to_string(),
+                vec!["src/a.ts".to_string(), "src/b.ts".to_string()]
+            ),
+            (
+                "one-2".to_string(),
+                vec!["src/c.ts".to_string(), "src/d.ts".to_string()]
+            ),
+        ]
+    );
+    assert_eq!(refined.order, vec!["one", "one-2"]);
+    assert_eq!(
+        refined.repairs,
+        vec!["group name `one` reused, filed as `one-2`"]
+    );
+}
+
+#[test]
+fn a_group_without_a_name_is_counted_not_defaulted() {
+    let refined = refine_with(
+        r#"{"groups":[
+            {"files":["src/a.ts","src/b.ts"]},
+            {"files":["src/c.ts","src/d.ts"]}]}"#,
+        Shape::Full,
+    );
+    assert_eq!(
+        buckets(&refined),
+        vec![
+            (
+                "unnamed-0".to_string(),
+                vec!["src/a.ts".to_string(), "src/b.ts".to_string()]
+            ),
+            (
+                "unnamed-1".to_string(),
+                vec!["src/c.ts".to_string(), "src/d.ts".to_string()]
+            ),
+        ]
+    );
+    assert_eq!(
+        refined.repairs,
+        vec![
+            "group 0 has no `name`, called `unnamed-0`",
+            "group 1 has no `name`, called `unnamed-1`",
+        ]
+    );
+}
+
+#[test]
+fn merge_only_ignores_an_input_group_that_does_not_exist() {
+    let refined = refine_with(
+        r#"{"groups":[
+            {"name":"m","merge":["alpha","ghost"]},
+            {"name":"n","merge":["beta"]}]}"#,
+        Shape::MergeOnly,
+    );
+    assert_eq!(
+        buckets(&refined),
+        vec![
+            (
+                "m".to_string(),
+                vec!["src/a.ts".to_string(), "src/b.ts".to_string()]
+            ),
+            (
+                "n".to_string(),
+                vec!["src/c.ts".to_string(), "src/d.ts".to_string()]
+            ),
+        ]
+    );
+    assert_eq!(refined.repairs, vec!["unknown input group ignored: ghost"]);
+}
+
+#[test]
+fn merge_only_gives_a_twice_claimed_input_group_to_its_first_claimant() {
+    let refined = refine_with(
+        r#"{"groups":[
+            {"name":"m","merge":["alpha","beta"]},
+            {"name":"n","merge":["beta"]}]}"#,
+        Shape::MergeOnly,
+    );
+    assert_eq!(
+        buckets(&refined),
+        vec![(
+            "m".to_string(),
+            vec![
+                "src/a.ts".to_string(),
+                "src/b.ts".to_string(),
+                "src/c.ts".to_string(),
+                "src/d.ts".to_string()
+            ]
+        )]
+    );
+    assert_eq!(
+        refined.repairs,
+        vec!["input group claimed twice, second ignored: beta"]
+    );
+}
+
+/// An unclaimed input group survives, and survives *apart* even when the model
+/// gave one of its own groups that group's name.
+#[test]
+fn merge_only_keeps_an_unclaimed_input_group_under_a_free_name() {
+    let refined = refine_with(
+        r#"{"groups":[{"name":"beta","merge":["alpha"]}]}"#,
+        Shape::MergeOnly,
+    );
+    assert_eq!(
+        buckets(&refined),
+        vec![
+            (
+                "beta".to_string(),
+                vec!["src/a.ts".to_string(), "src/b.ts".to_string()]
+            ),
+            (
+                "beta-2".to_string(),
+                vec!["src/c.ts".to_string(), "src/d.ts".to_string()]
+            ),
+        ]
+    );
+    assert_eq!(
+        refined.repairs,
+        vec!["input group never claimed, kept as-is: beta"]
+    );
+}
+
+/// The envelope of a failed call still carries a `result` — the error text.
+/// Scoring that as an answer, or dropping it silently, both shrink the run
+/// count the published numbers are a property of.
+#[test]
+fn an_errored_envelope_is_not_a_run() {
+    let envelope = r#"{"type":"result","subtype":"error_max_turns","is_error":true,
+        "result":"Reached max turns","duration_ms":1000,"total_cost_usd":0.01}"#;
+    let error = RunRecord::parse(envelope).expect_err("an errored envelope is rejected");
+    assert!(
+        error.contains("error_max_turns"),
+        "the rejection must name the subtype: {error}"
+    );
+
+    let ok = r#"{"type":"result","subtype":"success","is_error":false,
+        "result":"{\"groups\":[]}","duration_ms":1000,"total_cost_usd":0.01}"#;
+    assert_eq!(
+        RunRecord::parse(ok)
+            .expect("a successful envelope parses")
+            .body,
+        "{\"groups\":[]}"
+    );
+}
+
+/// A model segment carries hyphens of its own, so the shape a recorded run
+/// belongs to cannot be found by counting hyphens from the right — that reads
+/// `full-claude-sonnet-4-5-01` as shape `full-claude-sonnet-4` and quietly
+/// leaves a whole arm out of every report.
+#[test]
+fn a_recorded_runs_shape_survives_a_hyphenated_model_name() {
+    for (stem, shape) in [
+        ("full-opus-01", Some(Shape::Full)),
+        ("full-coarse-opus-01", Some(Shape::FullCoarse)),
+        ("merge-only-opus-05", Some(Shape::MergeOnly)),
+        ("naming-only-opus-05", Some(Shape::NamingOnly)),
+        ("full-claude-sonnet-4-5-01", Some(Shape::Full)),
+        ("full-coarse-claude-sonnet-4-5-01", Some(Shape::FullCoarse)),
+        ("fullish-opus-01", None),
+        ("notes", None),
+    ] {
+        assert_eq!(Shape::from_run_stem(stem), shape, "shape of `{stem}`");
+    }
+}
+
 struct Run {
     record: RunRecord,
     refined: refine::Refined,
 }
 
+/// Every recorded run on disk, or a panic naming the one that could not be
+/// read. Every claim on this branch is a property of *N* runs, so a run that
+/// dropped out quietly would shrink N with no signal — "no runs recorded" and
+/// "a corrupt envelope" must not look alike. Only a genuinely absent directory
+/// is a legitimate empty answer.
 fn load_runs(fixture: &str, changeset: &Changeset, shape: Shape) -> Vec<Run> {
     let dir = run_dir(fixture);
-    let Ok(entries) = std::fs::read_dir(&dir) else {
-        return Vec::new();
+    let entries = match std::fs::read_dir(&dir) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Vec::new(),
+        Err(error) => panic!("cannot read recorded runs in {}: {error}", dir.display()),
     };
     let mut paths: Vec<PathBuf> = entries
-        .filter_map(Result::ok)
-        .map(|entry| entry.path())
+        .map(|entry| entry.expect("read a recorded run directory entry").path())
         .filter(|path| {
-            // Recorded runs are named `<shape>-<model>-<nn>.json`, and one shape
-            // slug is a prefix of another ("full", "full-coarse"), so match the
-            // shape segment exactly rather than by prefix.
             path.file_name()
                 .and_then(|name| name.to_str())
                 .and_then(|name| name.strip_suffix(".json"))
-                .and_then(|stem| stem.rsplitn(3, '-').nth(2))
-                .is_some_and(|slug| slug == shape.slug())
+                .and_then(Shape::from_run_stem)
+                .is_some_and(|slug| slug == shape)
         })
         .collect();
     paths.sort();
@@ -390,27 +790,20 @@ fn load_runs(fixture: &str, changeset: &Changeset, shape: Shape) -> Vec<Run> {
     let grouping = passes::group(changeset, GroupingConfig::default());
     paths
         .iter()
-        .filter_map(|path| {
-            let envelope = std::fs::read_to_string(path).ok()?;
-            let record = match RunRecord::parse(&envelope) {
-                Ok(record) => record,
-                Err(error) => {
-                    println!("  !! {}: {error}", path.display());
-                    return None;
-                }
-            };
-            match refine::apply(&record.body, changeset, &grouping, shape) {
-                Ok(refined) => Some(Run { record, refined }),
-                Err(error) => {
-                    println!("  !! {}: unusable answer: {error}", path.display());
-                    None
-                }
-            }
+        .map(|path| {
+            let envelope = std::fs::read_to_string(path)
+                .unwrap_or_else(|error| panic!("read {}: {error}", path.display()));
+            let record = RunRecord::parse(&envelope)
+                .unwrap_or_else(|error| panic!("{}: {error}", path.display()));
+            let refined = refine::apply(&record.body, changeset, &grouping, shape)
+                .unwrap_or_else(|error| panic!("{}: unusable answer: {error}", path.display()));
+            Run { record, refined }
         })
         .collect()
 }
 
 #[test]
+#[ignore = "printer; run with --ignored --nocapture refine_report"]
 fn refine_report() {
     for (label, changeset, expected) in fixtures() {
         println!("\n\n########## refine: {label} ##########");
