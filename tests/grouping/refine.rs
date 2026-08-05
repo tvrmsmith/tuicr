@@ -24,6 +24,8 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use serde_json::Value;
+
 use super::changeset::{ChangeKind, Changeset};
 use super::passes::Grouping;
 use super::score::Partition;
@@ -223,7 +225,7 @@ pub fn apply(
 
     let groups = value
         .get("groups")
-        .and_then(Json::as_array)
+        .and_then(Value::as_array)
         .ok_or_else(|| "response has no `groups` array".to_string())?;
 
     let mut order = Vec::new();
@@ -235,11 +237,11 @@ pub fn apply(
             for group in groups {
                 let name = group
                     .get("name")
-                    .and_then(Json::as_str)
+                    .and_then(Value::as_str)
                     .unwrap_or("unnamed");
                 order.push(name.to_string());
-                let files = group.get("files").and_then(Json::as_array);
-                for path in files.into_iter().flatten().filter_map(Json::as_str) {
+                let files = group.get("files").and_then(Value::as_array);
+                for path in files.into_iter().flatten().filter_map(Value::as_str) {
                     if !all_paths.contains(path) {
                         repairs.push(format!("invented path dropped: {path}"));
                         continue;
@@ -263,21 +265,21 @@ pub fn apply(
             for group in groups {
                 let name = group
                     .get("name")
-                    .and_then(Json::as_str)
+                    .and_then(Value::as_str)
                     .unwrap_or("unnamed");
                 order.push(name.to_string());
                 let sources: Vec<String> = match shape {
                     Shape::MergeOnly => group
                         .get(key)
-                        .and_then(Json::as_array)
+                        .and_then(Value::as_array)
                         .into_iter()
                         .flatten()
-                        .filter_map(Json::as_str)
+                        .filter_map(Value::as_str)
                         .map(str::to_string)
                         .collect(),
                     _ => group
                         .get(key)
-                        .and_then(Json::as_str)
+                        .and_then(Value::as_str)
                         .map(str::to_string)
                         .into_iter()
                         .collect(),
@@ -544,10 +546,10 @@ pub struct RunRecord {
 
 impl RunRecord {
     pub fn parse(envelope: &str) -> Result<RunRecord, String> {
-        let value = Json::parse(envelope)?;
+        let value = first_value(envelope)?;
         let body = value
             .get("result")
-            .and_then(Json::as_str)
+            .and_then(Value::as_str)
             .ok_or_else(|| "CLI envelope has no `result`".to_string())?
             .to_string();
 
@@ -556,8 +558,9 @@ impl RunRecord {
         // Every one of them is part of what the call costs, so they are summed,
         // and the model that wrote the answer — the one with the most output —
         // is the one the run is labelled with.
-        let usage = value.get("modelUsage").and_then(Json::as_object);
-        let field = |stats: &Json, key: &str| stats.get(key).and_then(Json::as_f64).unwrap_or(0.0);
+        let usage = value.get("modelUsage").and_then(Value::as_object);
+        let field =
+            |stats: &Value, key: &str| stats.get(key).and_then(Value::as_f64).unwrap_or(0.0);
         let (mut input, mut output, mut cached) = (0.0, 0.0, 0.0);
         let mut model = "unknown".to_string();
         let mut most_output = f64::NEG_INFINITY;
@@ -581,212 +584,33 @@ impl RunRecord {
             cached_tokens: cached,
             cost_usd: value
                 .get("total_cost_usd")
-                .and_then(Json::as_f64)
+                .and_then(Value::as_f64)
                 .unwrap_or(0.0),
             wall_clock_ms: value
                 .get("duration_ms")
-                .and_then(Json::as_f64)
+                .and_then(Value::as_f64)
                 .unwrap_or(0.0),
         })
     }
 }
 
-// --- a JSON reader, because the harness has no serde dependency ------------
-//
-// The prototype needs to read agent-CLI responses and their usage counters, and
-// tuicr does not depend on serde. Pulling a dependency into the crate for a
-// throwaway prototype would be the wrong trade, so this is a minimal reader:
-// enough for the two shapes of document involved, and no more.
-
-#[derive(Debug, Clone, PartialEq)]
-pub enum Json {
-    Null,
-    Bool(bool),
-    Number(f64),
-    String(String),
-    Array(Vec<Json>),
-    Object(BTreeMap<String, Json>),
-}
-
-impl Json {
-    pub fn get(&self, key: &str) -> Option<&Json> {
-        match self {
-            Json::Object(map) => map.get(key),
-            _ => None,
-        }
-    }
-
-    pub fn as_str(&self) -> Option<&str> {
-        match self {
-            Json::String(text) => Some(text),
-            _ => None,
-        }
-    }
-
-    pub fn as_array(&self) -> Option<&Vec<Json>> {
-        match self {
-            Json::Array(items) => Some(items),
-            _ => None,
-        }
-    }
-
-    pub fn as_f64(&self) -> Option<f64> {
-        match self {
-            Json::Number(value) => Some(*value),
-            _ => None,
-        }
-    }
-
-    pub fn as_object(&self) -> Option<&BTreeMap<String, Json>> {
-        match self {
-            Json::Object(map) => Some(map),
-            _ => None,
-        }
-    }
-
-    pub fn parse(text: &str) -> Result<Json, String> {
-        let chars: Vec<char> = text.chars().collect();
-        let mut cursor = 0;
-        let value = parse_value(&chars, &mut cursor)?;
-        Ok(value)
-    }
-}
-
 /// A model asked for "JSON and nothing else" mostly complies, and a prototype
-/// that fell over on a stray fence would be measuring the fence. The first
-/// balanced `{...}` in the body is taken.
-fn extract_json(body: &str) -> Result<Json, String> {
+/// that fell over on a stray fence would be measuring the fence. Reading from
+/// the first `{` with a streaming deserialiser takes the first balanced object
+/// and ignores whatever follows it.
+fn extract_json(body: &str) -> Result<Value, String> {
     let start = body
         .find('{')
         .ok_or_else(|| "no JSON object in response".to_string())?;
-    Json::parse(&body[start..])
+    first_value(&body[start..])
 }
 
-fn skip_whitespace(chars: &[char], cursor: &mut usize) {
-    while *cursor < chars.len() && chars[*cursor].is_whitespace() {
-        *cursor += 1;
-    }
-}
-
-fn parse_value(chars: &[char], cursor: &mut usize) -> Result<Json, String> {
-    skip_whitespace(chars, cursor);
-    match chars.get(*cursor) {
-        None => Err("unexpected end of JSON".into()),
-        Some('{') => parse_object(chars, cursor),
-        Some('[') => parse_array(chars, cursor),
-        Some('"') => parse_string(chars, cursor).map(Json::String),
-        Some('t') => parse_literal(chars, cursor, "true", Json::Bool(true)),
-        Some('f') => parse_literal(chars, cursor, "false", Json::Bool(false)),
-        Some('n') => parse_literal(chars, cursor, "null", Json::Null),
-        Some(_) => parse_number(chars, cursor),
-    }
-}
-
-fn parse_literal(
-    chars: &[char],
-    cursor: &mut usize,
-    text: &str,
-    value: Json,
-) -> Result<Json, String> {
-    if chars[*cursor..].starts_with(&text.chars().collect::<Vec<_>>()[..]) {
-        *cursor += text.len();
-        Ok(value)
-    } else {
-        Err(format!("expected `{text}`"))
-    }
-}
-
-fn parse_number(chars: &[char], cursor: &mut usize) -> Result<Json, String> {
-    let start = *cursor;
-    while *cursor < chars.len() && "+-0123456789.eE".contains(chars[*cursor]) {
-        *cursor += 1;
-    }
-    let text: String = chars[start..*cursor].iter().collect();
-    text.parse()
-        .map(Json::Number)
-        .map_err(|_| format!("bad number `{text}`"))
-}
-
-fn parse_string(chars: &[char], cursor: &mut usize) -> Result<String, String> {
-    *cursor += 1; // opening quote
-    let mut out = String::new();
-    while *cursor < chars.len() {
-        match chars[*cursor] {
-            '"' => {
-                *cursor += 1;
-                return Ok(out);
-            }
-            '\\' => {
-                *cursor += 1;
-                let escape = *chars.get(*cursor).ok_or("unterminated escape")?;
-                out.push(match escape {
-                    'n' => '\n',
-                    't' => '\t',
-                    'r' => '\r',
-                    'b' => '\u{8}',
-                    'f' => '\u{c}',
-                    'u' => {
-                        let hex: String = chars
-                            .get(*cursor + 1..*cursor + 5)
-                            .ok_or("truncated \\u escape")?
-                            .iter()
-                            .collect();
-                        *cursor += 4;
-                        char::from_u32(u32::from_str_radix(&hex, 16).map_err(|_| "bad \\u escape")?)
-                            .unwrap_or('\u{fffd}')
-                    }
-                    other => other,
-                });
-                *cursor += 1;
-            }
-            other => {
-                out.push(other);
-                *cursor += 1;
-            }
-        }
-    }
-    Err("unterminated string".into())
-}
-
-fn parse_array(chars: &[char], cursor: &mut usize) -> Result<Json, String> {
-    *cursor += 1;
-    let mut items = Vec::new();
-    loop {
-        skip_whitespace(chars, cursor);
-        match chars.get(*cursor) {
-            Some(']') => {
-                *cursor += 1;
-                return Ok(Json::Array(items));
-            }
-            Some(',') => *cursor += 1,
-            None => return Err("unterminated array".into()),
-            _ => items.push(parse_value(chars, cursor)?),
-        }
-    }
-}
-
-fn parse_object(chars: &[char], cursor: &mut usize) -> Result<Json, String> {
-    *cursor += 1;
-    let mut map = BTreeMap::new();
-    loop {
-        skip_whitespace(chars, cursor);
-        match chars.get(*cursor) {
-            Some('}') => {
-                *cursor += 1;
-                return Ok(Json::Object(map));
-            }
-            Some(',') => *cursor += 1,
-            Some('"') => {
-                let key = parse_string(chars, cursor)?;
-                skip_whitespace(chars, cursor);
-                if chars.get(*cursor) != Some(&':') {
-                    return Err(format!("expected `:` after key `{key}`"));
-                }
-                *cursor += 1;
-                map.insert(key, parse_value(chars, cursor)?);
-            }
-            None => return Err("unterminated object".into()),
-            Some(other) => return Err(format!("unexpected `{other}` in object")),
-        }
-    }
+/// `serde_json::from_str` rejects trailing content, which a fenced answer has.
+/// The streaming deserialiser stops at the end of the first value instead.
+fn first_value(text: &str) -> Result<Value, String> {
+    serde_json::Deserializer::from_str(text)
+        .into_iter::<Value>()
+        .next()
+        .ok_or_else(|| "empty JSON document".to_string())?
+        .map_err(|error| error.to_string())
 }

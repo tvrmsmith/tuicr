@@ -732,9 +732,11 @@ Nothing here constrains `gd-26r.13`'s answer.
 | **naming-only** | rename groups and order them; the partition is fixed |
 
 `apply` enforces the strict partition of rule 3 on the way back in — every file
-exactly once — and counts repairs. **Repairs were 0.0 across all forty runs**:
-the model never dropped, duplicated or invented a path. The enforcement stays
-anyway, because that is what makes an unreliable pass shippable.
+exactly once — and counts repairs. **Repairs were 0.0 in every one of the forty
+recorded runs**: across these two changesets, four shapes and one model
+(`claude-opus-5`), no answer dropped, duplicated or invented a path. Forty runs
+of one model on two changesets is not evidence that it cannot happen, so the
+enforcement stays — that is what makes an unreliable pass shippable.
 
 ## Accuracy
 
@@ -775,7 +777,7 @@ Per-expected-group recall, heuristics against one full run:
 
 | expected group | files | heuristic | refine |
 | --- | --- | --- | --- |
-| github-client-plumbing | 38 | 0.05 | 0.17 |
+| github-client-plumbing | 38 | 0.05 | 0.14 |
 | pr-actions | 29 | 0.45 | **0.29** |
 | project-view | 28 | 0.75 | **0.35** |
 | enterprise-host-routing | 18 | 0.20 | 0.25 |
