@@ -7,11 +7,11 @@ M	pnpm-lock.yaml
 M	.github/workflows/ci.yml
 A	.github/workflows/release.yml
 M	.husky/pre-commit
-M	src/billing/invoice-total.ts
-A	src/billing/invoice-total.test.ts
-M	src/billing/invoice-lines.ts
-R094	src/billing/legacy-tax.ts	src/billing/tax-rules.ts
+M	src/inventory/stock-total.ts
+A	src/inventory/stock-total.test.ts
+M	src/inventory/stock-lines.ts
+R094	src/inventory/legacy-batch.ts	src/inventory/batch-rules.ts
 M	src/shipping/label-printer.ts
 M	src/shipping/carrier-rates.ts
 A	src/shipping/carrier-rates.test.ts
-M	docs/BILLING.md
+M	docs/INVENTORY.md
