@@ -249,15 +249,27 @@ result. That second fixture is below.
 shallow paths, filenames doing all the naming. Fixture 2 is deliberately the
 opposite shape — a single PR from a **private, .NET-dominant enterprise
 monorepo**: 158 files, 91 C# and 45 TS/TSX, deep product/service/layer paths,
-one lockfile, no renames, no CI file. It carries a resident-lifecycle feature
-plus a revenue-cycle pipeline, hand-grouped by the human into 14 groups
-(largest 13.3%).
+one lockfile, no renames, no CI file. It carries two unrelated product features
+— the domain is private and does not matter to any result here — hand-grouped by
+the human into 14 groups (largest 13.3%).
 
 **The fixture is not in this repo.** Its paths are confidential, so
 `meridian-6c22fda02.files` / `.groups` live outside the tree, loaded at runtime
 from `$TUICR_GROUPING_FIXTURES` (default `~/.local/share/tuicr-fixtures`). Every
 test that needs it skips with a notice when the directory is absent, so the
 public checkout stays green. No path from it appears in this document.
+
+Nor does any of its vocabulary: expected group names, derived group names and
+best-key tokens are all fragments of private paths, so **the per-group fixture-2
+tables are not published either.** They live beside the fixture, in
+`$TUICR_GROUPING_FIXTURES/meridian-6c22fda02.notes.md`. Every fixture-2 result
+that does not carry a private identifier — F1 means, worst and best, the bar,
+consensus figures, group counts, largest-group share, token and cost and
+wall-clock numbers, stability, and every verdict drawn from them — stays here,
+and the analysis is written to stand without the tables. Where a particular
+fixture-2 group has to be named below, it is given a pseudonymous label
+(`concern-a`, `concern-b`, …) that carries no meaning outside the sentence
+using it.
 
 ## Headline numbers, same baselines
 
@@ -416,22 +428,11 @@ broken.
 
 ## Ceiling: what filename tokens can reach here
 
-| expected group | files | best key | F1 |
-| --- | --- | --- | --- |
-| rcm-pipeline-realtime | 9 | `pipeline` | 1.00 |
-| rcm-payer | 7 | `payer` | 0.92 |
-| rcm-rules | 14 | `sc` | 0.88 |
-| dependencies | 2 | `pnpm-lock` | 0.67 |
-| platform-billing-reuse | 5 | `worklist-item` | 0.57 |
-| resident-registration | 12 | `resident` | 0.56 |
-| rcm-service-scaffold | 18 | `csproj` | 0.54 |
-| rcm-pipeline-stages | 19 | `event` | 0.54 |
-| admission-census | 14 | `patient` | 0.52 |
-| rcm-authorization | 6 | `role` | 0.50 |
-| rcm-claims-api | 21 | `claim` | 0.48 |
-| rcm-web-worklist | 15 | `page` | 0.45 |
-| web-shell | 8 | `tab` | 0.40 |
-| service-host-wiring | 8 | `development` | 0.36 |
+The per-group table — each expected group, its size, the best single filename
+token that could ever reproduce it, and that token's F1 — is unpublishable here:
+the group names and the tokens are both fragments of private paths. It is in
+`$TUICR_GROUPING_FIXTURES/meridian-6c22fda02.notes.md`. Its distribution is the
+result, and that is public.
 
 Size-weighted mean best-key F1: **0.58 here against 0.64 on fixture 1.** The
 "filename tokens get roughly two thirds" read survives as an order of magnitude,
@@ -441,8 +442,9 @@ above 0.85 and no cliff after: ten of fourteen groups sit in a 0.36–0.57 mush.
 The signal is not missing from a few large cross-cutting groups, it is thin
 almost everywhere.
 
-Two mechanical causes, both visible in the derived names (`use`, `handler-cs`,
-`port-cs`, `program-cs`, `sc`, `in-memory`):
+Two mechanical causes, both visible in the derived names — the publishable ones
+are the language-convention names (`use`, `handler-cs`, `port-cs`,
+`program-cs`), the rest being repo vocabulary:
 
 - **`.cs` is not in the tokeniser's extension list**, so it survives as a token
   and clusters every C# file's layer suffix. `handler-cs` and `port-cs` are
@@ -600,8 +602,10 @@ tokens cost 0.073 precision and buy 0.031 recall, netting +0.003; on fixture 2
 parent-directory and beating it.
 
 Consistent with that, the derived group names on fixture 2 stop being layer
-nouns: `pacf-rcm`, `event`, `rule`, `pipeline`, `patient`, `claim` where the old
-run produced `handler-cs`, `port-cs`, `program-cs`, `use`, `sc`.
+nouns — they become the changeset's own domain nouns, where the old run produced
+`handler-cs`, `port-cs`, `program-cs`, `use`. Both name lists are domain
+vocabulary from private paths, so only the layer-suffix half is quotable here;
+the pair is in `$TUICR_GROUPING_FIXTURES/meridian-6c22fda02.notes.md`.
 
 **The ubiquity threshold verdict softens.** `gd-26r.20` found the two fixtures'
 optima disjoint, each in the other's dead zone, and concluded the threshold must
@@ -637,7 +641,7 @@ repo root — dead in exactly the monorepo shape that has the most build config.
 Unguarding it was measured before deciding: it claims **one** extra file on
 fixture 2 and moves F1 by nothing. Growing it to cover .NET would make things
 worse, not better — fixture 2's 18 `.csproj` files are one hand-grouped
-*concern* (`rcm-service-scaffold`), and a config bucket would shred it. Nested
+*concern* (`concern-a`, pseudonymous), and a config bucket would shred it. Nested
 build config is better served by the token and directory evidence that fix 2
 turned on.
 
@@ -852,35 +856,20 @@ group size, and the coarseness instruction just trades one fixture for the other
 
 ### Where fixture 2 goes right
 
-Per-expected-group recall, same slice as fixture 1's: the `refine` column is
-**run 0 of the five `full` runs**. The `full-coarse` column is beside it because
-this is the fixture where coarsening costs rather than helps, and the two arms
-disagree on individual groups even where their means are close — no cell is
-carried across from one column to the other.
-
-| expected group | files | heuristic | refine (full, run 0) | refine (full-coarse, run 0) |
-| --- | --- | --- | --- | --- |
-| rcm-claims-api | 21 | 0.28 | 0.55 | 0.55 |
-| rcm-pipeline-stages | 19 | 0.57 | **1.00** | 0.89 |
-| rcm-service-scaffold | 18 | 0.27 | 0.89 | **1.00** |
-| rcm-web-worklist | 15 | 0.18 | **1.00** | **1.00** |
-| admission-census | 14 | 0.31 | 0.51 | 0.73 |
-| rcm-rules | 14 | 0.51 | **1.00** | **1.00** |
-| resident-registration | 12 | 0.26 | **1.00** | **1.00** |
-| rcm-pipeline-realtime | 9 | 0.61 | **1.00** | **1.00** |
-| service-host-wiring | 8 | 0.18 | 0.54 | 0.75 |
-| web-shell | 8 | 0.07 | **1.00** | **1.00** |
-| rcm-payer | 7 | 0.14 | 0.48 | 0.71 |
-| rcm-authorization | 6 | 0.20 | **1.00** | **1.00** |
-| platform-billing-reuse | 5 | 0.60 | **1.00** | **1.00** |
-| dependencies | 2 | 0.00 | 0.00 | 0.00 |
+Per-expected-group recall was tabulated on the same slice as fixture 1's — a
+`refine` column that is **run 0 of the five `full` runs**, with a `full-coarse`
+run 0 column beside it, because this is the fixture where coarsening costs
+rather than helps and the two arms disagree on individual groups even where
+their means are close. Fixture 2's expected group names cannot be published, so
+that table is in `$TUICR_GROUPING_FIXTURES/meridian-6c22fda02.notes.md`; the
+labels below are pseudonymous and mean nothing beyond the sentences using them.
 
 Thirteen of fourteen expected groups improve under `full`, eight of them to a
-perfect 1.00. Only `dependencies` (2 files) stays at 0.00. In run 0 `full-coarse`
-is the better arm on four groups — `rcm-service-scaffold` (1.00 against 0.89),
-`service-host-wiring` (0.75 against 0.54), `admission-census` (0.73 against
-0.51) and `rcm-payer` (0.71 against 0.48) — and `full` is the better arm on one,
-`rcm-pipeline-stages` (1.00 against 0.89). Coarsening still loses the fixture on
+perfect 1.00. Only the 2-file dependency-manifest group stays at 0.00. In run 0
+`full-coarse` is the better arm on four groups — `concern-a`, the 18 `.csproj`
+files (1.00 against 0.89), `concern-b` (0.75 against 0.54), `concern-c` (0.73
+against 0.51) and `concern-d` (0.71 against 0.48) — and `full` is the better arm
+on one, `concern-e` (1.00 against 0.89). Coarsening still loses the fixture on
 the mean, so those per-group wins are not a case for it.
 
 This is the direct answer to the ceiling `gd-26r.21` left open. Ten of fourteen

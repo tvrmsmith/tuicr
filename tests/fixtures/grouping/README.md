@@ -59,6 +59,11 @@ Same two-file layout: `<name>.files` and `<name>.groups`. The fire-check
 changeset has no `.groups` — it exists only to make the mechanical, config-CI
 and rename passes meet a lockfile, a CI file and a rename, and is never scored.
 
+Fixture 2's group *names* are as private as its paths — they are fragments of
+those paths — so the per-group result tables live beside it too, in
+`meridian-6c22fda02.notes.md`. `docs/GROUPING_PASSES.md` keeps every fixture-2
+number that carries no private identifier and points at that file for the rest.
+
 `fire-check-synthetic.files` is a checked-in stand-in for that fire check:
 twelve invented paths, no repository behind them, no hand grouping. It is here
 so those passes are exercised on a machine — CI included — that has no private
