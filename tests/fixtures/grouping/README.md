@@ -26,6 +26,21 @@ makes during actual reviews of repos they know. See the follow-up ticket.
 | `orca-971b16754.files` | the changeset: `<status>\t<path>`, one line per file |
 | `orca-971b16754.groups` | expected grouping: `[group]` headers, indented paths |
 
+### The second fixture lives outside this repo
+
+Fixture 2 (`meridian-6c22fda02`, 158 files) and the fire-check changeset
+(`meridian-097e2defa-10cc878df`, 148 files) come from a private work monorepo
+whose file paths cannot be published, so they are **not** checked in. The
+harness loads them at runtime from `$TUICR_GROUPING_FIXTURES`, defaulting to
+`~/.local/share/tuicr-fixtures`, and every test that needs them prints a skip
+notice and passes when the directory is absent.
+
+Same two-file layout: `<name>.files` and `<name>.groups`. The fire-check
+changeset has no `.groups` — it exists only to make the mechanical, config-CI
+and rename passes meet a lockfile, a CI file and a rename, and is never scored.
+
+Findings from both fixtures: `docs/GROUPING_PASSES.md`.
+
 ### Provenance
 
 - Source: `stablyai/orca`, commit `971b16754`
@@ -74,11 +89,14 @@ report, on the same fixture:
 
 - **all-one-group** — every file in a single group. Recall 1.0, precision poor.
 - **one-file-per-group** — no pair co-grouped. Precision undefined, recall 0.
-- **directory** — group by top-level directory. The cheap heuristic any real
-  pass must beat to justify itself.
+- **top-level directory** and **parent directory** — the cheap heuristics any
+  real pass must beat to justify itself.
 
-A pass that does not clearly beat all three is not doing useful work, whatever
-its absolute F1.
+A pass that does not clearly beat all four is not doing useful work, whatever
+its absolute F1. Parent-directory is the one that bites: it is weak on a
+TypeScript app, where directories are layers, and strong on a monorepo where
+the tree *is* the concern tree — and on fixture 2 it beats the heuristic passes
+outright.
 
 ### Report the shape too
 
