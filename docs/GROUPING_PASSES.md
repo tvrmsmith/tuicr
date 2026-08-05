@@ -834,7 +834,11 @@ and on fixture 1 it does not reliably repair the two groups the model splits.
 Across the five `full-coarse` runs, `project-view` recall is 0.341, 0.336,
 0.746, 0.336, 0.685 (mean 0.489, against 0.746 for the heuristics alone) and
 `pr-actions` is 0.293, 0.273, 0.475, 0.451, 0.431 (mean 0.385, against 0.451).
-Two of the five runs put `project-view` back most of the way and three leave it
+`refine_report` prints per-expected-group recall for run 0 only, so the other
+eight of those ten figures were computed ad hoc from the committed envelopes, as
+the ten-triple spread below was, and for the same reason: the corpus is about to
+be extended and a per-run printer written against five runs would only have to
+be rewritten. Two of the five runs put `project-view` back most of the way and three leave it
 near a third. So the disagreement is judgement about where one concern ends, not
 group size, and the coarseness instruction just trades one fixture for the other
 — unreliably, run to run.
@@ -895,8 +899,12 @@ Per call, averaged over the five runs, from the CLI's own accounting:
 | 2 | naming-only | 9,477 | 12,169 | 3,787 | $0.218 | 40.6s |
 
 Cost is dominated by *output*, not input: a full regrouping restates every path,
-so output is 3–4× input and scales with file count. Input is small and nearly
-flat, which is why a 100–400 file changeset stays affordable.
+so output runs 3.07× and 2.83× input on fixture 1 (`full`, `full-coarse`) and
+2.17× and 2.08× on fixture 2, against 0.43× and 0.36× for fixture 1's
+`merge-only` and `naming-only`, which restate names alone. What output tracks is
+how much of the grouping the shape rewrites, not file count: fixture 2 has three
+fewer files than fixture 1 and emits a quarter more output on `full`. Input is
+small and nearly flat, which is why a 100–400 file changeset stays affordable.
 
 Two and a half to three minutes per call, on a review the user is waiting to
 start, is the empirical confirmation of `gd-26r.4`: this cannot be synchronous.
@@ -1025,7 +1033,8 @@ Stated plainly, because it is a large hole:
 - **Three calls, voted.** A single call is below the bar on fixture 1. Consensus
   of three clears it on both (0.411 and 0.847), makes the result deterministic
   given its inputs, and five votes add nothing. Cost is roughly $1.50–1.90 and,
-  run in parallel, about the wall clock of one call — 150–185s.
+  run in parallel, about the wall clock of one `full` call — the measured means
+  are 146.8s on fixture 1 and 182.7s on fixture 2.
   `consensus_of_three_clears_the_bar_where_one_call_does_not` locks this against
   the committed runs. **Provisional on fixture 1**: it is the measured triple
   that clears the bar, and only seven of the ten triples the five recorded runs

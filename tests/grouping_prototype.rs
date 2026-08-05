@@ -480,7 +480,10 @@ fn the_emitted_prompt_carries_the_contract() {
             Shape::MergeOnly => (
                 "\"merge\": [\"input-group-name\", ...]",
                 "You may NOT move an individual file between groups, and you may NOT split a group",
-                &["you may split", "Prefer fewer, larger groups"],
+                &[
+                    "You may merge groups, split them",
+                    "Prefer fewer, larger groups",
+                ],
             ),
             Shape::NamingOnly => (
                 "\"was\": \"input-group-name\"",
@@ -674,6 +677,41 @@ fn an_invented_path_is_dropped() {
     assert_eq!(
         refined.repairs,
         vec!["invented path dropped: src/nowhere.ts"]
+    );
+}
+
+/// A model asked for "JSON and nothing else" mostly complies; a fence and a
+/// closing sentence are the common near-miss, and they must score as the answer
+/// they wrap rather than as a failed call.
+#[test]
+fn a_fenced_answer_with_trailing_prose_applies_as_the_bare_one() {
+    let bare = r#"{"groups":[
+        {"name":"one","files":["src/a.ts","src/b.ts"]},
+        {"name":"two","files":["src/c.ts","src/d.ts"]}]}"#;
+    let fenced = format!("Here is the regrouping:\n\n```json\n{bare}\n```\n\nHope that helps.\n");
+    let (changeset, grouping) = two_groups();
+    let from_fenced =
+        refine::apply(&fenced, &changeset, &grouping, Shape::Full).expect("a fenced body applies");
+    assert_eq!(
+        buckets(&from_fenced),
+        buckets(&refine_with(bare, Shape::Full))
+    );
+    assert!(from_fenced.repairs.is_empty());
+}
+
+#[test]
+fn a_body_with_no_json_object_is_not_an_answer() {
+    let (changeset, grouping) = two_groups();
+    let error = refine::apply(
+        "I could not group these files.",
+        &changeset,
+        &grouping,
+        Shape::Full,
+    )
+    .expect_err("prose alone is not an answer");
+    assert!(
+        error.contains("no JSON object"),
+        "the rejection must say what was missing: {error}"
     );
 }
 
@@ -886,7 +924,8 @@ fn an_errored_envelope_is_not_a_run() {
     );
 
     let ok = r#"{"type":"result","subtype":"success","is_error":false,
-        "result":"{\"groups\":[]}","duration_ms":1000,"total_cost_usd":0.01}"#;
+        "result":"{\"groups\":[]}","duration_ms":1000,"total_cost_usd":0.01,
+        "modelUsage":{"opus":{"inputTokens":10,"outputTokens":20}}}"#;
     assert_eq!(
         RunRecord::parse(ok)
             .expect("a successful envelope parses")
@@ -1184,16 +1223,6 @@ fn every_recorded_run_yields_a_strict_partition() {
                     "{label} {} run {index}: every file assigned exactly once",
                     shape.slug()
                 );
-                let mut seen = std::collections::BTreeSet::new();
-                for members in run.refined.partition.groups.values() {
-                    for path in members {
-                        assert!(
-                            seen.insert(path.clone()),
-                            "{label} {} run {index}: {path} in two groups",
-                            shape.slug()
-                        );
-                    }
-                }
             }
         }
     }

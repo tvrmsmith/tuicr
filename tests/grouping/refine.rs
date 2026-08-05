@@ -636,13 +636,16 @@ impl RunRecord {
         // Every one of them is part of what the call costs, so they are summed,
         // and the model that wrote the answer — the one with the most output —
         // is the one the run is labelled with.
-        let usage = value.get("modelUsage").and_then(Value::as_object);
+        let usage = value
+            .get("modelUsage")
+            .and_then(Value::as_object)
+            .ok_or_else(|| "CLI envelope has no `modelUsage`".to_string())?;
         let field =
             |stats: &Value, key: &str| stats.get(key).and_then(Value::as_f64).unwrap_or(0.0);
         let (mut input, mut output, mut cached) = (0.0, 0.0, 0.0);
         let mut model = "unknown".to_string();
         let mut most_output = f64::NEG_INFINITY;
-        for (name, stats) in usage.into_iter().flatten() {
+        for (name, stats) in usage {
             let own_output = field(stats, "outputTokens");
             input += field(stats, "inputTokens");
             output += own_output;
@@ -663,11 +666,11 @@ impl RunRecord {
             cost_usd: value
                 .get("total_cost_usd")
                 .and_then(Value::as_f64)
-                .unwrap_or(0.0),
+                .ok_or_else(|| "CLI envelope has no `total_cost_usd`".to_string())?,
             wall_clock_ms: value
                 .get("duration_ms")
                 .and_then(Value::as_f64)
-                .unwrap_or(0.0),
+                .ok_or_else(|| "CLI envelope has no `duration_ms`".to_string())?,
         })
     }
 }
