@@ -48,7 +48,12 @@ no multi-membership.
     is legible; `shared` and `renderer store/lib/hooks` are not. Prefer terms
     that appear in the changeset's commits, filenames, or PR title.
 
-11. **Rename pairs stay together**, regardless of what else claims either half.
+11. **A rename is one file, not two.** Both halves belong to the same group,
+    which git's rename detection already guarantees: a rename arrives as a
+    single entry keyed by the new path, so there is no second half to place.
+    The rule stands as a constraint on any representation that splits a rename
+    into a delete and an add — that representation is wrong, not a case to
+    reconcile afterwards. It needs no pass; see `a_rename_is_one_file_in_one_group`.
 
 ## Ambiguous assignments
 
