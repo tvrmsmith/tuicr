@@ -108,19 +108,14 @@ const MECHANICAL_DIRS: &[&str] = &[
 ];
 const MECHANICAL_SUFFIXES: &[&str] = &[".generated.ts", ".gen.go", "_pb2.py", ".snap"];
 
-/// Build and CI wiring, which reads as one concern however it is scattered.
+/// CI wiring, which reads as one concern however it is scattered. Deliberately
+/// *only* directories: the filename list this pass used to carry (`package.json`,
+/// `Cargo.toml`, …) was guarded to the repo root, so it was dead in the monorepo
+/// shape that has the most build config, and unguarding it is worth one file on
+/// fixture 2 and nothing to F1. Grown to `*.csproj` it would actively harm —
+/// fixture 2's 18 project files are one *concern* group by hand, not a config
+/// group. Nested build config is left to token and directory evidence.
 const CONFIG_DIRS: &[&str] = &[".github/", ".circleci/", ".husky/"];
-const CONFIG_NAMES: &[&str] = &[
-    "Dockerfile",
-    "Makefile",
-    "tsconfig.json",
-    "package.json",
-    "eslint.config.js",
-    ".eslintrc.json",
-    "vite.config.ts",
-    "Cargo.toml",
-    "flake.nix",
-];
 
 pub fn group(changeset: &Changeset, config: GroupingConfig) -> Grouping {
     let files: Vec<&ChangedFile> = changeset.files.iter().collect();
@@ -175,9 +170,7 @@ fn mechanical_pass<'a>(files: &[&'a ChangedFile], assigned: &mut BTreeMap<&'a st
 
 fn config_ci_pass<'a>(files: &[&'a ChangedFile], assigned: &mut BTreeMap<&'a str, Assignment>) {
     for file in files {
-        let in_config_dir = CONFIG_DIRS.iter().any(|dir| file.path.starts_with(dir));
-        let is_root_config = !file.path.contains('/') && CONFIG_NAMES.contains(&file.file_name());
-        if in_config_dir || is_root_config {
+        if CONFIG_DIRS.iter().any(|dir| file.path.starts_with(dir)) {
             claim(assigned, file, "config-ci", "config-ci");
         }
     }
