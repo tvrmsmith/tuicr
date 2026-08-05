@@ -230,8 +230,7 @@ fn report_fixture(label: &str, changeset: &Changeset, expected: &Partition) {
 /// The three passes that matched nothing in fixture 1 were kept as unscored
 /// bets. This is the changeset that makes them fire or exposes them as dead
 /// code: it carries a lockfile, a CI workflow and a rename. There is no hand
-/// grouping for it, so nothing here is scored — only whether a pass fires and
-/// whether the rename pair lands in one group.
+/// grouping for it, so nothing here is scored — only whether a pass fires.
 #[test]
 fn unfired_passes_meet_a_changeset_that_should_fire_them() {
     let Some(changeset) = external_changeset(FIRE_CHECK_FIXTURE) else {
@@ -265,28 +264,51 @@ fn unfired_passes_meet_a_changeset_that_should_fire_them() {
         "the changeset carries a CI workflow, so the config-ci pass must fire"
     );
 
-    let partition = grouping.partition();
-    for file in renamed {
-        let Some(from) = file.rename_from.as_deref() else {
-            continue;
-        };
-        let group_of = |path: &str| {
-            partition
-                .groups
-                .iter()
-                .find(|(_, members)| members.iter().any(|member| member == path))
-                .map(|(name, _)| name.clone())
-        };
-        println!(
-            "  rename {from}\n      -> {} : group {:?}",
-            file.path,
-            group_of(&file.path)
-        );
-        assert!(
-            group_of(&file.path).is_some(),
-            "the surviving half of a rename must be grouped"
-        );
-    }
+    assert!(
+        !renamed.is_empty(),
+        "the fire-check changeset is supposed to carry a rename"
+    );
+    assert!(
+        !hits.contains_key("rename-pair"),
+        "there is no rename pass any more: rule 11 holds by construction"
+    );
+}
+
+/// GROUPING.md rule 11, as it now reads. Git reports a rename as a single entry
+/// keyed by the new path, so a rename's two halves are one file in the diff and
+/// there is no pair to reunite — the old `enforce_rename_pairs` looked the old
+/// path up in `assigned`, where it could never be a key, and so never executed
+/// on any input. What rule 11 asks for is a property of the representation, and
+/// this is the test that says so.
+#[test]
+fn a_rename_is_one_file_in_one_group() {
+    let changeset = Changeset::parse(
+        "M\tsrc/app/pipeline.ts\n\
+         R096\tsrc/app/old-worklist.ts\tsrc/app/claim-worklist.ts\n\
+         A\tsrc/app/claim-worklist.test.ts\n",
+    );
+    let renamed = &changeset.files[1];
+    assert_eq!(renamed.path, "src/app/claim-worklist.ts");
+    assert_eq!(renamed.kind, ChangeKind::Renamed);
+    assert_eq!(
+        renamed.rename_from.as_deref(),
+        Some("src/app/old-worklist.ts")
+    );
+
+    let partition = passes::group(&changeset, GroupingConfig::default()).partition();
+    let holders: Vec<&String> = partition
+        .groups
+        .iter()
+        .filter(|(_, members)| members.iter().any(|m| m == &renamed.path))
+        .map(|(name, _)| name)
+        .collect();
+    assert_eq!(holders.len(), 1, "a rename is in exactly one group");
+    assert!(
+        !partition.groups.values().any(|members| members
+            .iter()
+            .any(|m| Some(m.as_str()) == renamed.rename_from.as_deref())),
+        "the old path is not a file in the changeset and must not be grouped"
+    );
 }
 
 fn ablations(default: GroupingConfig) -> Vec<(String, GroupingConfig)> {
