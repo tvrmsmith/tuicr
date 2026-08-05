@@ -26,6 +26,7 @@ makes during actual reviews of repos they know. See the follow-up ticket.
 | `orca-971b16754.files` | the changeset: `<status>\t<path>`, one line per file |
 | `orca-971b16754.groups` | expected grouping: `[group]` headers, indented paths |
 | `refine/orca-971b16754/` | recorded agent-CLI runs of the model refine pass |
+| `fire-check-synthetic.files` | invented changeset, unscored: makes the rarely-firing passes fire |
 
 ### The recorded refine runs
 
@@ -36,9 +37,10 @@ reported them.
 
 They are committed as *evidence*. The pass itself is nondeterministic and costs
 money, so no test calls it; `refine_report` replays these envelopes and scores
-them with the same harness that scores the heuristics, which means every number
-in the refine section of `docs/GROUPING_PASSES.md` can be re-derived offline
-with no API key. Re-record with `scripts/grouping-refine-runs.sh`.
+them with the same harness that scores the heuristics, which means every
+fixture-1 number in the refine section of `docs/GROUPING_PASSES.md` can be
+re-derived offline with no API key. Fixture 2's numbers need its runs, which
+live beside it and are not published. Re-record with `scripts/grouping-refine-runs.sh`.
 
 Runs against fixture 2 carry its private paths in both prompt and answer, so
 they live beside it under `$TUICR_GROUPING_FIXTURES/refine/` and are not here.
@@ -49,12 +51,19 @@ Fixture 2 (`meridian-6c22fda02`, 158 files) and the fire-check changeset
 (`meridian-097e2defa-10cc878df`, 148 files) come from a private work monorepo
 whose file paths cannot be published, so they are **not** checked in. The
 harness loads them at runtime from `$TUICR_GROUPING_FIXTURES`, defaulting to
-`~/.local/share/tuicr-fixtures`, and every test that needs them prints a skip
-notice and passes when the directory is absent.
+`~/.local/share/tuicr-fixtures`. Tests that need them are marked `#[ignore]`, so
+a run without the directory lists them as ignored rather than passing green
+having asserted nothing; run them with `--ignored` once the directory is there.
 
 Same two-file layout: `<name>.files` and `<name>.groups`. The fire-check
 changeset has no `.groups` — it exists only to make the mechanical, config-CI
 and rename passes meet a lockfile, a CI file and a rename, and is never scored.
+
+`fire-check-synthetic.files` is a checked-in stand-in for that fire check:
+twelve invented paths, no repository behind them, no hand grouping. It is here
+so those passes are exercised on a machine — CI included — that has no private
+fixture, since neither calibration fixture carries a lockfile or a `.github/`
+path.
 
 Findings from both fixtures: `docs/GROUPING_PASSES.md`.
 

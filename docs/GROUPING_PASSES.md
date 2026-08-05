@@ -9,7 +9,7 @@ is measured against **one** changeset (orca `971b16754`, 161 files) by
 `tests/grouping_prototype.rs`:
 
 ```
-cargo test --test grouping_prototype -- --nocapture report
+cargo test --test grouping_prototype -- --ignored --nocapture report
 ```
 
 That fixture is provisional and paths-only, so these numbers rank passes
@@ -62,7 +62,7 @@ Run in this order. Order **is** priority: an earlier pass keeps a file a later
 one also wants, with two deliberate exceptions noted under [Tie-break](#tie-break).
 
 1. **mechanical** — lockfiles, vendored trees, generated output (rule 8).
-2. **config-ci** — `.github/`, root build config (rule 8's neighbour).
+2. **config-ci** — `.github/`, `.circleci/`, `.husky/` (rule 8's neighbour).
 3. **whole-change docs** — a `docs/` or root `.md` file (rule 9). A doc beside
    its code is left to the cluster pass, which is the rest of rule 9.
 4. **token-cluster** — the load-bearing pass. Described below.
@@ -363,6 +363,13 @@ lockfile, a merge-queue workflow and one rename. It has no hand grouping and is
 never scored; it exists purely to make the three passes meet their inputs
 (`unfired_passes_meet_a_changeset_that_should_fire_them`).
 
+That fixture is private, so the same test also runs a **committed synthetic
+changeset**, `tests/fixtures/grouping/fire-check-synthetic.files`: twelve
+invented paths carrying a lockfile, two `.github/workflows/` files, a
+`.husky/pre-commit` and one rename. It is likewise unscored. Without it these
+passes go unverified on any machine that does not have the private fixture,
+which includes CI.
+
 **1. mechanical — fires, and is under-inclusive.** It caught the lockfile on
 both changesets. It caught *only* the lockfile: the human named EF migration
 `*.Designer.cs` and `*DbContextModelSnapshot.cs` as mechanical under rule 8, and
@@ -372,7 +379,9 @@ markers are per-ecosystem and the list needs to grow per ecosystem, which is an
 argument against pattern lists as the mechanism.
 
 **2. config-ci — fires, but only by luck of location.** Zero hits on fixture 2,
-two on the fire-check (a workflow file and a root Makefile). The `.github/`
+two on the fire-check (a workflow file and a root Makefile) — the Makefile via
+the filename list that [fix 3](#fix-3-config-ci--narrowed) later deleted, so the
+pass claims one file there now, and three on the synthetic changeset. The `.github/`
 directory rule works. The `CONFIG_NAMES` rule is guarded by
 `!file.path.contains('/')` — root only — so in a monorepo, where every
 `package.json` is nested, it can never match. Verdict: **half the pass is dead
@@ -676,7 +685,7 @@ true before.
   by known defects.
 - **What is genuinely unsolved is the ceiling.** Best-key F1 per expected group
   is unchanged in character: fixture 2 still has ten of fourteen groups in a
-  0.40–0.57 mush, and no filename or directory token reaches them. That is the
+  0.36–0.57 mush, and no filename or directory token reaches them. That is the
   case for a pass that reads code, and it is exactly where `gd-26r.11` should
   aim.
 - **Still not addressed, deliberately.** Group sizing (soft/hard caps, coarser
@@ -754,7 +763,9 @@ evidence that any of this cannot happen, so the enforcement stays — that is wh
 makes an unreliable pass shippable. The repair branches are unit-tested against
 hand-written bodies (`a_dropped_path_is_restored_to_its_heuristic_group` and the
 tests beside it), because a count of zero repairs means nothing unless a repair
-could have been counted.
+could have been counted. The zero itself is locked for the twenty committed
+fixture-1 runs by `no_committed_run_needed_a_repair`, which runs on every
+`cargo test` rather than only when someone reads the report.
 
 ## Accuracy
 
@@ -819,9 +830,14 @@ an excuse: the metric is the metric, and by it a single call loses here.
 `full-coarse` exists to test whether the loss is *granularity* — it instructs the
 model toward fewer, larger groups without naming a number, to avoid fitting the
 prompt to the answers. It lifts fixture 1 to 0.402 and drops fixture 2 to 0.732,
-and on fixture 1 it does not repair the two lost groups (`project-view` still
-0.34). So the disagreement is judgement about where one concern ends, not group
-size, and the coarseness instruction just trades one fixture for the other.
+and on fixture 1 it does not reliably repair the two groups the model splits.
+Across the five `full-coarse` runs, `project-view` recall is 0.341, 0.336,
+0.746, 0.336, 0.685 (mean 0.489, against 0.746 for the heuristics alone) and
+`pr-actions` is 0.293, 0.273, 0.475, 0.451, 0.431 (mean 0.385, against 0.451).
+Two of the five runs put `project-view` back most of the way and three leave it
+near a third. So the disagreement is judgement about where one concern ends, not
+group size, and the coarseness instruction just trades one fixture for the other
+— unreliably, run to run.
 
 ### Where fixture 2 goes right
 
@@ -849,11 +865,15 @@ carried across from one column to the other.
 | dependencies | 2 | 0.00 | 0.00 | 0.00 |
 
 Thirteen of fourteen expected groups improve under `full`, eight of them to a
-perfect 1.00. Only `dependencies` (2 files) stays at 0.00. `rcm-service-scaffold`
-is the one group where `full-coarse` is the better arm, 1.00 against 0.89.
+perfect 1.00. Only `dependencies` (2 files) stays at 0.00. In run 0 `full-coarse`
+is the better arm on four groups — `rcm-service-scaffold` (1.00 against 0.89),
+`service-host-wiring` (0.75 against 0.54), `admission-census` (0.73 against
+0.51) and `rcm-payer` (0.71 against 0.48) — and `full` is the better arm on one,
+`rcm-pipeline-stages` (1.00 against 0.89). Coarsening still loses the fixture on
+the mean, so those per-group wins are not a case for it.
 
 This is the direct answer to the ceiling `gd-26r.21` left open. Ten of fourteen
-groups sat in a 0.40–0.57 best-key mush no filename or directory token reaches —
+groups sat in a 0.36–0.57 best-key mush no filename or directory token reaches —
 **and the model reached them from paths alone.** The mush was never evidence that
 code-reading is required; it was evidence that *token matching* is the wrong
 reader of paths. A path carries domain meaning that a tokeniser cannot see and a
@@ -927,7 +947,10 @@ votes is enough — consensus of five is no better on either fixture (0.409 and
 **Which three, though.** That 0.411 is one particular triple: the first three of
 the five recorded `full` runs. Five runs admit ten distinct triples, and
 replayed against the committed envelopes **seven of the ten clear fixture 1's
-0.394 bar and three do not — 0.372, 0.369 and 0.367.** A shipped "three calls
+0.394 bar and three do not — 0.372, 0.369 and 0.367.** That spread was computed
+ad hoc, by scoring the ten triples in a scratch harness rather than a committed
+printer: the corpus is about to change, and a printer written against five runs
+would only have to be rewritten. A shipped "three calls
 and a vote" draws an arbitrary triple, not that one, so on this corpus the
 fixture-1 consensus result is *provisional*: it holds for the triple that was
 measured and about seven times in ten in general. The corpus is being extended

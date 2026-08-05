@@ -6,9 +6,9 @@
 # each emitted prompt N times per shape and records the CLI's own JSON envelope
 # — answer, token counts, wall clock — for `refine_report` to replay and score.
 #
-#   cargo test --test grouping_prototype -- --nocapture emit_refine_prompts
+#   cargo test --test grouping_prototype -- --ignored --nocapture emit_refine_prompts
 #   scripts/grouping-refine-runs.sh [runs]
-#   cargo test --test grouping_prototype -- --nocapture refine_report
+#   cargo test --test grouping_prototype -- --ignored --nocapture refine_report
 #
 # Runs against the checked-in orca fixture land in tests/fixtures/grouping/refine/
 # and are committed as evidence. Runs against the private fixture carry its paths
@@ -69,4 +69,4 @@ for fixture_prompts in "$prompts"/*/; do
 done
 
 echo
-echo "recorded. now: cargo test --test grouping_prototype -- --nocapture refine_report"
+echo "recorded. now: cargo test --test grouping_prototype -- --ignored --nocapture refine_report"

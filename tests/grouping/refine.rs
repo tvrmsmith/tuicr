@@ -318,7 +318,9 @@ pub fn apply(
                 if !claimed.contains(source) {
                     let name = free_name(source, &used);
                     used.insert(name.clone());
-                    repairs.push(format!("input group never claimed, kept as-is: {source}"));
+                    repairs.push(format!(
+                        "input group never claimed, kept as-is under `{name}`: {source}"
+                    ));
                     for path in members {
                         assigned.entry(path.clone()).or_insert_with(|| name.clone());
                     }
@@ -327,23 +329,16 @@ pub fn apply(
         }
     }
 
-    // Restoring several dropped paths that share a heuristic group must put
-    // them back together, so the name chosen for that group is chosen once.
-    let mut restored: BTreeMap<&str, String> = BTreeMap::new();
+    // A dropped path goes back under its heuristic group's own name, not a
+    // uniquified one: the prompt shows the model those names, so a returned
+    // group called `X` *is* heuristic group `X` and the dropped path belongs in
+    // it. Reusing the plain name also puts co-dropped paths from one heuristic
+    // group back together, which a per-path uniquified name would split.
     for path in &all_paths {
         if !assigned.contains_key(*path) {
-            let fallback = heuristic_group.get(path).copied().unwrap_or("unassigned");
-            let name = match restored.get(fallback) {
-                Some(name) => name.clone(),
-                None => {
-                    let name = free_name(fallback, &used);
-                    used.insert(name.clone());
-                    restored.insert(fallback, name.clone());
-                    name
-                }
-            };
+            let name = heuristic_group.get(path).copied().unwrap_or("unassigned");
             repairs.push(format!("dropped path restored to `{name}`: {path}"));
-            assigned.insert(path.to_string(), name);
+            assigned.insert(path.to_string(), name.to_string());
         }
     }
 

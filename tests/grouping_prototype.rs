@@ -1,7 +1,7 @@
 //! Prototype grouping engine scored against the hand-grouped fixtures.
 //!
 //! Run the report with:
-//!   cargo test --test grouping_prototype -- --nocapture report
+//!   cargo test --test grouping_prototype -- --ignored --nocapture report
 //!
 //! Fixture 1 (orca) is checked in, paths-only and provisional
 //! (tests/fixtures/grouping/README.md), so its numbers compare passes against
@@ -9,8 +9,9 @@
 //!
 //! Fixture 2 is hand-grouped but carries file paths from a private work
 //! repository, so it is **not** checked in. It is read at runtime from
-//! `$TUICR_GROUPING_FIXTURES` (default `~/.local/share/tuicr-fixtures`), and
-//! every test that needs it skips with a notice when the directory is absent.
+//! `$TUICR_GROUPING_FIXTURES` (default `~/.local/share/tuicr-fixtures`). Tests
+//! that are only about it are `#[ignore]`d, so a run without the directory
+//! lists them as ignored; the rest print a notice and score fixture 1 alone.
 //! docs/GROUPING_PASSES.md records what it produced.
 
 mod grouping;
@@ -60,16 +61,29 @@ fn external_fixture(name: &str) -> Option<(Changeset, Partition)> {
     Some((Changeset::parse(&files), Partition::parse(&groups)))
 }
 
+/// The same, for a test that has nothing to say without the external fixture
+/// and is `#[ignore]`d for it: reaching here means it was asked for explicitly.
+fn require_external_fixture(name: &str) -> (Changeset, Partition) {
+    external_fixture(name).unwrap_or_else(|| {
+        panic!(
+            "no fixture {name} in {} (set TUICR_GROUPING_FIXTURES)",
+            fixture_dir().display()
+        )
+    })
+}
+
 fn external_changeset(name: &str) -> Option<Changeset> {
     let files = std::fs::read_to_string(fixture_dir().join(format!("{name}.files"))).ok()?;
     Some(Changeset::parse(&files))
 }
 
-/// On stderr, not stdout: `cargo test` swallows stdout unless `--nocapture` is
-/// passed, and a skipped fixture that reports nothing is a test that goes green
-/// having asserted nothing.
+/// Says which fixture was not on this machine, for the callers that still have
+/// fixture 1 to work on. libtest captures this like any other output, so it is
+/// visible under `--nocapture` and nowhere else — a test whose *only* subject
+/// is the external fixture must be `#[ignore]`d instead, so libtest lists it as
+/// ignored rather than passing green having asserted nothing.
 fn skip_notice(name: &str) {
-    eprintln!(
+    println!(
         "skipping {name}: no fixture in {} (set TUICR_GROUPING_FIXTURES)",
         fixture_dir().display()
     );
@@ -95,11 +109,12 @@ fn fixture_is_well_formed() {
         changeset.len(),
         "every file is grouped exactly once"
     );
+}
 
-    let Some((changeset, expected)) = external_fixture(SECOND_FIXTURE) else {
-        skip_notice(SECOND_FIXTURE);
-        return;
-    };
+#[test]
+#[ignore = "needs $TUICR_GROUPING_FIXTURES"]
+fn second_fixture_is_well_formed() {
+    let (changeset, expected) = require_external_fixture(SECOND_FIXTURE);
     assert_eq!(changeset.len(), 158, "second fixture changeset size");
     assert_eq!(
         expected.file_count(),
@@ -249,11 +264,19 @@ fn report_fixture(label: &str, changeset: &Changeset, expected: &Partition) {
 #[test]
 fn unfired_passes_meet_a_changeset_that_should_fire_them() {
     check_unfired_passes_fire("fire-check-synthetic", &Changeset::parse(FIRE_CHECK_FILES));
+}
 
-    match external_changeset(FIRE_CHECK_FIXTURE) {
-        Some(changeset) => check_unfired_passes_fire(FIRE_CHECK_FIXTURE, &changeset),
-        None => skip_notice(FIRE_CHECK_FIXTURE),
-    }
+/// The same check against the real changeset the synthetic one stands in for.
+#[test]
+#[ignore = "needs $TUICR_GROUPING_FIXTURES"]
+fn unfired_passes_meet_the_recorded_fire_check_changeset() {
+    let changeset = external_changeset(FIRE_CHECK_FIXTURE).unwrap_or_else(|| {
+        panic!(
+            "no fixture {FIRE_CHECK_FIXTURE} in {} (set TUICR_GROUPING_FIXTURES)",
+            fixture_dir().display()
+        )
+    });
+    check_unfired_passes_fire(FIRE_CHECK_FIXTURE, &changeset);
 }
 
 fn check_unfired_passes_fire(label: &str, changeset: &Changeset) {
@@ -406,29 +429,77 @@ fn the_emitted_prompt_carries_the_contract() {
             "{slug}: every numbered rule of GROUPING.md reaches the model"
         );
 
-        let mut listed: Vec<&str> = prompt
-            .lines()
-            .filter_map(|line| line.strip_prefix("  "))
-            .filter_map(|line| line.split_once(' '))
-            .filter(|(status, _)| matches!(*status, "A" | "M" | "D" | "R"))
-            .map(|(_, path)| path)
-            .collect();
-        listed.sort_unstable();
-        let mut expected: Vec<&str> = changeset
-            .files
+        let blocks = parse_prompt_groups(&prompt);
+        let shown: BTreeMap<&str, Vec<&str>> = blocks
             .iter()
-            .map(|file| file.path.as_str())
+            .map(|(name, _, members)| (*name, members.clone()))
             .collect();
-        expected.sort_unstable();
+        let expected: BTreeMap<&str, Vec<&str>> = partition
+            .groups
+            .iter()
+            .map(|(name, members)| {
+                (
+                    name.as_str(),
+                    members.iter().map(String::as_str).collect::<Vec<&str>>(),
+                )
+            })
+            .collect();
         assert_eq!(
-            listed, expected,
-            "{slug}: the prompt shows every changed file exactly once"
+            shown, expected,
+            "{slug}: the prompt must show each heuristic group with its own files"
+        );
+        for (name, declared, members) in &blocks {
+            assert_eq!(
+                *declared,
+                members.len(),
+                "{slug}: group `{name}` declares a file count it does not list"
+            );
+        }
+        let order: Vec<(usize, &str)> = blocks
+            .iter()
+            .map(|(name, _, members)| (members.len(), *name))
+            .collect();
+        let mut largest_first = order.clone();
+        largest_first.sort_by_key(|(size, name)| (std::cmp::Reverse(*size), *name));
+        assert_eq!(
+            order, largest_first,
+            "{slug}: groups are shown largest first, so rule 6's residual smells read first"
         );
 
-        for name in partition.groups.keys() {
+        let (schema, permission, forbidden): (&str, &str, &[&str]) = match shape {
+            Shape::Full => (
+                "\"files\": [\"path\", ...]",
+                "You may merge groups, split them, move individual files between them",
+                &["Prefer fewer, larger groups"],
+            ),
+            Shape::FullCoarse => (
+                "\"files\": [\"path\", ...]",
+                "Prefer fewer, larger groups",
+                &[],
+            ),
+            Shape::MergeOnly => (
+                "\"merge\": [\"input-group-name\", ...]",
+                "You may NOT move an individual file between groups, and you may NOT split a group",
+                &["you may split", "Prefer fewer, larger groups"],
+            ),
+            Shape::NamingOnly => (
+                "\"was\": \"input-group-name\"",
+                "Do NOT change which files are in which group",
+                &["\"merge\"", "Prefer fewer, larger groups"],
+            ),
+        };
+        assert!(
+            prompt.contains(schema),
+            "{slug}: the prompt must state the answer schema `{schema}`"
+        );
+        assert!(
+            prompt.contains(permission),
+            "{slug}: the prompt must state what this shape may change: `{permission}`"
+        );
+        for phrase in forbidden {
             assert!(
-                prompt.contains(&format!("[{name}]")),
-                "{slug}: heuristic group `{name}` is missing from the prompt"
+                !prompt.contains(phrase),
+                "{slug}: the prompt must not carry another shape's instruction: `{phrase}`"
             );
         }
 
@@ -443,6 +514,34 @@ fn the_emitted_prompt_carries_the_contract() {
             ),
         }
     }
+}
+
+/// The group blocks the prompt renders, in the order it renders them: name, the
+/// file count it declares, and the paths listed under it.
+fn parse_prompt_groups(prompt: &str) -> Vec<(&str, usize, Vec<&str>)> {
+    let mut blocks: Vec<(&str, usize, Vec<&str>)> = Vec::new();
+    for line in prompt.lines() {
+        let header = line
+            .strip_prefix('[')
+            .and_then(|rest| rest.split_once("] ("))
+            .and_then(|(name, tail)| {
+                tail.strip_suffix(" files)")
+                    .and_then(|count| count.parse::<usize>().ok())
+                    .map(|count| (name, count))
+            });
+        if let Some((name, count)) = header {
+            blocks.push((name, count, Vec::new()));
+            continue;
+        }
+        let listed = line
+            .strip_prefix("  ")
+            .and_then(|rest| rest.split_once(' '))
+            .filter(|(status, _)| matches!(*status, "A" | "M" | "D" | "R"));
+        if let (Some((_, path)), Some(block)) = (listed, blocks.last_mut()) {
+            block.2.push(path);
+        }
+    }
+    blocks
 }
 
 // --- what `apply` does with an answer that breaks the shape ------------------
@@ -711,7 +810,65 @@ fn merge_only_keeps_an_unclaimed_input_group_under_a_free_name() {
     );
     assert_eq!(
         refined.repairs,
-        vec!["input group never claimed, kept as-is: beta"]
+        vec!["input group never claimed, kept as-is under `beta-2`: beta"]
+    );
+}
+
+/// Several paths dropped out of one heuristic group go back into it together,
+/// not into a group each.
+#[test]
+fn co_dropped_paths_are_restored_to_one_group() {
+    let refined = refine_with(
+        r#"{"groups":[{"name":"one","files":["src/a.ts","src/b.ts"]}]}"#,
+        Shape::Full,
+    );
+    assert_eq!(
+        buckets(&refined),
+        vec![
+            (
+                "beta".to_string(),
+                vec!["src/c.ts".to_string(), "src/d.ts".to_string()]
+            ),
+            (
+                "one".to_string(),
+                vec!["src/a.ts".to_string(), "src/b.ts".to_string()]
+            ),
+        ]
+    );
+    assert_eq!(
+        refined.repairs,
+        vec![
+            "dropped path restored to `beta`: src/c.ts",
+            "dropped path restored to `beta`: src/d.ts",
+        ]
+    );
+}
+
+/// A model group that reuses a heuristic group's name *is* that group — the
+/// prompt showed the model that name — so a path it dropped goes back into it,
+/// not into a uniquified twin of it.
+#[test]
+fn a_dropped_path_rejoins_the_model_group_that_reused_its_heuristic_name() {
+    let refined = refine_with(
+        r#"{"groups":[
+            {"name":"beta","files":["src/a.ts","src/b.ts","src/c.ts"]}]}"#,
+        Shape::Full,
+    );
+    assert_eq!(
+        buckets(&refined),
+        vec![(
+            "beta".to_string(),
+            vec![
+                "src/a.ts".to_string(),
+                "src/b.ts".to_string(),
+                "src/c.ts".to_string(),
+                "src/d.ts".to_string()
+            ]
+        )]
+    );
+    assert_eq!(
+        refined.repairs,
+        vec!["dropped path restored to `beta`: src/d.ts"]
     );
 }
 
@@ -778,11 +935,20 @@ fn load_runs(fixture: &str, changeset: &Changeset, shape: Shape) -> Vec<Run> {
     let mut paths: Vec<PathBuf> = entries
         .map(|entry| entry.expect("read a recorded run directory entry").path())
         .filter(|path| {
-            path.file_name()
+            let Some(stem) = path
+                .file_name()
                 .and_then(|name| name.to_str())
                 .and_then(|name| name.strip_suffix(".json"))
-                .and_then(Shape::from_run_stem)
-                .is_some_and(|slug| slug == shape)
+            else {
+                return false;
+            };
+            let recorded = Shape::from_run_stem(stem).unwrap_or_else(|| {
+                panic!(
+                    "recorded run {} names no known shape; it would be scored under none",
+                    path.display()
+                )
+            });
+            recorded == shape
         })
         .collect();
     paths.sort();
@@ -1033,6 +1199,31 @@ fn every_recorded_run_yields_a_strict_partition() {
     }
 }
 
+/// "Repairs were 0.0 in every recorded run" is a load-bearing claim in
+/// docs/GROUPING_PASSES.md: it is why the strict partition costs nothing. The
+/// report that prints it is a printer, so the claim is locked here instead —
+/// against every committed run of every shape.
+#[test]
+fn no_committed_run_needed_a_repair() {
+    let (changeset, _) = orca();
+    for shape in Shape::ALL {
+        let runs = load_runs(ORCA_FIXTURE, &changeset, shape);
+        assert!(
+            !runs.is_empty(),
+            "{}: no committed runs to check",
+            shape.slug()
+        );
+        for (index, run) in runs.iter().enumerate() {
+            assert!(
+                run.refined.repairs.is_empty(),
+                "{} run {index} needed repairs: {:?}",
+                shape.slug(),
+                run.refined.repairs
+            );
+        }
+    }
+}
+
 /// The verdict in docs/GROUPING_PASSES.md, locked against the committed runs.
 /// A single full call is below the bar on this fixture (0.361 mean vs 0.394)
 /// and only the consensus of three clears it, so the shape that ships is three
@@ -1166,11 +1357,9 @@ fn heuristic_beats_every_baseline_on_both_fixtures() {
 /// locked rather than left to the report: without directory tokens the engine
 /// falls back below parent-directory, which is the state `gd-26r.20` recorded.
 #[test]
+#[ignore = "needs $TUICR_GROUPING_FIXTURES"]
 fn directory_evidence_carries_the_second_fixture() {
-    let Some((changeset, expected)) = external_fixture(SECOND_FIXTURE) else {
-        skip_notice(SECOND_FIXTURE);
-        return;
-    };
+    let (changeset, expected) = require_external_fixture(SECOND_FIXTURE);
 
     let with_dirs = passes::group(&changeset, GroupingConfig::default())
         .partition()
