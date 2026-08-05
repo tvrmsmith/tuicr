@@ -299,9 +299,9 @@ fn ablations(default: GroupingConfig) -> Vec<(String, GroupingConfig)> {
             },
         ),
         (
-            "with directory tokens".into(),
+            "without directory tokens".into(),
             GroupingConfig {
-                use_dir_tokens: true,
+                use_dir_tokens: false,
                 ..default
             },
         ),
@@ -343,13 +343,12 @@ fn ablations(default: GroupingConfig) -> Vec<(String, GroupingConfig)> {
     ]
 }
 
-/// True on fixture 1 only. Fixture 2 is the counter-example and has its own
-/// test below: the pass set does not transfer.
+/// True on both fixtures since directory evidence was turned on (`gd-26r.21`).
+/// It was true on fixture 1 only while the engine grouped on filename tokens
+/// alone: fixture 2 lost to parent-directory, 0.282 against 0.312.
 #[test]
-fn heuristic_beats_every_baseline_on_the_first_fixture() {
-    let (changeset, expected) = orca();
-    {
-        let label = "orca-971b16754";
+fn heuristic_beats_every_baseline_on_both_fixtures() {
+    for (label, changeset, expected) in fixtures() {
         let heuristic = passes::group(&changeset, GroupingConfig::default())
             .partition()
             .score_against(&expected);
@@ -380,32 +379,42 @@ fn heuristic_beats_every_baseline_on_the_first_fixture() {
     }
 }
 
-/// The transfer result, locked so it cannot quietly change: on a .NET-shaped
-/// changeset the heuristics lose to grouping by parent directory. Recorded as a
-/// finding, not an aspiration — see docs/GROUPING_PASSES.md.
+/// Directory evidence is the whole of fixture 2's result, so the ablation is
+/// locked rather than left to the report: without directory tokens the engine
+/// falls back below parent-directory, which is the state `gd-26r.20` recorded.
 #[test]
-fn second_fixture_loses_to_parent_directory() {
+fn directory_evidence_carries_the_second_fixture() {
     let Some((changeset, expected)) = external_fixture(SECOND_FIXTURE) else {
         skip_notice(SECOND_FIXTURE);
         return;
     };
 
-    let heuristic = passes::group(&changeset, GroupingConfig::default())
+    let with_dirs = passes::group(&changeset, GroupingConfig::default())
         .partition()
         .score_against(&expected);
+    let without_dirs = passes::group(
+        &changeset,
+        GroupingConfig {
+            use_dir_tokens: false,
+            ..GroupingConfig::default()
+        },
+    )
+    .partition()
+    .score_against(&expected);
     let parent_dir = passes::baseline::parent_directory(&changeset).score_against(&expected);
 
     assert!(
-        heuristic.f1 < parent_dir.f1,
-        "the recorded inversion is gone: heuristic F1 {:.3} now beats parent-directory {:.3}. \
-         Good news, but docs/GROUPING_PASSES.md needs rewriting.",
-        heuristic.f1,
-        parent_dir.f1
+        (0.36..0.40).contains(&with_dirs.f1),
+        "second-fixture F1 drifted: {:.3}",
+        with_dirs.f1
     );
     assert!(
-        (0.27..0.30).contains(&heuristic.f1),
-        "second-fixture F1 drifted: {:.3}",
-        heuristic.f1
+        without_dirs.f1 < parent_dir.f1 && with_dirs.f1 > parent_dir.f1,
+        "directory evidence must be what clears parent-directory here: \
+         with {:.3}, without {:.3}, parent-directory {:.3}",
+        with_dirs.f1,
+        without_dirs.f1,
+        parent_dir.f1
     );
 }
 
@@ -449,12 +458,12 @@ fn recorded_numbers_hold() {
         .score_against(&expected);
 
     assert!(
-        (0.38..0.40).contains(&score.f1),
+        (0.38..0.41).contains(&score.f1),
         "F1 drifted: {:.3}",
         score.f1
     );
     assert!(
-        score.precision > 0.50,
+        score.precision > 0.45,
         "precision drifted: {:.3}",
         score.precision
     );

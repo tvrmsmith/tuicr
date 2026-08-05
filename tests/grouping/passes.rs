@@ -30,6 +30,8 @@ pub struct GroupingConfig {
     /// Fewest files a token cluster may claim before it is just noise.
     pub min_cluster: usize,
     /// Whether the containing directory's tokens count as concern evidence.
+    /// On where the tree is the concern tree, and harmless where it is not —
+    /// but only once directory tokens are subject to the ubiquity stoplist too.
     pub use_dir_tokens: bool,
     /// Extra weight per added test file carrying a key (GROUPING.md rule 7).
     pub test_burst_boost: f64,
@@ -48,7 +50,7 @@ impl Default for GroupingConfig {
         Self {
             ubiquity_threshold: 0.25,
             min_cluster: 3,
-            use_dir_tokens: false,
+            use_dir_tokens: true,
             test_burst_boost: 0.5,
             tests_follow_production: true,
             absorb_leftovers: true,
@@ -214,7 +216,7 @@ fn token_cluster_pass<'a>(
         .map(|file| candidate_keys(file, config))
         .collect();
 
-    let ubiquitous = ubiquitous_tokens(files, config.ubiquity_threshold);
+    let ubiquitous = ubiquitous_tokens(files, config);
 
     let mut carriers: BTreeMap<String, Vec<usize>> = BTreeMap::new();
     for (index, keys) in keys_per_file.iter().enumerate() {
@@ -283,14 +285,21 @@ fn candidate_keys(file: &ChangedFile, config: GroupingConfig) -> BTreeSet<String
     keys
 }
 
-fn ubiquitous_tokens(files: &[&ChangedFile], threshold: f64) -> BTreeSet<String> {
+/// Whatever counts as evidence must also be subject to the stoplist: a
+/// directory token admitted as a cluster key and exempt from ubiquity would be
+/// a free pass for `src`, `app` or the repo's own name.
+fn ubiquitous_tokens(files: &[&ChangedFile], config: GroupingConfig) -> BTreeSet<String> {
     let mut document_frequency: BTreeMap<String, usize> = BTreeMap::new();
     for file in files {
-        for token in file.name_tokens().into_iter().collect::<BTreeSet<_>>() {
+        let mut tokens: BTreeSet<String> = file.name_tokens().into_iter().collect();
+        if config.use_dir_tokens {
+            tokens.extend(file.dir_tokens());
+        }
+        for token in tokens {
             *document_frequency.entry(token).or_default() += 1;
         }
     }
-    let limit = threshold * files.len() as f64;
+    let limit = config.ubiquity_threshold * files.len() as f64;
     document_frequency
         .into_iter()
         .filter(|(_, count)| *count as f64 >= limit)
