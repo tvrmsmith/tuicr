@@ -926,11 +926,13 @@ fn an_errored_envelope_is_not_a_run() {
     let ok = r#"{"type":"result","subtype":"success","is_error":false,
         "result":"{\"groups\":[]}","duration_ms":1000,"total_cost_usd":0.01,
         "modelUsage":{
-            "haiku":{"inputTokens":5,"outputTokens":7,"cacheReadInputTokens":100},
-            "opus":{"inputTokens":10,"outputTokens":20,"cacheCreationInputTokens":30}}}"#;
+            "claude-haiku-4-5":{"inputTokens":5,"outputTokens":7,
+                "cacheReadInputTokens":100,"cacheCreationInputTokens":0},
+            "claude-opus-5":{"inputTokens":10,"outputTokens":20,
+                "cacheReadInputTokens":0,"cacheCreationInputTokens":30}}}"#;
     let record = RunRecord::parse(ok).expect("a successful envelope parses");
     assert_eq!(record.body, "{\"groups\":[]}");
-    assert_eq!(record.model, "opus");
+    assert_eq!(record.model, "claude-opus-5");
     assert_eq!(record.input_tokens, 15.0);
     assert_eq!(record.output_tokens, 27.0);
     assert_eq!(record.cached_tokens, 130.0);
@@ -955,26 +957,44 @@ fn an_envelope_missing_a_cost_field_is_not_a_run() {
                 "duration_ms":1000,"total_cost_usd":0.01,"modelUsage":{}}"#,
         ),
         (
-            "`modelUsage.opus` has no `inputTokens`",
+            "`modelUsage.claude-opus-5` has no `inputTokens`",
             r#"{"subtype":"success","is_error":false,"result":"{}",
                 "duration_ms":1000,"total_cost_usd":0.01,
-                "modelUsage":{"opus":{"outputTokens":20}}}"#,
+                "modelUsage":{"claude-opus-5":{"outputTokens":20,
+                    "cacheReadInputTokens":0,"cacheCreationInputTokens":30}}}"#,
         ),
         (
-            "`modelUsage.opus` has no `outputTokens`",
+            "`modelUsage.claude-opus-5` has no `outputTokens`",
             r#"{"subtype":"success","is_error":false,"result":"{}",
                 "duration_ms":1000,"total_cost_usd":0.01,
-                "modelUsage":{"opus":{"inputTokens":10}}}"#,
+                "modelUsage":{"claude-opus-5":{"inputTokens":10,
+                    "cacheReadInputTokens":0,"cacheCreationInputTokens":30}}}"#,
+        ),
+        (
+            "`modelUsage.claude-opus-5` has no `cacheCreationInputTokens`",
+            r#"{"subtype":"success","is_error":false,"result":"{}",
+                "duration_ms":1000,"total_cost_usd":0.01,
+                "modelUsage":{"claude-opus-5":{"inputTokens":10,"outputTokens":20,
+                    "cacheReadInputTokens":0}}}"#,
+        ),
+        (
+            "`modelUsage.claude-opus-5` has no `cacheReadInputTokens`",
+            r#"{"subtype":"success","is_error":false,"result":"{}",
+                "duration_ms":1000,"total_cost_usd":0.01,
+                "modelUsage":{"claude-opus-5":{"inputTokens":10,"outputTokens":20,
+                    "cacheCreationInputTokens":30}}}"#,
         ),
         (
             "`total_cost_usd`",
             r#"{"subtype":"success","is_error":false,"result":"{}","duration_ms":1000,
-                "modelUsage":{"opus":{"inputTokens":10,"outputTokens":20}}}"#,
+                "modelUsage":{"claude-opus-5":{"inputTokens":10,"outputTokens":20,
+                    "cacheReadInputTokens":0,"cacheCreationInputTokens":30}}}"#,
         ),
         (
             "`duration_ms`",
             r#"{"subtype":"success","is_error":false,"result":"{}","total_cost_usd":0.01,
-                "modelUsage":{"opus":{"inputTokens":10,"outputTokens":20}}}"#,
+                "modelUsage":{"claude-opus-5":{"inputTokens":10,"outputTokens":20,
+                    "cacheReadInputTokens":0,"cacheCreationInputTokens":30}}}"#,
         ),
     ] {
         let error = RunRecord::parse(envelope)
