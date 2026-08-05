@@ -17,10 +17,30 @@ pub struct ChangedFile {
     pub rename_from: Option<String>,
 }
 
-/// Extensions stripped when reducing a filename to its concern-bearing stem.
-const EXTENSIONS: &[&str] = &[
-    "ts", "tsx", "js", "jsx", "mjs", "cjs", "rs", "py", "go", "md", "json", "yml", "yaml", "toml",
-    "lock", "snap", "css", "scss", "html",
+/// Extensions stripped when reducing a filename to its concern-bearing stem. An
+/// extension names the file's language or role, never its concern, so any
+/// extension left off this list survives tokenisation and clusters files by
+/// layer — the failure GROUPING.md rule 1 forbids. The list is therefore
+/// audited per ecosystem rather than grown one entry at a time; it covers the
+/// languages, project/build files and markup formats a changeset is likely to
+/// carry, not only the web stack the first fixture happened to use.
+#[rustfmt::skip]
+pub const EXTENSIONS: &[&str] = &[
+    // web and scripting
+    "ts", "tsx", "js", "jsx", "mjs", "cjs", "mts", "cts",
+    "vue", "svelte", "astro", "css", "scss", "sass", "less", "html", "htm",
+    // .NET, including project and build files
+    "cs", "vb", "fs", "csproj", "vbproj", "fsproj", "sln", "props", "targets",
+    "razor", "cshtml", "resx", "config", "nuspec",
+    // JVM
+    "java", "kt", "kts", "scala", "groovy", "gradle",
+    // other languages
+    "rs", "go", "py", "rb", "php", "pl", "lua", "swift", "dart", "ex", "exs", "erl",
+    "c", "h", "cc", "cpp", "cxx", "hpp", "hh", "m", "mm",
+    "sh", "bash", "zsh", "ps1", "psm1", "sql",
+    // data, markup and interface definitions
+    "md", "mdx", "rst", "txt", "json", "jsonc", "yml", "yaml", "toml", "ini", "cfg",
+    "xml", "csv", "proto", "graphql", "gql", "lock", "snap", "svg", "tf", "tfvars",
 ];
 
 /// Filename segments that mark a file as a test rather than naming a concern.
