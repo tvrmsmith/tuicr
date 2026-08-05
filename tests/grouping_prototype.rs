@@ -325,16 +325,16 @@ fn check_unfired_passes_fire(label: &str, changeset: &Changeset) {
 #[test]
 fn a_rename_is_one_file_in_one_group() {
     let changeset = Changeset::parse(
-        "M\tsrc/app/pipeline.ts\n\
-         R096\tsrc/app/old-worklist.ts\tsrc/app/claim-worklist.ts\n\
-         A\tsrc/app/claim-worklist.test.ts\n",
+        "M\tsrc/app/scheduler.ts\n\
+         R096\tsrc/app/old-catalog.ts\tsrc/app/widget-catalog.ts\n\
+         A\tsrc/app/widget-catalog.test.ts\n",
     );
     let renamed = &changeset.files[1];
-    assert_eq!(renamed.path, "src/app/claim-worklist.ts");
+    assert_eq!(renamed.path, "src/app/widget-catalog.ts");
     assert_eq!(renamed.kind, ChangeKind::Renamed);
     assert_eq!(
         renamed.rename_from.as_deref(),
-        Some("src/app/old-worklist.ts")
+        Some("src/app/old-catalog.ts")
     );
 
     let partition = passes::group(&changeset, GroupingConfig::default()).partition();
@@ -1578,22 +1578,22 @@ fn extensions_never_survive_as_concern_tokens() {
             vec!["20240101", "init", "designer"],
         ),
         (
-            "src/Billing/Northwind.Billing.Api.csproj",
-            "Northwind-Billing-Api",
-            vec!["northwind", "billing", "api"],
+            "src/Catalog/Contoso.Catalog.Api.csproj",
+            "Contoso-Catalog-Api",
+            vec!["contoso", "catalog", "api"],
         ),
         (
             "Directory.Build.props",
             "Directory-Build",
             vec!["directory", "build"],
         ),
-        ("src/main/java/Claim.java", "Claim", vec!["claim"]),
+        ("src/main/java/Widget.java", "Widget", vec!["widget"]),
         (
-            "web/src/hooks/use-patient.ts",
-            "use-patient",
-            vec!["use", "patient"],
+            "web/src/hooks/use-tenant.ts",
+            "use-tenant",
+            vec!["use", "tenant"],
         ),
-        ("web/src/pages/Worklist.razor", "Worklist", vec!["worklist"]),
+        ("web/src/pages/Report.razor", "Report", vec!["report"]),
         (
             "api/appsettings.Development.json",
             "appsettings-Development",
