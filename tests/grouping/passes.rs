@@ -130,8 +130,10 @@ pub fn group(changeset: &Changeset, config: GroupingConfig) -> Grouping {
     if config.absorb_leftovers {
         absorb_leftovers_pass(&files, config, &mut assigned);
     }
+    // No rename pass: git reports a rename as one entry keyed by the new path,
+    // so a rename's two halves are already one file and GROUPING.md rule 11 is
+    // satisfied by construction. See `a_rename_is_one_file_in_one_group`.
     directory_fallback_pass(&files, &mut assigned);
-    enforce_rename_pairs(&files, &mut assigned);
 
     Grouping {
         assignments: assigned.into_values().collect(),
@@ -493,32 +495,6 @@ fn directory_fallback_pass<'a>(
     for file in files {
         let group = format!("dir:{}", file.dir());
         claim(assigned, file, &group, "directory-fallback");
-    }
-}
-
-/// Rule 11: rename pairs stay together whatever else claimed either half.
-fn enforce_rename_pairs<'a>(
-    files: &[&'a ChangedFile],
-    assigned: &mut BTreeMap<&'a str, Assignment>,
-) {
-    for file in files {
-        let Some(from) = file.rename_from.as_deref() else {
-            continue;
-        };
-        let Some(target) = assigned.get(file.path.as_str()).map(|a| a.group.clone()) else {
-            continue;
-        };
-        if let Some(old) = assigned.get_mut(from)
-            && old.group != target
-        {
-            let displaced = old.group.clone();
-            old.group = target;
-            old.pass = "rename-pair";
-            old.runner_up = Some(RunnerUp {
-                group: displaced,
-                reason: format!("rename pair with {} (rule 11)", file.path),
-            });
-        }
     }
 }
 
