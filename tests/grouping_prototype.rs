@@ -925,13 +925,65 @@ fn an_errored_envelope_is_not_a_run() {
 
     let ok = r#"{"type":"result","subtype":"success","is_error":false,
         "result":"{\"groups\":[]}","duration_ms":1000,"total_cost_usd":0.01,
-        "modelUsage":{"opus":{"inputTokens":10,"outputTokens":20}}}"#;
-    assert_eq!(
-        RunRecord::parse(ok)
-            .expect("a successful envelope parses")
-            .body,
-        "{\"groups\":[]}"
-    );
+        "modelUsage":{
+            "haiku":{"inputTokens":5,"outputTokens":7,"cacheReadInputTokens":100},
+            "opus":{"inputTokens":10,"outputTokens":20,"cacheCreationInputTokens":30}}}"#;
+    let record = RunRecord::parse(ok).expect("a successful envelope parses");
+    assert_eq!(record.body, "{\"groups\":[]}");
+    assert_eq!(record.model, "opus");
+    assert_eq!(record.input_tokens, 15.0);
+    assert_eq!(record.output_tokens, 27.0);
+    assert_eq!(record.cached_tokens, 130.0);
+    assert_eq!(record.cost_usd, 0.01);
+    assert_eq!(record.wall_clock_ms, 1000.0);
+}
+
+/// The cost table is read straight out of these fields, so an envelope that
+/// stopped carrying one of them must fail loudly rather than report a run that
+/// cost nothing, took no time and came from `unknown`.
+#[test]
+fn an_envelope_missing_a_cost_field_is_not_a_run() {
+    for (missing, envelope) in [
+        (
+            "`modelUsage`",
+            r#"{"subtype":"success","is_error":false,"result":"{}",
+                "duration_ms":1000,"total_cost_usd":0.01}"#,
+        ),
+        (
+            "empty `modelUsage`",
+            r#"{"subtype":"success","is_error":false,"result":"{}",
+                "duration_ms":1000,"total_cost_usd":0.01,"modelUsage":{}}"#,
+        ),
+        (
+            "`modelUsage.opus` has no `inputTokens`",
+            r#"{"subtype":"success","is_error":false,"result":"{}",
+                "duration_ms":1000,"total_cost_usd":0.01,
+                "modelUsage":{"opus":{"outputTokens":20}}}"#,
+        ),
+        (
+            "`modelUsage.opus` has no `outputTokens`",
+            r#"{"subtype":"success","is_error":false,"result":"{}",
+                "duration_ms":1000,"total_cost_usd":0.01,
+                "modelUsage":{"opus":{"inputTokens":10}}}"#,
+        ),
+        (
+            "`total_cost_usd`",
+            r#"{"subtype":"success","is_error":false,"result":"{}","duration_ms":1000,
+                "modelUsage":{"opus":{"inputTokens":10,"outputTokens":20}}}"#,
+        ),
+        (
+            "`duration_ms`",
+            r#"{"subtype":"success","is_error":false,"result":"{}","total_cost_usd":0.01,
+                "modelUsage":{"opus":{"inputTokens":10,"outputTokens":20}}}"#,
+        ),
+    ] {
+        let error = RunRecord::parse(envelope)
+            .expect_err(&format!("an envelope missing {missing} is rejected"));
+        assert!(
+            error.contains(missing),
+            "the rejection must name what was missing ({missing}): {error}"
+        );
+    }
 }
 
 /// A model segment carries hyphens of its own, so the shape a recorded run

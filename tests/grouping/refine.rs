@@ -640,17 +640,29 @@ impl RunRecord {
             .get("modelUsage")
             .and_then(Value::as_object)
             .ok_or_else(|| "CLI envelope has no `modelUsage`".to_string())?;
-        let field =
+        if usage.is_empty() {
+            return Err("CLI envelope has an empty `modelUsage`".to_string());
+        }
+        // A model that read and wrote nothing is not a model that answered, so
+        // the two token counts are required; the two cache counts are not,
+        // because a call that hit no cache legitimately omits them.
+        let required = |name: &str, stats: &Value, key: &str| {
+            stats
+                .get(key)
+                .and_then(Value::as_f64)
+                .ok_or_else(|| format!("`modelUsage.{name}` has no `{key}`"))
+        };
+        let cache =
             |stats: &Value, key: &str| stats.get(key).and_then(Value::as_f64).unwrap_or(0.0);
         let (mut input, mut output, mut cached) = (0.0, 0.0, 0.0);
         let mut model = "unknown".to_string();
         let mut most_output = f64::NEG_INFINITY;
         for (name, stats) in usage {
-            let own_output = field(stats, "outputTokens");
-            input += field(stats, "inputTokens");
+            let own_output = required(name, stats, "outputTokens")?;
+            input += required(name, stats, "inputTokens")?;
             output += own_output;
             cached +=
-                field(stats, "cacheCreationInputTokens") + field(stats, "cacheReadInputTokens");
+                cache(stats, "cacheCreationInputTokens") + cache(stats, "cacheReadInputTokens");
             if own_output > most_output {
                 most_output = own_output;
                 model = name.clone();
