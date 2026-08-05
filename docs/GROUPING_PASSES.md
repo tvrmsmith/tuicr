@@ -18,8 +18,11 @@ section then re-runs the same harness on a changeset from a deliberately
 different repo, and is where the transfer verdicts live — read it before
 trusting anything above it.
 
-> **The current numbers are in [Fixing the defects](#fixing-the-defects-gd-26r21),
-> at the bottom.** The two sections above it are kept as the record of what was
+> **The current heuristic numbers are in
+> [Fixing the defects](#fixing-the-defects-gd-26r21)**, and the model refine
+> pass is measured after it in
+> [The model refine pass](#the-model-refine-pass-gd-26r11). The two sections
+> above *Fixing the defects* are kept as the record of what was
 > measured when, and several of their findings are superseded there: four engine
 > defects turned out to be *causing* results the earlier sections read as facts
 > about grouping.
@@ -122,7 +125,9 @@ them or exposes the pattern lists as dead code; until then nothing here supports
 them but the rules they implement.
 
 **Pruned before writing code.** Any pass reading diff content cannot be scored
-here at all, so none was built. That includes the LLM refine pass (`gd-26r.11`).
+here at all, so none was built. That includes a *hunk-reading* LLM refine pass;
+`gd-26r.11` was later prototyped in the paths-only shape these fixtures can
+score — see [The model refine pass](#the-model-refine-pass-gd-26r11).
 
 **Added, not in the design doc.** Two. The ubiquity stoplist, which is the
 difference between working and not working. And leftover absorption, which
@@ -687,7 +692,9 @@ true before.
   is unchanged in character: fixture 2 still has ten of fourteen groups in a
   0.36–0.57 mush, and no filename or directory token reaches them. That is the
   case for a pass that reads code, and it is exactly where `gd-26r.11` should
-  aim.
+  aim. (`gd-26r.11` then reached that mush from paths alone — see [Where fixture
+  2 goes right](#where-fixture-2-goes-right); the mush was evidence against
+  *token matching*, not for code-reading.)
 - **Still not addressed, deliberately.** Group sizing (soft/hard caps, coarser
   as the changeset shrinks) — separate fog. The ubiquity stoplist measuring
   frequency when the question is layer-versus-concern — a design question, not a
