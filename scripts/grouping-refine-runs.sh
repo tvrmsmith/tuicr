@@ -91,9 +91,9 @@ if (( sent == 0 )); then
   exit 1
 fi
 
-# A call that fails prints and continues so one bad answer does not throw away
-# the rest of the corpus, but a re-record where every call failed must not
-# report success on the path every published number rests on.
+# A failed call prints and continues so the remaining calls still get made, but
+# any hole in the corpus is fatal here: this is the path every published number
+# rests on, and a partial re-record must not exit 0.
 if (( failed > 0 )); then
   echo "$failed of $sent calls failed; the corpus is incomplete" >&2
   exit 1

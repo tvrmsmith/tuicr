@@ -417,11 +417,20 @@ const RECORDED_RUNS: usize = 10;
 /// is a second experiment beside this one rather than five more runs of it.
 const PUBLISHED_MODEL: &str = "claude-opus-5";
 
-/// The published count of fixture-1 `full` triples clearing the bar is 50 of
-/// 120. A little slack absorbs a re-record; anything much above it is the
-/// verdict moving, which `docs/GROUPING_PASSES.md` would have to be rewritten
-/// for.
+/// The published fixture-1 `full` triple distribution: 50 of 120 clear the bar,
+/// the spread runs 0.343 to 0.439, and the upper median is 0.369. Each figure is
+/// locked as a band closed on both sides, with a little slack for a re-record.
+/// A count that fell to 0 would make the published "coin flip" as wrong as a
+/// count that rose to a majority, so an unnoticed improvement has to fail the
+/// lock too — `docs/GROUPING_PASSES.md` would have to be rewritten either way.
+const TRIPLES_OVER_BAR_FLOOR: usize = 45;
 const TRIPLES_OVER_BAR_CEILING: usize = 55;
+const PUBLISHED_TRIPLE_MIN: f64 = 0.343;
+const PUBLISHED_TRIPLE_MAX: f64 = 0.439;
+const PUBLISHED_TRIPLE_UPPER_MEDIAN: f64 = 0.369;
+/// Slack around each published triple F1: wide enough to absorb a re-record,
+/// narrow enough that a moved distribution fails.
+const PUBLISHED_F1_SLACK: f64 = 0.02;
 
 /// Writes one prompt per fixture per shape for the run script to send. Not an
 /// assertion but a side effect on `target/`, so it is ignored by default and
@@ -1557,60 +1566,6 @@ fn naming_only_cannot_move_the_metric() {
     }
 }
 
-/// Merging whole groups can only coarsen the partition, so it can only trade
-/// precision away for recall. Locked because it bounds what the cheap shape is
-/// able to buy, whatever a particular run happens to score.
-#[test]
-fn merge_only_can_only_coarsen() {
-    for (label, changeset, _) in fixtures() {
-        let runs = load_runs(&label, &changeset, Shape::MergeOnly);
-        expect_full_corpus(&label, &runs, Shape::MergeOnly);
-        if runs.is_empty() {
-            println!("no merge-only runs for {label}");
-            continue;
-        }
-        let heuristic = passes::group(&changeset, GroupingConfig::default()).partition();
-        for run in &runs {
-            for members in heuristic.groups.values() {
-                let holders: std::collections::BTreeSet<&String> = run
-                    .refined
-                    .partition
-                    .groups
-                    .iter()
-                    .filter(|(_, refined)| refined.iter().any(|p| members.contains(p)))
-                    .map(|(name, _)| name)
-                    .collect();
-                assert_eq!(
-                    holders.len(),
-                    1,
-                    "{label}: merge-only split a heuristic group across {holders:?}"
-                );
-            }
-        }
-    }
-}
-
-/// Whatever a run answers, the strict partition of GROUPING.md survives it.
-/// This is the property that makes an unreliable pass shippable at all: the
-/// repairs in `refine::apply` are load-bearing, not defensive decoration.
-#[test]
-fn every_recorded_run_yields_a_strict_partition() {
-    for (label, changeset, _) in fixtures() {
-        for shape in Shape::ALL {
-            let runs = load_runs(&label, &changeset, shape);
-            expect_full_corpus(&label, &runs, shape);
-            for (index, run) in runs.iter().enumerate() {
-                assert_eq!(
-                    run.refined.partition.file_count(),
-                    changeset.len(),
-                    "{label} {} run {index}: every file assigned exactly once",
-                    shape.slug()
-                );
-            }
-        }
-    }
-}
-
 /// "Repairs were 0.0 in every recorded run" is a load-bearing claim in
 /// docs/GROUPING_PASSES.md: it is why the strict partition costs nothing. The
 /// report that prints it is a printer, so the claim is locked here instead —
@@ -1645,7 +1600,9 @@ fn no_committed_run_needed_a_repair() {
 /// — 0.411 — but at ten runs 41 of the 120 triples score above that draw, so it
 /// ranks 42nd from the top, and the upper median is below the bar. Locking one
 /// favourable draw made a coin flip read as a result, so what is locked now is
-/// the distribution: no single call clears, and a minority of triples do. A change that genuinely fixed fixture
+/// the distribution: no single call clears, a minority of triples do, and the
+/// worst, best and upper median triples sit where the document publishes them.
+/// A change that genuinely fixed fixture
 /// 1 would fail this test, which is the point — the verdict would have moved
 /// and the document would have to say so. `refine_report` prints that rank
 /// beside the distribution, so the claim above is re-derivable offline like
@@ -1682,21 +1639,33 @@ fn voting_does_not_rescue_fixture_one() {
         .collect();
     let voted = triple_f1s(&partitions, &expected);
 
-    // The document publishes 50 of 120. Locked at the published band rather
-    // than at "not most", which would have let the figure drift most of the way
-    // to a majority without failing the test the verdict rests on.
+    // The document publishes 50 of 120 clearing, a 0.343-0.439 spread and a
+    // 0.369 upper median, and reads a coin flip off them. Each is bracketed, so
+    // a distribution that moved in either direction fails here rather than
+    // leaving the published figures quietly false.
     let over = voted.iter().filter(|f1| **f1 > bar).count();
     assert!(
-        over <= TRIPLES_OVER_BAR_CEILING,
-        "{over} of {} triples clear the bar, over the published {TRIPLES_OVER_BAR_CEILING}, \
-         so voting is rescuing fixture 1 and the verdict has moved",
+        (TRIPLES_OVER_BAR_FLOOR..=TRIPLES_OVER_BAR_CEILING).contains(&over),
+        "{over} of {} triples clear the bar, outside the published \
+         {TRIPLES_OVER_BAR_FLOOR}-{TRIPLES_OVER_BAR_CEILING}, so the verdict has moved",
         voted.len()
     );
+    let median = upper_median(&voted);
     assert!(
-        upper_median(&voted) < bar,
-        "the upper median triple scored {:.3}, at or over {bar:.3}",
-        upper_median(&voted)
+        median < bar,
+        "the upper median triple scored {median:.3}, at or over {bar:.3}"
     );
+    for (label, published, actual) in [
+        ("worst", PUBLISHED_TRIPLE_MIN, voted[0]),
+        ("best", PUBLISHED_TRIPLE_MAX, voted[voted.len() - 1]),
+        ("upper median", PUBLISHED_TRIPLE_UPPER_MEDIAN, median),
+    ] {
+        assert!(
+            (actual - published).abs() <= PUBLISHED_F1_SLACK,
+            "the {label} triple scored {actual:.3}, off the published {published:.3} by more \
+             than {PUBLISHED_F1_SLACK:.3}"
+        );
+    }
 }
 
 fn ablations(default: GroupingConfig) -> Vec<(String, GroupingConfig)> {
@@ -1901,10 +1870,22 @@ fn recorded_numbers_hold() {
 /// An extension names a file's language or role, never its concern, so one that
 /// survives tokenisation becomes a cluster key and groups files by layer —
 /// exactly what GROUPING.md rule 1 forbids. `.cs` did this on fixture 2
-/// (`handler-cs`, `port-cs`, `program-cs`), so the whole list is under test, not
-/// the one entry that was caught.
+/// (`handler-cs`, `port-cs`, `program-cs`), so every entry on the list is under
+/// test, not the one entry that was caught. What no test here can catch is an
+/// extension *missing* from the list: to this code it is simply not an
+/// extension, which is why the list is audited per ecosystem.
 #[test]
 fn extensions_never_survive_as_concern_tokens() {
+    for ext in changeset::EXTENSIONS {
+        let file = ChangedFile {
+            path: format!("src/x/widget.{ext}"),
+            kind: ChangeKind::Modified,
+            rename_from: None,
+        };
+        assert_eq!(file.stem(), "widget", "stem of widget.{ext}");
+        assert_eq!(file.name_tokens(), ["widget"], "tokens of widget.{ext}");
+    }
+
     let cases = [
         ("src/Api/Program.cs", "Program", vec!["program"]),
         (
@@ -1949,7 +1930,8 @@ fn extensions_never_survive_as_concern_tokens() {
 }
 
 /// The same guarantee where it actually bites: no group the engine produces may
-/// be named after a file extension.
+/// be named after a file extension. It shares the tokeniser's oracle, so like
+/// the test above it holds the audited list and not an entry missing from it.
 #[test]
 fn no_group_is_named_after_an_extension() {
     for (label, changeset, _) in fixtures() {

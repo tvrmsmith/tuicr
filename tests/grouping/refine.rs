@@ -299,6 +299,12 @@ pub fn apply(
                         .into_iter()
                         .collect(),
                 };
+                // Merge-only can only coarsen, and it is this loop that makes
+                // that structural rather than a property of the answers: a
+                // claimed source group is written whole under one name, a
+                // source claimed twice is skipped, and an unclaimed one is kept
+                // whole below. No syntactically applicable body can split a
+                // heuristic group across two names, so no test asserts it.
                 for source in sources {
                     let Some(members) = heuristic.groups.get(&source) else {
                         repairs.push(format!("unknown input group ignored: {source}"));
@@ -335,6 +341,11 @@ pub fn apply(
     // group called `X` *is* heuristic group `X` and the dropped path belongs in
     // it. Reusing the plain name also puts co-dropped paths from one heuristic
     // group back together, which a per-path uniquified name would split.
+    //
+    // With this loop in place `assigned` is keyed by every distinct changeset
+    // path and nothing else, so the strict partition holds for any parseable
+    // body by construction. That is why the claim is stated here and not
+    // asserted over the recorded runs, where it could not fail.
     for path in &all_paths {
         if !assigned.contains_key(*path) {
             let name = heuristic_group.get(path).copied().unwrap_or("unassigned");

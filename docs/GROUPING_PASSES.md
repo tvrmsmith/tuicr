@@ -1035,9 +1035,10 @@ votes was a short-corpus artefact).
 **On fixture 1 alone, merge-only is the shape that should ship.** But it captures
 almost none of the fixture-2 benefit — 0.398 against full's 0.763 — because the
 win there comes from *re-cutting* groups the heuristics drew wrong, and merge-only
-is constrained to coarsen (`merge_only_can_only_coarsen` locks that it can only
-trade precision for recall). +0.020 over the bar is not a result worth an API
-call and a nondeterministic dependency.
+is constrained to coarsen — `apply` writes each claimed heuristic group whole
+under one name, so the shape can only trade precision for recall, whatever a run
+answers. +0.020 over the bar is not a result worth an API call and a
+nondeterministic dependency.
 
 So the cheap shapes do not capture most of the benefit. The benefit *is* the
 splitting — where splitting helps at all.

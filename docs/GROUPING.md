@@ -53,7 +53,7 @@ no multi-membership.
     single entry keyed by the new path, so there is no second half to place.
     The rule stands as a constraint on any representation that splits a rename
     into a delete and an add — that representation is wrong, not a case to
-    reconcile afterwards. It needs no pass; see `a_rename_is_one_file_in_one_group`.
+    reconcile afterwards. It needs no pass; see `a_rename_is_one_file_in_the_changeset`.
 
 ## Ambiguous assignments
 
