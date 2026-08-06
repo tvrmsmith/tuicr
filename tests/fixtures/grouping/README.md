@@ -56,8 +56,8 @@ a run without the directory lists them as ignored rather than passing green
 having asserted nothing; run them with `--ignored` once the directory is there.
 
 Same two-file layout: `<name>.files` and `<name>.groups`. The fire-check
-changeset has no `.groups` — it exists only to make the mechanical, config-CI
-and rename passes meet a lockfile, a CI file and a rename, and is never scored.
+changeset has no `.groups` — it exists only to make the mechanical and config-CI
+passes meet a lockfile, a CI file and a rename, and is never scored.
 
 Fixture 2's group *names* are as private as its paths — they are fragments of
 those paths — so the per-group result tables live beside it too, in

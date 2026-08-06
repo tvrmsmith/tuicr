@@ -20,8 +20,13 @@
 # mechanism but must not quietly decide it.
 
 set -euo pipefail
+# An empty prompts directory must not send a literal glob to the CLI as a
+# filename.
+shopt -s nullglob
 
-runs="${1:-5}"
+# Ten per shape: every number in docs/GROUPING_PASSES.md is a property of a
+# ten-run corpus, so the documented re-record path has to reproduce one.
+runs="${1:-10}"
 repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 prompts="$repo/target/grouping-refine/prompts"
 fixture_dir="${TUICR_GROUPING_FIXTURES:-$HOME/.local/share/tuicr-fixtures}"
@@ -58,8 +63,11 @@ for fixture_prompts in "$prompts"/*/; do
         continue
       fi
       echo "call  $fixture/$shape run $run"
-      # cd to a scratch directory so the CLI cannot pick up repo context.
-      if ! (cd "$(mktemp -d)" && claude "${common[@]}" < "$prompt") > "$target.partial"; then
+      # cd to a scratch directory so the CLI cannot pick up repo context. A
+      # failed mktemp would leave `cd ""` succeeding in the repo being grouped
+      # and record the contaminated answer as a valid run, so it is fatal.
+      scratch="$(mktemp -d)" || exit 1
+      if ! (cd "$scratch" && claude "${common[@]}" < "$prompt") > "$target.partial"; then
         echo "  failed; leaving $target.partial for inspection" >&2
         continue
       fi

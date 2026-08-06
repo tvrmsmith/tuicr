@@ -534,8 +534,18 @@ pub fn recall_per_expected_group(
 /// whether it actually buys accuracy or stability has to be measured rather
 /// than assumed.
 pub fn consensus(runs: &[Partition]) -> Option<Partition> {
-    let first = runs.first()?;
-    let paths: Vec<String> = first.groups.values().flatten().cloned().collect();
+    if runs.is_empty() {
+        return None;
+    }
+    // The union across runs, not run 0's paths: a run that carries a path run 0
+    // does not would otherwise have that path silently deleted from the voted
+    // partition, depressing recall with no signal.
+    let paths: Vec<String> = runs
+        .iter()
+        .flat_map(|run| run.groups.values().flatten().cloned())
+        .collect::<BTreeSet<String>>()
+        .into_iter()
+        .collect();
     let index: BTreeMap<&str, usize> = paths
         .iter()
         .enumerate()
@@ -631,11 +641,11 @@ impl RunRecord {
             .ok_or_else(|| "CLI envelope has no `result`".to_string())?
             .to_string();
 
-        // A `claude -p` call bills against more than one model: the answering
-        // model plus whatever small model the CLI uses for its own bookkeeping.
-        // Every one of them is part of what the call costs, so they are summed,
-        // and the model that wrote the answer — the one with the most output —
-        // is the one the run is labelled with.
+        // `modelUsage` is keyed by model, and every committed envelope carries
+        // exactly one entry. Nothing in the envelope shape promises that, so if
+        // a call ever bills against more than one model every entry is part of
+        // what it cost and they are summed, with the run labelled by the model
+        // that wrote the answer — the one with the most output.
         let usage = value
             .get("modelUsage")
             .and_then(Value::as_object)

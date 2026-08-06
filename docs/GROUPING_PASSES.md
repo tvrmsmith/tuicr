@@ -729,9 +729,9 @@ cut in three:
 3. `refine_report` replays the recorded envelopes deterministically and scores
    them with the same harness that scores the heuristics.
 
-So the pass is nondeterministic but its *evidence* is not: the twenty orca
+So the pass is nondeterministic but its *evidence* is not: the forty orca
 envelopes are committed under `tests/fixtures/grouping/refine/`, so **every
-fixture-1 number below can be re-derived offline with no API key**. The twenty
+fixture-1 number below can be re-derived offline with no API key**. The forty
 meridian envelopes carry private paths in both prompt and answer, so they stay
 beside the fixture under `$TUICR_GROUPING_FIXTURES/refine/` and are never
 committed — **no fixture-2 number below is reproducible without that private
@@ -920,11 +920,14 @@ so output runs 2.94× and 2.88× input on fixture 1 (`full`, `full-coarse`) and
 2.25× and 2.04× on fixture 2, against 0.44× and 0.36× for fixture 1's
 `merge-only` and `naming-only`, which restate names alone. What output tracks is
 how much of the grouping the shape rewrites, not file count: fixture 2 has three
-fewer files than fixture 1 and emits a third more output on `full`. Input is
-small and nearly flat, which is why a 100–400 file changeset stays affordable.
+fewer files than fixture 1 and emits a third more output on `full`. Input does
+not track file count either — it rises 5,373 to 9,497, +77%, on the fixture with
+three *fewer* files — but it is small enough beside output that the shape, not
+the input, is what the bill follows. What either of them does past ~160 files is
+not measured here; see *What this does not answer*.
 
-Two and a half to three and a quarter minutes per call, on a review the user is
-waiting to start, is the empirical confirmation of `gd-26r.4`: this cannot be
+From just under two and a half minutes to a little over three per call, on a
+review the user is waiting to start, is the empirical confirmation of `gd-26r.4`: this cannot be
 synchronous.
 The heuristics must render immediately and refine must arrive later or not at
 all.
@@ -955,7 +958,7 @@ there the limit is judgement.
 
 Two consequences for `gd-26r.8`:
 
-- **Almost no file lands with exactly the same group-mates in every run** — 3.1%
+- **Almost no file lands with exactly the same group-mates in every run** — 3.2%
   to 11.8% under `full`, and this is the number that moved most between five runs
   and ten. At five runs it read 21.5% and 27.3%; every extra run can only take
   files out of that set, and it kept taking them, which means the five-run figure
@@ -986,8 +989,11 @@ loses slightly more often than it wins, not a fix.
 This is a correction, and it is the reason the corpus was doubled. The five-run
 version of this document reported that seven of ten triples cleared the bar and
 called the result provisional pending ten runs. At ten runs the honest figure is
-42%, and the earlier 0.411 headline was a favourable draw: it sits in the top
-quintile of the 120.
+42%, and the earlier 0.411 headline was a mildly favourable draw rather than a
+typical one: it ranks 42nd of the 120 triples from the top — the upper third,
+above the 0.369 median but below the 0.439 best. `refine_report` prints that
+rank beside the distribution, so it re-derives offline like every other number
+here.
 
 Fixture 2 is nowhere near its bar under any triple — 120 of 120 clear, minimum
 0.640 against a bar of 0.378 — so nothing here qualifies that side of the split.

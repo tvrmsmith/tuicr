@@ -379,6 +379,17 @@ fn run_dir(fixture: &str) -> PathBuf {
 
 const ORCA_FIXTURE: &str = "orca-971b16754";
 
+/// Runs per shape in the committed corpus. Every published figure is a property
+/// of this N, so the tests that lock those figures assert it rather than
+/// accepting whatever happens to be on disk.
+const RECORDED_RUNS: usize = 10;
+
+/// The published count of fixture-1 `full` triples clearing the bar is 50 of
+/// 120. A little slack absorbs a re-record; anything much above it is the
+/// verdict moving, which `docs/GROUPING_PASSES.md` would have to be rewritten
+/// for.
+const TRIPLES_OVER_BAR_CEILING: usize = 55;
+
 /// Writes one prompt per fixture per shape for the run script to send. Not an
 /// assertion but a side effect on `target/`, so it is ignored by default and
 /// invoked deliberately — run it, then run the script. What the prompt must
@@ -1026,6 +1037,140 @@ fn a_recorded_runs_shape_survives_a_hyphenated_model_name() {
     }
 }
 
+/// A partition written the way a run's answer reads: group name, then members.
+fn partition_of(groups: &[(&str, &[&str])]) -> Partition {
+    Partition::from_assignments(groups.iter().flat_map(|(name, members)| {
+        members
+            .iter()
+            .map(move |path| (path.to_string(), name.to_string()))
+    }))
+}
+
+/// The co-membership the scorer sees: for each path, its sorted group-mates
+/// including itself. Names are not part of the answer `consensus` gives, so a
+/// test that asserted them would be asserting `format!("consensus-{root}")`.
+fn co_membership(partition: &Partition) -> BTreeMap<String, Vec<String>> {
+    partition
+        .groups
+        .values()
+        .flat_map(|members| {
+            let mut mates = members.clone();
+            mates.sort();
+            members
+                .iter()
+                .map(move |path| (path.clone(), mates.clone()))
+        })
+        .collect()
+}
+
+/// The threshold the whole "three calls and a vote" recommendation rests on: a
+/// pair travels together only when a strict majority of runs put it together.
+#[test]
+fn consensus_keeps_a_pair_two_of_three_runs_agree_on_and_drops_a_lone_vote() {
+    let together = partition_of(&[("a", &["one", "two"]), ("b", &["three"])]);
+    let apart = partition_of(&[("a", &["one"]), ("b", &["two", "three"])]);
+    let voted = refine::consensus(&[together.clone(), together, apart])
+        .expect("three runs are enough to vote");
+
+    let mates = co_membership(&voted);
+    assert_eq!(
+        mates["one"],
+        vec!["one".to_string(), "two".to_string()],
+        "two of three runs co-grouped one and two"
+    );
+    assert_eq!(
+        mates["three"],
+        vec!["three".to_string()],
+        "only one of three runs co-grouped two and three"
+    );
+}
+
+/// Groups are the connected components of the surviving pairs, so a majority on
+/// `a-b` and a majority on `b-c` puts `a`, `b` and `c` together even though no
+/// run proposed that group and no majority ever voted for `a-c` directly.
+#[test]
+fn consensus_closes_a_chain_of_majorities_transitively() {
+    let ab = partition_of(&[("x", &["a", "b"]), ("y", &["c"])]);
+    let bc = partition_of(&[("x", &["a"]), ("y", &["b", "c"])]);
+    let all = partition_of(&[("x", &["a", "b", "c"])]);
+    let voted = refine::consensus(&[ab, bc, all]).expect("three runs are enough to vote");
+
+    let mates = co_membership(&voted);
+    assert_eq!(
+        mates["a"],
+        vec!["a".to_string(), "b".to_string(), "c".to_string()],
+        "a-b and b-c both carry two of three votes, so the component is all three"
+    );
+}
+
+/// A vote of one is its own majority, so consensus of a single run must be that
+/// run's partition. This is the identity the "consensus of N" column degenerates
+/// to and the sanity check on the majority arithmetic at N = 1.
+#[test]
+fn consensus_of_one_run_is_that_run() {
+    let run = partition_of(&[("a", &["one", "two"]), ("b", &["three", "four"])]);
+    let voted = refine::consensus(std::slice::from_ref(&run)).expect("one run still votes");
+
+    assert_eq!(
+        co_membership(&voted),
+        co_membership(&run),
+        "a single run is unanimous with itself"
+    );
+    assert!(
+        refine::consensus(&[]).is_none(),
+        "no runs is no consensus, not an empty partition"
+    );
+}
+
+/// A path only some runs carry must survive the vote. Taking the path set from
+/// one run would delete it from the voted partition outright, depressing recall
+/// with no signal — the failure this test exists to catch.
+#[test]
+fn consensus_carries_every_path_any_run_grouped() {
+    let short = partition_of(&[("a", &["one", "two"])]);
+    let long = partition_of(&[("a", &["one", "two"]), ("b", &["three"])]);
+    let voted = refine::consensus(&[short.clone(), long.clone(), long])
+        .expect("three runs are enough to vote");
+
+    assert_eq!(
+        voted.file_count(),
+        3,
+        "the voted partition carries the union of the runs' paths, not run 0's"
+    );
+    assert!(
+        co_membership(&voted).contains_key("three"),
+        "a path only later runs carried is still in the consensus"
+    );
+}
+
+/// The voted partition is scored by the same harness as any pass, so it has to
+/// be a strict partition of the changeset — the property
+/// `every_recorded_run_yields_a_strict_partition` locks for `apply`.
+#[test]
+fn every_recorded_triple_votes_a_strict_partition() {
+    let (changeset, _) = orca();
+    for shape in Shape::ALL {
+        let partitions: Vec<Partition> = load_runs(ORCA_FIXTURE, &changeset, shape)
+            .iter()
+            .map(|run| run.refined.partition.clone())
+            .collect();
+        for (i, j, k) in triples(partitions.len()) {
+            let ballot = [
+                partitions[i].clone(),
+                partitions[j].clone(),
+                partitions[k].clone(),
+            ];
+            let voted = refine::consensus(&ballot).expect("three runs are enough to vote");
+            assert_eq!(
+                voted.file_count(),
+                changeset.len(),
+                "{} triple ({i},{j},{k}): every file voted exactly once",
+                shape.slug()
+            );
+        }
+    }
+}
+
 struct Run {
     record: RunRecord,
     refined: refine::Refined,
@@ -1036,6 +1181,34 @@ struct Run {
 /// claim about all of them.
 fn triples(n: usize) -> impl Iterator<Item = (usize, usize, usize)> {
     (0..n).flat_map(move |i| ((i + 1)..n).flat_map(move |j| ((j + 1)..n).map(move |k| (i, j, k))))
+}
+
+/// Every three-call vote the recorded runs admit, scored against the hand
+/// grouping and sorted ascending. The printer and the test that locks the
+/// verdict both publish numbers off this distribution, so they read it from one
+/// place: two copies could drift while both still compiled, and the printer is
+/// `#[ignore]`d, so the drift would not surface.
+fn triple_f1s(partitions: &[Partition], expected: &Partition) -> Vec<f64> {
+    let mut voted: Vec<f64> = triples(partitions.len())
+        .filter_map(|(i, j, k)| {
+            let ballot = [
+                partitions[i].clone(),
+                partitions[j].clone(),
+                partitions[k].clone(),
+            ];
+            refine::consensus(&ballot).map(|c| c.score_against(expected).f1)
+        })
+        .collect();
+    voted.sort_by(|a, b| a.partial_cmp(b).expect("F1 is never NaN"));
+    voted
+}
+
+/// The upper-middle element of an ascending distribution. Named rather than
+/// spelled `voted[len / 2]` in two places, because the test that locks the
+/// verdict and the printer that publishes it must name the same statistic — at
+/// an even 120 triples the two middles differ in the third decimal.
+fn upper_median(sorted: &[f64]) -> f64 {
+    sorted[sorted.len() / 2]
 }
 
 /// Every recorded run on disk, or a panic naming the one that could not be
@@ -1184,28 +1357,34 @@ fn refine_report() {
                 // whether voting is a fix is therefore the whole distribution, so
                 // it is printed rather than left to be reasoned about from one
                 // draw.
-                let mut voted: Vec<f64> = triples(partitions.len())
-                    .filter_map(|(i, j, k)| {
-                        let ballot = [
-                            partitions[i].clone(),
-                            partitions[j].clone(),
-                            partitions[k].clone(),
-                        ];
-                        refine::consensus(&ballot).map(|c| c.score_against(&expected).f1)
-                    })
-                    .collect();
+                let voted = triple_f1s(&partitions, &expected);
                 if !voted.is_empty() {
-                    voted.sort_by(|a, b| a.partial_cmp(b).expect("F1 is never NaN"));
                     let over = voted.iter().filter(|f1| **f1 > bar).count();
                     println!(
-                        "  every triple: {over}/{} clear the bar  min {:.3} median {:.3} \
+                        "  every triple: {over}/{} clear the bar  min {:.3} upper median {:.3} \
                          max {:.3} mean {:.3}",
                         voted.len(),
                         voted[0],
-                        voted[voted.len() / 2],
+                        upper_median(&voted),
                         voted[voted.len() - 1],
                         voted.iter().sum::<f64>() / voted.len() as f64,
                     );
+                    // Where the *first* triple — the one a five-run corpus and
+                    // an eye on run order would have reported — sits in the
+                    // whole distribution. Published as a rank rather than
+                    // reasoned about, so no claim about that draw rests on a
+                    // statistic this printer does not emit.
+                    if let Some(first) = refine::consensus(&partitions[..3.min(partitions.len())])
+                        .filter(|_| partitions.len() >= 3)
+                        .map(|c| c.score_against(&expected).f1)
+                    {
+                        let above = voted.iter().filter(|f1| **f1 > first).count();
+                        println!(
+                            "  first triple {first:.3} ranks {} of {} from the top",
+                            above + 1,
+                            voted.len()
+                        );
+                    }
                     let singles = f1s.iter().filter(|f1| **f1 > bar).count();
                     println!("  single calls clearing the bar: {singles}/{}", f1s.len());
                 }
@@ -1367,9 +1546,10 @@ fn no_committed_run_needed_a_repair() {
     let (changeset, _) = orca();
     for shape in Shape::ALL {
         let runs = load_runs(ORCA_FIXTURE, &changeset, shape);
-        assert!(
-            !runs.is_empty(),
-            "{}: no committed runs to check",
+        assert_eq!(
+            runs.len(),
+            RECORDED_RUNS,
+            "{}: the published zero is a property of a {RECORDED_RUNS}-run corpus",
             shape.slug()
         );
         for (index, run) in runs.iter().enumerate() {
@@ -1388,12 +1568,15 @@ fn no_committed_run_needed_a_repair() {
 /// does not repair it.
 ///
 /// This replaces a test that asserted the *first* triple clears the bar. It did
-/// — 0.411 — but at ten runs that draw turns out to sit in the top quintile of
-/// the 120 triples, and the median is below the bar. Locking one favourable
-/// draw made a coin flip read as a result, so what is locked now is the
-/// distribution: no single call clears, and a minority of triples do. A change
-/// that genuinely fixed fixture 1 would fail this test, which is the point —
-/// the verdict would have moved and the document would have to say so.
+/// — 0.411 — but at ten runs that draw turns out to rank 42nd of the 120
+/// triples from the top, in the upper third rather than anywhere decisive, and
+/// the median is below the bar. Locking one favourable draw made a coin flip
+/// read as a result, so what is locked now is the distribution: no single call
+/// clears, and a minority of triples do. A change that genuinely fixed fixture
+/// 1 would fail this test, which is the point — the verdict would have moved
+/// and the document would have to say so. `refine_report` prints that rank
+/// beside the distribution, so the claim above is re-derivable offline like
+/// every other published number.
 #[test]
 fn voting_does_not_rescue_fixture_one() {
     let (label, changeset, expected) = fixtures()
@@ -1401,7 +1584,15 @@ fn voting_does_not_rescue_fixture_one() {
         .find(|(label, _, _)| label == ORCA_FIXTURE)
         .expect("the checked-in fixture is always present");
     let runs = load_runs(&label, &changeset, Shape::Full);
-    assert!(runs.len() >= 3, "need three recorded full runs to vote");
+    // Every headline this test locks — "0 of 10", "50 of 120", the median — is
+    // a property of ten runs. At three, `triples` yields a single triple and
+    // "the median of the distribution" degenerates back into the one-draw lock
+    // this test exists to replace.
+    assert_eq!(
+        runs.len(),
+        RECORDED_RUNS,
+        "the locked distribution is a property of a {RECORDED_RUNS}-run corpus"
+    );
 
     let bar = passes::group(&changeset, GroupingConfig::default())
         .partition()
@@ -1419,29 +1610,22 @@ fn voting_does_not_rescue_fixture_one() {
         .iter()
         .map(|run| run.refined.partition.clone())
         .collect();
-    let mut voted: Vec<f64> = triples(partitions.len())
-        .filter_map(|(i, j, k)| {
-            let ballot = [
-                partitions[i].clone(),
-                partitions[j].clone(),
-                partitions[k].clone(),
-            ];
-            refine::consensus(&ballot).map(|c| c.score_against(&expected).f1)
-        })
-        .collect();
-    voted.sort_by(|a, b| a.partial_cmp(b).expect("F1 is never NaN"));
+    let voted = triple_f1s(&partitions, &expected);
 
+    // The document publishes 50 of 120. Locked at the published band rather
+    // than at "not most", which would have let the figure drift most of the way
+    // to a majority without failing the test the verdict rests on.
     let over = voted.iter().filter(|f1| **f1 > bar).count();
     assert!(
-        over * 2 < voted.len(),
-        "most triples now clear the bar ({over} of {}), so voting does rescue \
-         fixture 1 and the verdict has moved",
+        over <= TRIPLES_OVER_BAR_CEILING,
+        "{over} of {} triples clear the bar, over the published {TRIPLES_OVER_BAR_CEILING}, \
+         so voting is rescuing fixture 1 and the verdict has moved",
         voted.len()
     );
     assert!(
-        voted[voted.len() / 2] < bar,
-        "the median triple scored {:.3}, at or over {bar:.3}",
-        voted[voted.len() / 2]
+        upper_median(&voted) < bar,
+        "the upper median triple scored {:.3}, at or over {bar:.3}",
+        upper_median(&voted)
     );
 }
 

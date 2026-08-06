@@ -527,9 +527,24 @@ pub fn agglomerative_grouping(changeset: &Changeset, target_groups: usize) -> Pa
         clusters[a].extend(merged);
     }
 
+    // `Partition` buckets by name, so two clusters that derive the same name
+    // would be unioned and the result would quietly be smaller than the
+    // baseline the caller asked for. Colliding names are suffixed instead.
     let mut assignments = Vec::new();
+    let mut used: BTreeSet<String> = BTreeSet::new();
     for members in &clusters {
-        let name = derive_group_name(&files, members);
+        let base = derive_group_name(&files, members);
+        let name = (1..)
+            .map(|suffix| {
+                if suffix == 1 {
+                    base.clone()
+                } else {
+                    format!("{base}-{suffix}")
+                }
+            })
+            .find(|candidate| !used.contains(candidate))
+            .expect("a free name exists");
+        used.insert(name.clone());
         assignments.extend(
             members
                 .iter()
