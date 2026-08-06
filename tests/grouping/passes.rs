@@ -4,7 +4,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use super::changeset::{ChangeKind, ChangedFile, Changeset};
-use super::score::{Partition, free_name};
+use super::score::{Partition, f1, free_name};
 
 /// Where a file ended up, which pass put it there, and — on close calls only —
 /// the group it nearly went to instead. Derived state, recomputed per regroup.
@@ -578,12 +578,7 @@ pub fn best_key_per_expected_group(
                     let hits = holders.intersection(&members).count() as f64;
                     let precision = hits / holders.len() as f64;
                     let recall = hits / members.len() as f64;
-                    let f1 = if precision + recall == 0.0 {
-                        0.0
-                    } else {
-                        2.0 * precision * recall / (precision + recall)
-                    };
-                    (key.clone(), f1)
+                    (key.clone(), f1(precision, recall))
                 })
                 .max_by(|a, b| a.1.partial_cmp(&b.1).unwrap())
                 .unwrap_or_default();

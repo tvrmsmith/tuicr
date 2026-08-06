@@ -233,11 +233,7 @@ pub fn apply(
 ) -> Result<Refined, String> {
     let value = extract_json(body)?;
     let heuristic = grouping.partition();
-    let heuristic_group: BTreeMap<&str, &str> = heuristic
-        .groups
-        .iter()
-        .flat_map(|(name, members)| members.iter().map(move |p| (p.as_str(), name.as_str())))
-        .collect();
+    let heuristic_group = heuristic.group_of();
     let all_paths: BTreeSet<&str> = changeset.files.iter().map(|f| f.path.as_str()).collect();
 
     let groups = value
@@ -258,8 +254,15 @@ pub fn apply(
             for (index, group) in groups.iter().enumerate() {
                 let name = group_name(group, index, &mut used, &mut repairs);
                 order.push(name.clone());
-                let files = group.get("files").and_then(Value::as_array);
-                for path in files.into_iter().flatten().filter_map(Value::as_str) {
+                // A group with no usable `files` is not an empty group: it has
+                // already taken a name and an `order` slot, and its intended
+                // paths will be swept up by the restore loop below and reported
+                // as generic drops. Name the shape violation where it happens.
+                let Some(files) = group.get("files").and_then(Value::as_array) else {
+                    repairs.push(format!("group `{name}` has no `files`"));
+                    continue;
+                };
+                for path in files.iter().filter_map(Value::as_str) {
                     if !all_paths.contains(path) {
                         repairs.push(format!("invented path dropped: {path}"));
                         continue;
@@ -274,30 +277,33 @@ pub fn apply(
             }
         }
         Shape::MergeOnly | Shape::NamingOnly => {
-            let key = if shape == Shape::MergeOnly {
-                "merge"
-            } else {
-                "was"
-            };
             let mut claimed: BTreeSet<String> = BTreeSet::new();
             for (index, group) in groups.iter().enumerate() {
                 let name = group_name(group, index, &mut used, &mut repairs);
                 order.push(name.clone());
-                let sources: Vec<String> = match shape {
-                    Shape::MergeOnly => group
-                        .get(key)
-                        .and_then(Value::as_array)
-                        .into_iter()
-                        .flatten()
-                        .filter_map(Value::as_str)
-                        .map(str::to_string)
-                        .collect(),
-                    _ => group
-                        .get(key)
-                        .and_then(Value::as_str)
-                        .map(str::to_string)
-                        .into_iter()
-                        .collect(),
+                // As in the `files` case above, a group that omits its source
+                // key has still taken a name and an order slot, so the omission
+                // is named rather than read as "claims nothing".
+                let sources: Vec<String> = if shape == Shape::MergeOnly {
+                    match group.get("merge").and_then(Value::as_array) {
+                        Some(list) => list
+                            .iter()
+                            .filter_map(Value::as_str)
+                            .map(str::to_string)
+                            .collect(),
+                        None => {
+                            repairs.push(format!("group `{name}` has no `merge`"));
+                            continue;
+                        }
+                    }
+                } else {
+                    match group.get("was").and_then(Value::as_str) {
+                        Some(was) => vec![was.to_string()],
+                        None => {
+                            repairs.push(format!("group `{name}` has no `was`"));
+                            continue;
+                        }
+                    }
                 };
                 // Merge-only can only coarsen, and it is this loop that makes
                 // that structural rather than a property of the answers: a
@@ -427,7 +433,7 @@ pub struct Agreement {
 /// This is what `gd-26r.8` (regrouping state) actually needs to know — not how
 /// much the partition moved on average, but how many files a reviewer would
 /// find somewhere else after a re-run.
-/// Paired with [`FileStability::churn`], the softer reading of the same thing:
+/// Paired with [`FileStability::mean_overlap`], the softer reading of the same thing:
 /// the mean overlap of a file's group-mates between two runs. The strict share
 /// answers "would a reviewer notice"; the overlap answers "by how much".
 pub fn file_stability(runs: &[Partition]) -> Option<FileStability> {
@@ -445,32 +451,50 @@ pub fn file_stability(runs: &[Partition]) -> Option<FileStability> {
             .collect()
     };
     let all: Vec<_> = runs.iter().map(companions).collect();
-    let (reference, others) = all.split_first()?;
+    // The union of every run's paths, not run 0's: a path only some runs carry
+    // is exactly the least stable kind of path there is, and anchoring on run 0
+    // would drop it from both figures and so overstate stability precisely when
+    // the runs disagree most.
+    let paths: BTreeSet<&String> = all.iter().flat_map(BTreeMap::keys).collect();
 
-    let identical = reference
+    let identical = paths
         .iter()
-        .filter(|(path, set)| others.iter().all(|other| other.get(*path) == Some(set)))
+        .filter(|path| {
+            let mut sets = all.iter().map(|run| run.get(**path));
+            let first = sets.next().flatten();
+            first.is_some() && sets.all(|set| set == first)
+        })
         .count();
 
     let mut overlaps = Vec::new();
     for (index, left) in all.iter().enumerate() {
         for right in &all[index + 1..] {
-            for (path, mine) in left {
-                let Some(theirs) = right.get(path) else {
-                    continue;
+            for path in &paths {
+                // A path one run does not carry shares no group-mates with the
+                // run that does: overlap 0, not skipped. `mine` always holds
+                // the path itself, so a union of zero means both sides are
+                // absent, which is not a disagreement.
+                let (mine, theirs) = (left.get(*path), right.get(*path));
+                let union = match (mine, theirs) {
+                    (None, None) => continue,
+                    _ => mine
+                        .into_iter()
+                        .flatten()
+                        .chain(theirs.into_iter().flatten())
+                        .collect::<BTreeSet<_>>()
+                        .len(),
                 };
-                let union = mine.union(theirs).count();
-                overlaps.push(if union == 0 {
-                    1.0
-                } else {
-                    mine.intersection(theirs).count() as f64 / union as f64
-                });
+                let shared = match (mine, theirs) {
+                    (Some(mine), Some(theirs)) => mine.intersection(theirs).count(),
+                    _ => 0,
+                };
+                overlaps.push(shared as f64 / union as f64);
             }
         }
     }
 
     Some(FileStability {
-        identical_share: identical as f64 / reference.len().max(1) as f64,
+        identical_share: identical as f64 / paths.len().max(1) as f64,
         mean_overlap: overlaps.iter().sum::<f64>() / overlaps.len().max(1) as f64,
     })
 }
@@ -497,11 +521,7 @@ pub fn recall_per_expected_group(
     partition: &Partition,
     expected: &Partition,
 ) -> Vec<(String, usize, f64)> {
-    let group_of: BTreeMap<&str, &str> = partition
-        .groups
-        .iter()
-        .flat_map(|(name, members)| members.iter().map(move |p| (p.as_str(), name.as_str())))
-        .collect();
+    let group_of = partition.group_of();
 
     expected
         .groups
@@ -558,10 +578,10 @@ pub fn consensus(runs: &[Partition]) -> Option<Partition> {
     for run in runs {
         for members in run.groups.values() {
             let ids: Vec<usize> = members.iter().map(|path| index[path.as_str()]).collect();
+            // Upper triangle only, which is the half the tally below reads.
             for (n, &a) in ids.iter().enumerate() {
                 for &b in &ids[n + 1..] {
-                    votes[a][b] += 1;
-                    votes[b][a] += 1;
+                    votes[a.min(b)][a.max(b)] += 1;
                 }
             }
         }

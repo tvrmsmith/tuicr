@@ -1014,7 +1014,14 @@ but `merge-only`, at 107 of 120; see *The cheaper shapes*.
 **Naming-only cannot move the metric.** Not "did not" — *cannot*. The scorer
 ignores group names by design, so a shape that only renames scores exactly the
 heuristic number on every run, on both fixtures, forever.
-`naming_only_cannot_move_the_metric` locks this. It is also the one shape that is
+Two tests lock this between them. The *cannot* is structural, and adversarial
+hand-written bodies show it: a naming-only answer that supplies a `files` array
+interleaving two heuristic groups, one that claims an input group twice, one that
+omits its `was` and one that names a group that does not exist all leave the
+partition byte-identical and are counted as repairs
+(`naming_only_refuses_a_files_array_that_moves_a_path` and its three siblings).
+`every_recorded_naming_only_run_applied_to_the_heuristic_partition` then adds
+that no committed run needed that machinery. It is also the one shape that is
 perfectly stable and costs $0.12–0.22 for 20–40s.
 
 This is a real limit on the answer, not a result: **naming-only is the shape this
@@ -1054,16 +1061,26 @@ Stated plainly, because it is a large hole:
   and cannot be measured on these fixtures at all.
 - **The cost of a hunk-reading pass is out of reach anyway, on this evidence.**
   Fixture 1's diff is roughly 11.9k changed lines, on the order of 120–200k
-  tokens, which is at or past `claude-opus-5`'s context window before any output.
-  A code-reading refine could not be one call over a 161-file changeset; it would
-  need chunking or summarisation, which is a different pass with a different
-  design.
+  tokens. The top of that range reaches `claude-opus-5`'s context window before
+  any output, and the bottom leaves little of it for anything else. A
+  code-reading refine could not be relied on to fit in one call over a 161-file
+  changeset; it would need chunking or summarisation, which is a different pass
+  with a different design.
 - **Naming quality is invisible here**, as above. It may be the largest
   user-visible benefit and it scores zero on this harness.
-- **Reading order is invisible here.** Refine returns groups in a proposed
-  reading order (rule 2, intent-centrality) and the report prints it, but the
-  scorer is
-  order-blind, so no number in this document says whether the order is good.
+- **Reading order is invisible here, and unrepresented on the heuristic side.**
+  The scorer is order-blind — it compares partitions, and a partition has no
+  order — so no number in this document says whether either arm's order is good.
+  The two arms are not even symmetrical about it: refine returns groups in a
+  proposed reading order (`Refined.order`) and the report prints it, while the
+  heuristic arm carries no order at all — `Grouping` holds a bag of assignments,
+  `Partition.groups` is a name-keyed `BTreeMap`, and `report_fixture` prints by
+  group size. So `docs/GROUPING.md` rules 2, 3 and 8 — intent-centrality
+  ordering, drive-bys last, mechanical changes last — are scored on neither arm,
+  and the heuristic baseline the refine numbers are compared against does not
+  attempt them. This is a known gap with a follow-up bead, not an oversight:
+  order-aware scoring means an order on the heuristic side, an order metric, and
+  ordered expectations in both fixtures, which is its own piece of work.
 - **Two fixtures, one model, ten runs.** Both are single feature-branch PRs of
   ~160 files. Nothing here speaks to a 400-file changeset, a merge commit, a
   refactor sweep, or a cheaper model — `sonnet` resolves on this deployment and

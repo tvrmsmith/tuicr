@@ -86,10 +86,24 @@ check_git_repo() {
   return 0
 }
 
+# True only when a tuicr is already reviewing *this* repository. Orca panes do
+# not expose a running-command listing, so this is a process check — but a
+# machine-wide one would report success because of a tuicr in some unrelated
+# repo and send the user hunting for a pane that does not exist here.
 check_tuicr_running() {
-  # Orca panes do not expose a running-command listing, so fall back to a
-  # process check like the zellij wrapper.
-  pgrep -x tuicr &>/dev/null
+  local target_dir="$1"
+  local pid
+
+  while read -r pid; do
+    [[ -n "$pid" ]] || continue
+    # The launched pane runs `cd <dir> && tuicr`, so the review's repository is
+    # the process's working directory rather than an argument.
+    if [[ "$(lsof -a -p "$pid" -d cwd -Fn 2>/dev/null | sed -n 's/^n//p')" == "$target_dir" ]]; then
+      return 0
+    fi
+  done < <(pgrep -x tuicr 2>/dev/null)
+
+  return 1
 }
 
 check_tuicr_stdout_support() {
@@ -242,10 +256,14 @@ main() {
     exit 1
   fi
 
-  if check_tuicr_running; then
-    log_warn "tuicr is already running"
-    log_info "Switch to its pane by clicking it in the Orca UI"
-    exit 0
+  if check_tuicr_running "$target_dir"; then
+    log_error "tuicr is already reviewing $target_dir"
+    echo ""
+    echo "Switch to its pane by clicking it in the Orca UI, or quit it there and"
+    echo "run /tuicr again. To review a different repository, pass its directory:"
+    echo ""
+    echo "  $(basename "$0") <directory>"
+    exit 1
   fi
 
   trap cleanup EXIT

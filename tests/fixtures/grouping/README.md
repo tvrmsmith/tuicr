@@ -130,6 +130,25 @@ the tree *is* the concern tree — it is the strongest baseline on fixture 2 by 
 wide margin (0.312, against 0.155 for top-level directory), and it beat the
 heuristic passes outright until `gd-26r.21` fixed the defects behind that.
 
+### Order is out of scope here
+
+Group *order* is not scored. Pairwise co-membership compares partitions, and a
+partition has no order, so nothing in this fixture or in the scorer grades the
+sequence a reviewer is asked to read the groups in.
+
+The two arms are not symmetrical about it either. The model refine pass returns
+a proposed reading order and `Refined.order` keeps it; the heuristic arm carries
+no order at all — `Grouping` holds a bag of assignments, `Partition.groups` is a
+name-keyed `BTreeMap`, and the report prints groups by size. So
+`docs/GROUPING.md` rules 2, 3 and 8 — groups sort by intent-centrality, drive-by
+changes ordered last, mechanical and generated changes ordered last — are
+unscored on both arms and unattempted on the heuristic one.
+
+This is a known gap with a follow-up bead, not an oversight. Closing it means
+giving the heuristics an order, adding an order metric, and adding ordered
+expectations to both fixtures' `.groups` files — a separate piece of work from
+the partition scoring this fixture exists for.
+
 ### Report the shape too
 
 Alongside the score, report group count and largest-group share. They catch the

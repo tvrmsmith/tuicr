@@ -16,7 +16,7 @@
 
 mod grouping;
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 
 use grouping::changeset::{self, ChangeKind, ChangedFile, Changeset};
@@ -100,15 +100,48 @@ fn row(label: &str, score: Score) {
     );
 }
 
+/// A count alone is not well-formedness: one misspelt path in the `.groups`
+/// file and one duplicated path leave the count intact, while the scorer — which
+/// matches paths by string — counts the typo's pairs against precision and never
+/// for recall, silently deflating every published number. So the grouped paths
+/// are checked as a *set* against the changeset, and the header-less bucket
+/// `Partition::parse` opens for stray lines is required to be absent.
+fn assert_well_formed(label: &str, changeset: &Changeset, expected: &Partition) {
+    assert!(
+        !expected.groups.contains_key("ungrouped"),
+        "{label}: {} lines precede the first [group] header",
+        expected.groups.get("ungrouped").map_or(0, Vec::len)
+    );
+
+    let grouped: BTreeSet<&str> = expected
+        .groups
+        .values()
+        .flatten()
+        .map(String::as_str)
+        .collect();
+    let changed: BTreeSet<&str> = changeset.files.iter().map(|f| f.path.as_str()).collect();
+    assert_eq!(
+        grouped.difference(&changed).collect::<Vec<_>>(),
+        Vec::<&&str>::new(),
+        "{label}: the expected grouping names paths the changeset does not"
+    );
+    assert_eq!(
+        changed.difference(&grouped).collect::<Vec<_>>(),
+        Vec::<&&str>::new(),
+        "{label}: the changeset has paths the expected grouping does not place"
+    );
+    assert_eq!(
+        expected.file_count(),
+        grouped.len(),
+        "{label}: a path is placed in more than one group"
+    );
+}
+
 #[test]
 fn fixture_is_well_formed() {
     let (changeset, expected) = orca();
     assert_eq!(changeset.len(), 161, "fixture changeset size");
-    assert_eq!(
-        expected.file_count(),
-        changeset.len(),
-        "every file is grouped exactly once"
-    );
+    assert_well_formed(ORCA_FIXTURE, &changeset, &expected);
 }
 
 #[test]
@@ -116,11 +149,7 @@ fn fixture_is_well_formed() {
 fn second_fixture_is_well_formed() {
     let (changeset, expected) = require_external_fixture(SECOND_FIXTURE);
     assert_eq!(changeset.len(), 158, "second fixture changeset size");
-    assert_eq!(
-        expected.file_count(),
-        changeset.len(),
-        "every file is grouped exactly once"
-    );
+    assert_well_formed(SECOND_FIXTURE, &changeset, &expected);
 }
 
 /// A printer, not a test: it asserts nothing and is read with `--nocapture`.
@@ -828,6 +857,39 @@ fn a_group_without_a_name_is_counted_not_defaulted() {
     );
 }
 
+/// A group with no `files` has still taken a name and a reading-order slot, so
+/// it is not the same thing as a group the model deliberately left empty. The
+/// omission is named where it happens rather than turning up downstream as
+/// unexplained dropped paths.
+#[test]
+fn a_group_that_omits_its_files_is_recorded_not_read_as_empty() {
+    let refined = refine_with(
+        r#"{"groups":[{"name":"one","files":["src/a.ts"]},{"name":"two"}]}"#,
+        Shape::Full,
+    );
+    assert_eq!(
+        buckets(&refined),
+        vec![
+            ("alpha".to_string(), vec!["src/b.ts".to_string()]),
+            (
+                "beta".to_string(),
+                vec!["src/c.ts".to_string(), "src/d.ts".to_string()]
+            ),
+            ("one".to_string(), vec!["src/a.ts".to_string()]),
+        ]
+    );
+    assert_eq!(
+        refined.repairs,
+        vec![
+            "group `two` has no `files`",
+            "dropped path restored to `alpha`: src/b.ts",
+            "dropped path restored to `beta`: src/c.ts",
+            "dropped path restored to `beta`: src/d.ts",
+        ]
+    );
+    assert_eq!(refined.order, vec!["one".to_string(), "two".to_string()]);
+}
+
 #[test]
 fn merge_only_ignores_an_input_group_that_does_not_exist() {
     let refined = refine_with(
@@ -902,6 +964,80 @@ fn merge_only_keeps_an_unclaimed_input_group_under_a_free_name() {
     assert_eq!(
         refined.repairs,
         vec!["input group never claimed, kept as-is under `beta-2`: beta"]
+    );
+}
+
+/// Applies an adversarial naming-only body and asserts the two things that
+/// shape promises: the partition the scorer sees is byte-for-byte the heuristic
+/// one, and every deviation from the contract was named as a repair.
+///
+/// The replay over the recorded runs cannot establish the first half — `apply`
+/// writes whole heuristic groups under new names and restores unclaimed ones
+/// verbatim, so co-membership survives *any* parseable body, `{"groups":[]}`
+/// included. Only a body that tries to move a file can show it is refused.
+fn naming_only_leaves_the_partition_alone(body: &str, repairs: &[&str]) {
+    let (changeset, grouping) = two_groups();
+    let refined = refine::apply(body, &changeset, &grouping, Shape::NamingOnly)
+        .expect("a parseable body applies");
+    assert_eq!(
+        co_membership(&refined.partition),
+        co_membership(&grouping.partition()),
+        "naming-only moved a file"
+    );
+    assert_eq!(refined.repairs, repairs);
+}
+
+/// A `files` array is the `full` shape's contract, not this one's. Answering
+/// with one — here one that interleaves the two heuristic groups — must move
+/// nothing, and must not pass silently: each group is missing its `was`.
+#[test]
+fn naming_only_refuses_a_files_array_that_moves_a_path() {
+    naming_only_leaves_the_partition_alone(
+        r#"{"groups":[
+            {"name":"one","files":["src/a.ts","src/c.ts"]},
+            {"name":"two","files":["src/b.ts","src/d.ts"]}]}"#,
+        &[
+            "group `one` has no `was`",
+            "group `two` has no `was`",
+            "input group never claimed, kept as-is under `alpha`: alpha",
+            "input group never claimed, kept as-is under `beta`: beta",
+        ],
+    );
+}
+
+/// Two returned groups naming the same input group would split it in half if
+/// the second claim were honoured. It is refused, and `beta` — which no group
+/// then claims — is kept whole.
+#[test]
+fn naming_only_refuses_a_second_claim_on_one_input_group() {
+    naming_only_leaves_the_partition_alone(
+        r#"{"groups":[{"name":"one","was":"alpha"},{"name":"two","was":"alpha"}]}"#,
+        &[
+            "input group claimed twice, second ignored: alpha",
+            "input group never claimed, kept as-is under `beta`: beta",
+        ],
+    );
+}
+
+#[test]
+fn naming_only_records_a_group_that_omits_its_was() {
+    naming_only_leaves_the_partition_alone(
+        r#"{"groups":[{"name":"one","was":"alpha"},{"name":"two"}]}"#,
+        &[
+            "group `two` has no `was`",
+            "input group never claimed, kept as-is under `beta`: beta",
+        ],
+    );
+}
+
+#[test]
+fn naming_only_ignores_a_was_naming_no_input_group() {
+    naming_only_leaves_the_partition_alone(
+        r#"{"groups":[{"name":"one","was":"ghost"},{"name":"two","was":"beta"}]}"#,
+        &[
+            "unknown input group ignored: ghost",
+            "input group never claimed, kept as-is under `alpha`: alpha",
+        ],
     );
 }
 
@@ -1218,6 +1354,81 @@ fn consensus_carries_every_path_any_run_grouped() {
         "the voted partition carries the union of the runs' paths, not run 0's, \
          and the path only later runs grouped is a group of its own"
     );
+}
+
+/// `agreement` and `file_stability` produce the whole stability table in
+/// docs/GROUPING_PASSES.md, and both are only reachable from a printer, so
+/// these hold them to hand-computed values.
+#[test]
+fn two_identical_runs_agree_completely_and_move_no_file() {
+    let run = partition_of(&[("g", &["a", "b", "c"])]);
+    let agreement = refine::agreement(&[run.clone(), run.clone()]).expect("two runs agree");
+    assert_eq!(
+        (agreement.mean, agreement.worst, agreement.best),
+        (1.0, 1.0, 1.0)
+    );
+
+    let stability = refine::file_stability(&[run.clone(), run]).expect("two runs are comparable");
+    assert_eq!(
+        (stability.identical_share, stability.mean_overlap),
+        (1.0, 1.0)
+    );
+}
+
+/// One file moved between two four-file runs, worked out by hand: the runs hold
+/// 2 and 3 co-membership pairs and share 1, so precision 1/2, recall 1/3,
+/// F1 0.4; no file keeps its exact group-mates, and the four Jaccard overlaps
+/// are 2/3, 2/3, 1/4 and 1/2.
+#[test]
+fn one_moved_file_scores_its_hand_computed_agreement_and_overlap() {
+    let left = partition_of(&[("x", &["a", "b"]), ("y", &["c", "d"])]);
+    let right = partition_of(&[("x", &["a", "b", "c"]), ("y", &["d"])]);
+
+    let agreement = refine::agreement(&[left.clone(), right.clone()]).expect("two runs agree");
+    assert!(
+        (agreement.mean - 0.4).abs() < 1e-9,
+        "agreement mean {:.6}",
+        agreement.mean
+    );
+
+    let stability = refine::file_stability(&[left, right]).expect("two runs are comparable");
+    assert_eq!(stability.identical_share, 0.0);
+    let expected_overlap = (2.0 / 3.0 + 2.0 / 3.0 + 0.25 + 0.5) / 4.0;
+    assert!(
+        (stability.mean_overlap - expected_overlap).abs() < 1e-9,
+        "mean overlap {:.6}, expected {expected_overlap:.6}",
+        stability.mean_overlap
+    );
+}
+
+/// A path only some runs carry is the least stable path there is, so it has to
+/// count as unstable whichever run happens to be first. Anchoring the reference
+/// set on run 0 scored this pair 1.000 / 1.000 one way round and 2/3 the other.
+#[test]
+fn a_path_missing_from_one_run_counts_against_stability_either_way_round() {
+    let short = partition_of(&[("g", &["a", "b"])]);
+    let long = partition_of(&[("g", &["a", "b"]), ("h", &["c"])]);
+
+    for runs in [[short.clone(), long.clone()], [long.clone(), short.clone()]] {
+        let stability = refine::file_stability(&runs).expect("two runs are comparable");
+        assert!(
+            (stability.identical_share - 2.0 / 3.0).abs() < 1e-9,
+            "identical share {:.6}",
+            stability.identical_share
+        );
+        assert!(
+            (stability.mean_overlap - 2.0 / 3.0).abs() < 1e-9,
+            "mean overlap {:.6}",
+            stability.mean_overlap
+        );
+    }
+}
+
+#[test]
+fn stability_of_a_single_run_is_not_a_number() {
+    let run = partition_of(&[("g", &["a", "b"])]);
+    assert!(refine::agreement(std::slice::from_ref(&run)).is_none());
+    assert!(refine::file_stability(std::slice::from_ref(&run)).is_none());
 }
 
 struct Run {
@@ -1541,12 +1752,16 @@ fn refine_report() {
     }
 }
 
-/// The scorer ignores group names, so a shape that only renames cannot move it
-/// — not "did not", *cannot*. The value of naming-only is therefore invisible
-/// to this harness by construction, and saying so is part of the answer rather
-/// than a caveat on it.
+/// Every committed naming-only run applied cleanly to the heuristic partition.
+///
+/// Named for that and no more. The *cannot* half of "naming-only cannot move
+/// the metric" is structural — `apply` writes whole heuristic groups and
+/// restores unclaimed ones verbatim, so this equality holds for any parseable
+/// body — and is locked by the adversarial bodies in
+/// `naming_only_leaves_the_partition_alone`'s callers, not here. What this adds
+/// is that no recorded answer needed that machinery to save it.
 #[test]
-fn naming_only_cannot_move_the_metric() {
+fn every_recorded_naming_only_run_applied_to_the_heuristic_partition() {
     for (label, changeset, _) in fixtures() {
         let runs = load_runs(&label, &changeset, Shape::NamingOnly);
         expect_full_corpus(&label, &runs, Shape::NamingOnly);
@@ -1722,40 +1937,56 @@ fn ablations(default: GroupingConfig) -> Vec<(String, GroupingConfig)> {
     ]
 }
 
+fn assert_heuristic_beats_every_baseline(label: &str, changeset: &Changeset, expected: &Partition) {
+    let heuristic = passes::group(changeset, GroupingConfig::default())
+        .partition()
+        .score_against(expected);
+
+    for (baseline_label, baseline) in [
+        ("all-one-group", passes::baseline::all_one_group(changeset)),
+        (
+            "one-file-per-group",
+            passes::baseline::one_file_per_group(changeset),
+        ),
+        (
+            "top-level-directory",
+            passes::baseline::top_level_directory(changeset),
+        ),
+        (
+            "parent-directory",
+            passes::baseline::parent_directory(changeset),
+        ),
+    ] {
+        let score = baseline.score_against(expected);
+        assert!(
+            heuristic.f1 > score.f1,
+            "{label}: heuristic F1 {:.3} must beat {baseline_label} F1 {:.3}",
+            heuristic.f1,
+            score.f1
+        );
+    }
+}
+
 /// True on both fixtures since directory evidence was turned on (`gd-26r.21`).
 /// It was true on fixture 1 only while the engine grouped on filename tokens
 /// alone: fixture 2 lost to parent-directory, 0.282 against 0.312.
+///
+/// Named for what it checks rather than for the claim: `fixtures()` yields only
+/// the checked-in fixture on a machine without the private one — CI — so the
+/// fixture-2 half is `heuristic_beats_every_baseline_on_the_second_fixture`,
+/// `#[ignore]`d so libtest lists it as unrun rather than passing green.
 #[test]
-fn heuristic_beats_every_baseline_on_both_fixtures() {
+fn heuristic_beats_every_baseline_on_every_available_fixture() {
     for (label, changeset, expected) in fixtures() {
-        let heuristic = passes::group(&changeset, GroupingConfig::default())
-            .partition()
-            .score_against(&expected);
-
-        for (baseline_label, baseline) in [
-            ("all-one-group", passes::baseline::all_one_group(&changeset)),
-            (
-                "one-file-per-group",
-                passes::baseline::one_file_per_group(&changeset),
-            ),
-            (
-                "top-level-directory",
-                passes::baseline::top_level_directory(&changeset),
-            ),
-            (
-                "parent-directory",
-                passes::baseline::parent_directory(&changeset),
-            ),
-        ] {
-            let score = baseline.score_against(&expected);
-            assert!(
-                heuristic.f1 > score.f1,
-                "{label}: heuristic F1 {:.3} must beat {baseline_label} F1 {:.3}",
-                heuristic.f1,
-                score.f1
-            );
-        }
+        assert_heuristic_beats_every_baseline(&label, &changeset, &expected);
     }
+}
+
+#[test]
+#[ignore = "needs $TUICR_GROUPING_FIXTURES"]
+fn heuristic_beats_every_baseline_on_the_second_fixture() {
+    let (changeset, expected) = require_external_fixture(SECOND_FIXTURE);
+    assert_heuristic_beats_every_baseline(SECOND_FIXTURE, &changeset, &expected);
 }
 
 /// Directory evidence is the whole of fixture 2's result, so the ablation is
@@ -1799,7 +2030,7 @@ fn directory_evidence_carries_the_second_fixture() {
 /// external one when its directory is present.
 fn fixtures() -> Vec<(String, Changeset, Partition)> {
     let (changeset, expected) = orca();
-    let mut fixtures = vec![("orca-971b16754".to_string(), changeset, expected)];
+    let mut fixtures = vec![(ORCA_FIXTURE.to_string(), changeset, expected)];
     match external_fixture(SECOND_FIXTURE) {
         Some((changeset, expected)) => {
             fixtures.push((SECOND_FIXTURE.to_string(), changeset, expected))
@@ -1807,6 +2038,53 @@ fn fixtures() -> Vec<(String, Changeset, Partition)> {
         None => skip_notice(SECOND_FIXTURE),
     }
     fixtures
+}
+
+/// Every published number flows through `score_against`, and scoring a
+/// partition against itself is a degenerate check — it holds for any symmetric
+/// pair-counting bug. So one case is worked out by hand instead.
+///
+/// Expected `{A:[a,b,c], B:[d]}` holds 3 + 0 co-membership pairs; computed
+/// `{X:[a,b], Y:[c,d]}` holds 1 + 1. The pair they share is (a,b): `c` and `d`
+/// are together in the computed grouping but apart in the expected one. So
+/// precision 1/2, recall 1/3, F1 0.4, over 2 groups whose largest holds half
+/// the changeset.
+#[test]
+fn the_scorer_matches_a_hand_computed_case() {
+    let expected = partition_of(&[("A", &["a", "b", "c"]), ("B", &["d"])]);
+    let computed = partition_of(&[("X", &["a", "b"]), ("Y", &["c", "d"])]);
+    let score = computed.score_against(&expected);
+
+    assert!(
+        (score.precision - 0.5).abs() < 1e-9,
+        "P {:.6}",
+        score.precision
+    );
+    assert!(
+        (score.recall - 1.0 / 3.0).abs() < 1e-9,
+        "R {:.6}",
+        score.recall
+    );
+    assert!((score.f1 - 0.4).abs() < 1e-9, "F1 {:.6}", score.f1);
+    assert_eq!(score.group_count, 2);
+    assert!((score.largest_share - 0.5).abs() < 1e-9);
+
+    // The asymmetric half: swapping the arguments swaps precision and recall
+    // and leaves F1 where it was, which a mis-scoped overlap map would not.
+    let flipped = expected.score_against(&computed);
+    assert!((flipped.precision - 1.0 / 3.0).abs() < 1e-9);
+    assert!((flipped.recall - 0.5).abs() < 1e-9);
+    assert!((flipped.f1 - 0.4).abs() < 1e-9);
+}
+
+/// A partition that co-groups nothing has no true positives to be precise
+/// about, and F1 is zero rather than undefined there.
+#[test]
+fn a_partition_that_co_groups_nothing_scores_zero_not_nan() {
+    let expected = partition_of(&[("A", &["a", "b"])]);
+    let singletons = partition_of(&[("x", &["a"]), ("y", &["b"])]);
+    let score = singletons.score_against(&expected);
+    assert_eq!((score.precision, score.recall, score.f1), (0.0, 0.0, 0.0));
 }
 
 #[test]

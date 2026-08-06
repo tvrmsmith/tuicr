@@ -30,13 +30,21 @@ runs="${1:-10}"
 repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 prompts="$repo/target/grouping-refine/prompts"
 fixture_dir="${TUICR_GROUPING_FIXTURES:-$HOME/.local/share/tuicr-fixtures}"
-# Pinned rather than left to the CLI default, so a recorded run says which
-# model produced it and a re-run a month later is the same experiment. Set
-# TUICR_REFINE_MODEL to record a second arm; runs are reported per model.
-model="${TUICR_REFINE_MODEL:-opus}"
+# Pinned to the exact model id, not the floating `opus` alias: the harness
+# filters the published arm on the model name the envelope records, so once the
+# alias advances a re-record under it would write files the published tests
+# resolve to zero runs of. Set TUICR_REFINE_MODEL to record a second arm; runs
+# are reported per model.
+model="${TUICR_REFINE_MODEL:-claude-opus-5}"
 
 if [[ ! -d "$prompts" ]]; then
   echo "no prompts in $prompts — run emit_refine_prompts first" >&2
+  exit 1
+fi
+
+# Used to check that the answer was billed against the model we asked for.
+if ! command -v jq &>/dev/null; then
+  echo "jq not found on PATH; it is needed to verify each recorded run's model" >&2
   exit 1
 fi
 
@@ -45,6 +53,10 @@ fi
 # repo it is grouping would measure something the shipped pass cannot do.
 common=(--print --output-format json --setting-sources '' --tools '' --max-turns 1 --model "$model")
 
+# `slots` is prompt x run, `sent` is calls actually made. Reporting failures
+# against the slot count would understate the failure rate of a re-record that
+# mostly hit the cache.
+slots=0
 sent=0
 failed=0
 
@@ -61,11 +73,12 @@ for fixture_prompts in "$prompts"/*/; do
     shape="$(basename "$prompt" .txt)"
     for run in $(seq 1 "$runs"); do
       target="$out/$shape-$model-$(printf '%02d' "$run").json"
-      sent=$((sent + 1))
+      slots=$((slots + 1))
       if [[ -f "$target" ]]; then
         echo "have  $fixture/$shape run $run"
         continue
       fi
+      sent=$((sent + 1))
       echo "call  $fixture/$shape run $run"
       # cd to a scratch directory so the CLI cannot pick up repo context. A
       # failed mktemp would leave `cd ""` succeeding in the repo being grouped
@@ -78,6 +91,16 @@ for fixture_prompts in "$prompts"/*/; do
         continue
       fi
       rm -rf "$scratch"
+      # The file name says which model produced the run and the harness filters
+      # the published arm on the envelope's `modelUsage` key, so a CLI that
+      # resolved the request to some other model must not be filed under this
+      # one — that mislabels the corpus every published number rests on.
+      billed="$(jq -r '.modelUsage | keys[]' "$target.partial" 2>/dev/null || true)"
+      if [[ "$billed" != "$model" ]]; then
+        echo "  answered by \`${billed:-unknown}\`, not \`$model\`; leaving $target.partial" >&2
+        failed=$((failed + 1))
+        continue
+      fi
       mv "$target.partial" "$target"
     done
   done
@@ -86,7 +109,7 @@ done
 # nullglob turns an empty prompts tree into a loop that never runs, so a script
 # that recorded nothing would otherwise print success and exit 0 on the one path
 # that reproduces the corpus every published number rests on.
-if (( sent == 0 )); then
+if (( slots == 0 )); then
   echo "no prompts under $prompts — run emit_refine_prompts first" >&2
   exit 1
 fi

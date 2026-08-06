@@ -74,6 +74,21 @@ impl Partition {
         self.groups.values().map(Vec::len).sum()
     }
 
+    /// Path to the name of the group holding it. The inverse of `groups`, and
+    /// the shape every consumer that asks "are these two files together?"
+    /// wants; written once here so the harness's central lookup cannot drift
+    /// between the scorer and the passes that feed it.
+    pub fn group_of(&self) -> BTreeMap<&str, &str> {
+        self.groups
+            .iter()
+            .flat_map(|(name, members)| {
+                members
+                    .iter()
+                    .map(move |path| (path.as_str(), name.as_str()))
+            })
+            .collect()
+    }
+
     fn co_membership_pairs(&self) -> u64 {
         self.groups
             .values()
@@ -84,15 +99,7 @@ impl Partition {
     /// Pairwise precision/recall/F1 of this partition against `expected`,
     /// plus the shape numbers a bare F1 hides.
     pub fn score_against(&self, expected: &Partition) -> Score {
-        let expected_group: BTreeMap<&str, &str> = expected
-            .groups
-            .iter()
-            .flat_map(|(name, members)| {
-                members
-                    .iter()
-                    .map(move |path| (path.as_str(), name.as_str()))
-            })
-            .collect();
+        let expected_group = expected.group_of();
 
         let true_positives: u64 = self
             .groups
@@ -112,11 +119,7 @@ impl Partition {
         let expected_pairs = expected.co_membership_pairs();
         let precision = ratio(true_positives, computed_pairs);
         let recall = ratio(true_positives, expected_pairs);
-        let f1 = if precision + recall == 0.0 {
-            0.0
-        } else {
-            2.0 * precision * recall / (precision + recall)
-        };
+        let f1 = f1(precision, recall);
 
         let total = self.file_count().max(1) as f64;
         let largest = self.groups.values().map(Vec::len).max().unwrap_or(0) as f64;
@@ -127,6 +130,17 @@ impl Partition {
             group_count: self.groups.len(),
             largest_share: largest / total,
         }
+    }
+}
+
+/// Harmonic mean, zero when both sides are. Every F1 the harness publishes —
+/// partition scores and per-key scores alike — comes through here, so the two
+/// cannot disagree about the degenerate case.
+pub fn f1(precision: f64, recall: f64) -> f64 {
+    if precision + recall == 0.0 {
+        0.0
+    } else {
+        2.0 * precision * recall / (precision + recall)
     }
 }
 
