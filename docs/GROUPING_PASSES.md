@@ -738,7 +738,10 @@ committed — **no fixture-2 number below is reproducible without that private
 directory on the machine**. Where a table mixes the two, the fixture-2 rows are
 taken on trust by anyone who does not have it.
 
-Five runs per shape per fixture, `claude-opus-5`, forty calls in total.
+Ten runs per shape per fixture, `claude-opus-5`, eighty calls in total. The
+corpus was extended from five to ten deliberately, because five did not support
+the verdict the first pass at this document drew from it — see *Which three,
+though*.
 
 **Overlap with `gd-26r.13`.** That ticket — shelling out to an agent CLI from
 Rust — is still open and unclaimed. This prototype needs the mechanism, so it
@@ -756,25 +759,25 @@ Nothing here constrains `gd-26r.13`'s answer.
 
 `apply` enforces the strict partition `docs/GROUPING.md` assumes before its
 numbered rules — every file in exactly one group — on the way back in, and
-counts repairs. **Repairs were 0.0 in every one of the forty recorded runs**,
+counts repairs. **Repairs were 0.0 in every one of the eighty recorded runs**,
 but the four shapes do not all put the same claim at risk, so the result reads
 in two parts:
 
-- In the twenty **full** and **full-coarse** runs the answer names paths, and no
+- In the forty **full** and **full-coarse** runs the answer names paths, and no
   answer dropped, duplicated or invented one.
-- In the twenty **merge-only** and **naming-only** runs the answer names input
+- In the forty **merge-only** and **naming-only** runs the answer names input
   *groups*, never paths, so a path-level violation is structurally impossible
   there rather than absent. What those runs did establish is that no answer
   named an unknown input group, claimed one twice, or left one unclaimed.
 
 `apply` also enforces what neither result covers: two returned groups sharing a
 name, or returning none, would silently union in the partition, so each is
-uniquified and counted. Forty runs of one model on two changesets is not
+uniquified and counted. Eighty runs of one model on two changesets is not
 evidence that any of this cannot happen, so the enforcement stays — that is what
 makes an unreliable pass shippable. The repair branches are unit-tested against
 hand-written bodies (`a_dropped_path_is_restored_to_its_heuristic_group` and the
 tests beside it), because a count of zero repairs means nothing unless a repair
-could have been counted. The zero itself is locked for the twenty committed
+could have been counted. The zero itself is locked for the forty committed
 fixture-1 runs by `no_committed_run_needed_a_repair`, which runs on every
 `cargo test` rather than only when someone reads the report.
 
@@ -784,53 +787,63 @@ Bar per fixture is the better of heuristics and baselines, per `gd-26r.21`:
 0.394 on fixture 1 (orca, 161 files, TypeScript) and 0.378 on fixture 2
 (meridian, 158 files, .NET).
 
+Ten runs per shape. The last two columns are the ones that decide anything: a
+shipped pass draws *some* run, or *some* triple, not the first one recorded.
+
 **Fixture 1 — bar 0.394:**
 
-| shape | F1 mean | worst | best | consensus of 3 | consensus of 5 |
-| --- | --- | --- | --- | --- | --- |
-| full | 0.361 | 0.350 | 0.373 | **0.411** | 0.409 |
-| full-coarse | 0.402 | 0.344 | 0.475 | 0.420 | 0.444 |
-| merge-only | 0.410 | 0.385 | 0.430 | 0.438 | 0.351 |
-| naming-only | 0.394 | 0.394 | 0.394 | 0.394 | 0.394 |
+| shape | F1 mean | worst | best | single calls over bar | consensus of 3 | consensus of 10 | triples over bar |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| full | 0.353 | 0.321 | 0.373 | **0 of 10** | 0.411 | 0.408 | **50 of 120** |
+| full-coarse | 0.386 | 0.344 | 0.475 | 4 of 10 | 0.420 | 0.416 | 58 of 120 |
+| merge-only | **0.417** | 0.385 | 0.438 | **9 of 10** | 0.438 | **0.448** | **107 of 120** |
+| naming-only | 0.394 | 0.394 | 0.394 | 0 of 10 | 0.394 | 0.394 | 0 of 120 |
 
 **Fixture 2 — bar 0.378:**
 
-| shape | F1 mean | worst | best | consensus of 3 | consensus of 5 |
-| --- | --- | --- | --- | --- | --- |
-| full | **0.783** | 0.677 | 0.844 | **0.847** | 0.830 |
-| full-coarse | 0.732 | 0.671 | 0.784 | 0.683 | 0.742 |
-| merge-only | 0.398 | 0.372 | 0.420 | 0.388 | 0.388 |
-| naming-only | 0.378 | 0.378 | 0.378 | 0.378 | 0.378 |
+| shape | F1 mean | worst | best | single calls over bar | consensus of 3 | consensus of 10 | triples over bar |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| full | **0.763** | 0.673 | 0.844 | **10 of 10** | **0.847** | 0.845 | **120 of 120** |
+| full-coarse | 0.754 | 0.671 | 0.816 | 10 of 10 | 0.683 | 0.787 | 120 of 120 |
+| merge-only | 0.398 | 0.339 | 0.443 | 8 of 10 | 0.388 | 0.388 | 117 of 120 |
+| naming-only | 0.378 | 0.378 | 0.378 | 0 of 10 | 0.378 | 0.378 | 0 of 120 |
 
 Consensus is a majority co-membership vote across runs, resolved into groups by
 union-find: two files are grouped if most runs grouped them. **"Consensus of 3"
-is the first three recorded runs, one of ten possible triples** — see *Which
-three, though* under Stability for the spread across all ten.
+is the first three recorded runs, one of the 120 triples ten runs admit**; the
+`triples over bar` column is all 120, and both are printed by `refine_report`.
+Naming-only scores *exactly* the bar on both fixtures, so it clears it zero times
+by construction rather than by failing — see *The cheaper shapes*.
 
-**The headline is the split.** On fixture 2 full refine is transformational —
-0.783 against a bar of 0.378, more than double, and 0.847 voted. On fixture 1 a
-single full call is *below* the bar, 0.361 against 0.394, and only voting brings
-it over, to 0.411. Refine is not uniformly better than the heuristics; it is
-enormously better on one changeset and roughly a wash on the other.
+**The headline is the split, and it is sharper at ten runs than it was at five.**
+On fixture 2 full refine is transformational: 0.763 against a bar of 0.378, every
+one of ten calls over it, every one of 120 triples over it, 0.847 voted. On
+fixture 1 **no single full call cleared the bar in ten attempts**, and voting is a
+coin flip rather than a fix — 50 of 120 triples clear, and the median triple
+scores 0.369 against the 0.394 bar. Refine is not uniformly better than the
+heuristics: it is enormously better on one changeset and slightly *worse* on the
+other.
 
 ### Where fixture 1 goes wrong
 
-Per-expected-group recall. The `refine` column is **run 0 of the five `full`
-runs**, not a mean and not `full-coarse`; both other arms are quoted in the
-prose below and named where they are:
+Per-expected-group recall under `full`, run 0 and the mean of all ten runs.
+`refine_report` prints both, plus every run, for every expected group:
 
-| expected group | files | heuristic | refine (full, run 0) |
-| --- | --- | --- | --- |
-| github-client-plumbing | 38 | 0.05 | 0.14 |
-| pr-actions | 29 | 0.45 | **0.29** |
-| project-view | 28 | 0.75 | **0.35** |
-| enterprise-host-routing | 18 | 0.20 | 0.25 |
-| gh-auth | 5 | 0.60 | 1.00 |
-| settings-repo-icon | 5 | 0.20 | 1.00 |
+| expected group | files | heuristic | refine run 0 | refine mean of 10 |
+| --- | --- | --- | --- | --- |
+| github-client-plumbing | 38 | 0.05 | 0.14 | 0.15 |
+| pr-actions | 29 | 0.45 | 0.29 | **0.28** |
+| project-view | 28 | 0.75 | 0.35 | **0.33** |
+| enterprise-host-routing | 18 | 0.20 | 0.25 | 0.26 |
+| gh-auth | 5 | 0.60 | 1.00 | 0.96 |
+| settings-repo-icon | 5 | 0.20 | 1.00 | 1.00 |
 
 The whole loss is two groups — `pr-actions` and `project-view`, 57 of 161 files
 — and both are groups the token heuristics *already find*. The model splits them
-into finer, individually-coherent concerns; the fixture keeps them whole.
+into finer, individually-coherent concerns; the fixture keeps them whole. Ten
+runs make this the *stable* failure rather than one bad draw: `project-view`
+recall never once reached the heuristic 0.75 under `full`, spanning 0.27 to 0.37
+across the ten, and `pr-actions` spans 0.26 to 0.32 against 0.45.
 
 Two things follow, and they pull in opposite directions. Fixture 1's expected
 grouping is itself provisional and was drawn with the token evidence in view
@@ -840,37 +853,45 @@ an excuse: the metric is the metric, and by it a single call loses here.
 
 `full-coarse` exists to test whether the loss is *granularity* — it instructs the
 model toward fewer, larger groups without naming a number, to avoid fitting the
-prompt to the answers. It lifts fixture 1 to 0.402 and drops fixture 2 to 0.732,
-and on fixture 1 it does not reliably repair the two groups the model splits.
-Across the five `full-coarse` runs, `project-view` recall is 0.341, 0.336,
-0.746, 0.336, 0.685 (mean 0.489, against 0.746 for the heuristics alone) and
-`pr-actions` is 0.293, 0.273, 0.475, 0.451, 0.431 (mean 0.385, against 0.451).
-`refine_report` prints per-expected-group recall for run 0 only, so the other
-eight of those ten figures were computed ad hoc from the committed envelopes, as
-the ten-triple spread below was, and for the same reason: the corpus is about to
-be extended and a per-run printer written against five runs would only have to
-be rewritten. Two of the five runs put `project-view` back most of the way and three leave it
-near a third. So the disagreement is judgement about where one concern ends, not
-group size, and the coarseness instruction just trades one fixture for the other
-— unreliably, run to run.
+prompt to the answers. It lifts fixture 1 to 0.386 — still under the bar — and
+drops fixture 2 to 0.754, and on fixture 1 it does not reliably repair the two
+groups the model splits. Across the ten `full-coarse` runs, `project-view` recall
+is 0.34, 0.34, 0.75, 0.34, 0.69, 0.37, 0.34, 0.29, 0.34, 0.34 (mean 0.41, against
+0.75 for the heuristics alone) and `pr-actions` is 0.29, 0.27, 0.48, 0.45, 0.43,
+0.28, 0.41, 0.28, 0.27, 0.41 (mean 0.36, against 0.45). Two of the ten runs put
+`project-view` back most of the way and the other eight leave it near a third. So
+the disagreement is judgement about where one concern ends, not group size, and
+the coarseness instruction just trades one fixture for the other — unreliably,
+run to run. Those per-run figures were computed ad hoc when the corpus was five
+runs; now that it is fixed at ten, `refine_report` prints them.
 
 ### Where fixture 2 goes right
 
-Per-expected-group recall was tabulated on the same slice as fixture 1's — a
-`refine` column that is **run 0 of the five `full` runs**, with a `full-coarse`
-run 0 column beside it, because this is the fixture where coarsening costs
-rather than helps and the two arms disagree on individual groups even where
-their means are close. Fixture 2's expected group names cannot be published, so
-that table is in `$TUICR_GROUPING_FIXTURES/meridian-6c22fda02.notes.md`; the
-labels below are pseudonymous and mean nothing beyond the sentences using them.
+Per-expected-group recall was tabulated on the same slice as fixture 1's — run 0
+and the ten-run mean under `full`, with a `full-coarse` column beside it, because
+this is the fixture where coarsening costs rather than helps and the two arms
+disagree on individual groups even where their means are close. Fixture 2's
+expected group names cannot be published, so that table is in
+`$TUICR_GROUPING_FIXTURES/meridian-6c22fda02.notes.md`; the labels below are
+pseudonymous and mean nothing beyond the sentences using them.
 
-Thirteen of fourteen expected groups improve under `full`, eight of them to a
-perfect 1.00. Only the 2-file dependency-manifest group stays at 0.00. In run 0
-`full-coarse` is the better arm on four groups — `concern-a`, the 18 `.csproj`
-files (1.00 against 0.89), `concern-b` (0.75 against 0.54), `concern-c` (0.73
-against 0.51) and `concern-d` (0.71 against 0.48) — and `full` is the better arm
-on one, `concern-e` (1.00 against 0.89). Coarsening still loses the fixture on
-the mean, so those per-group wins are not a case for it.
+**All fourteen expected groups improve under `full` on the ten-run mean**, and
+the improvement is large: twelve of the fourteen gain more than +0.30 recall over
+the heuristics. Averaging is the honest view here and it is less flattering than
+run 0 was. Run 0 showed eight groups at a perfect 1.00; across ten runs only
+three hold 1.00 *every* time, and the 2-file dependency-manifest group — 0.00 in
+run 0 — turns out to be found in two runs of ten, for a mean of 0.20. A per-group
+1.00 is a property of a run, not of the pass.
+
+Run 0 also understated `full-coarse` here. On the ten-run mean it is the better
+arm on **nine** of the fourteen groups — including `concern-b`, `concern-c` and
+`concern-e` — and worse on four, of which the largest is `concern-a`, the 18
+`.csproj` files (0.70 against 0.75). It still loses the fixture on overall F1,
+0.754 against 0.763, and the reason is that this table is *recall* per expected
+group. Coarsening buys recall by merging and pays for it in precision, which
+per-group recall cannot see: on run 0 `full-coarse` scores P 0.725 / R 0.852
+against `full`'s P 0.856 / R 0.823. Winning nine of fourteen recall columns is
+therefore not a case for coarsening; it is the signature of the trade.
 
 This is the direct answer to the ceiling `gd-26r.21` left open. Ten of fourteen
 groups sat in a 0.36–0.57 best-key mush no filename or directory token reaches —
@@ -881,29 +902,30 @@ model can.
 
 ## Cost
 
-Per call, averaged over the five runs, from the CLI's own accounting:
+Per call, averaged over the ten runs, from the CLI's own accounting:
 
 | fixture | shape | input | cached | output | cost | wall clock |
 | --- | --- | --- | --- | --- | --- | --- |
-| 1 | full | 5,373 | 8,068 | 16,502 | $0.490 | 146.8s |
-| 1 | full-coarse | 5,466 | 8,160 | 15,463 | $0.465 | 142.4s |
-| 1 | merge-only | 5,404 | 8,096 | 2,313 | $0.135 | 27.5s |
-| 1 | naming-only | 5,353 | 8,045 | 1,937 | $0.125 | 19.8s |
-| 2 | full | 9,497 | 12,188 | 20,626 | $0.639 | 182.7s |
-| 2 | full-coarse | 9,590 | 12,285 | 19,941 | $0.623 | 177.0s |
-| 2 | merge-only | 9,528 | 12,223 | 4,146 | $0.228 | 47.7s |
-| 2 | naming-only | 9,477 | 12,169 | 3,787 | $0.218 | 40.6s |
+| 1 | full | 5,373 | 8,068 | 15,793 | $0.472 | 141.8s |
+| 1 | full-coarse | 5,466 | 8,159 | 15,725 | $0.471 | 143.5s |
+| 1 | merge-only | 5,404 | 8,096 | 2,373 | $0.137 | 27.9s |
+| 1 | naming-only | 5,353 | 8,046 | 1,927 | $0.125 | 20.2s |
+| 2 | full | 9,497 | 12,189 | 21,331 | $0.657 | 190.6s |
+| 2 | full-coarse | 9,590 | 12,284 | 19,597 | $0.615 | 172.4s |
+| 2 | merge-only | 9,528 | 12,221 | 4,313 | $0.232 | 56.9s |
+| 2 | naming-only | 9,477 | 12,170 | 3,726 | $0.217 | 39.6s |
 
 Cost is dominated by *output*, not input: a full regrouping restates every path,
-so output runs 3.07× and 2.83× input on fixture 1 (`full`, `full-coarse`) and
-2.17× and 2.08× on fixture 2, against 0.43× and 0.36× for fixture 1's
+so output runs 2.94× and 2.88× input on fixture 1 (`full`, `full-coarse`) and
+2.25× and 2.04× on fixture 2, against 0.44× and 0.36× for fixture 1's
 `merge-only` and `naming-only`, which restate names alone. What output tracks is
 how much of the grouping the shape rewrites, not file count: fixture 2 has three
-fewer files than fixture 1 and emits a quarter more output on `full`. Input is
+fewer files than fixture 1 and emits a third more output on `full`. Input is
 small and nearly flat, which is why a 100–400 file changeset stays affordable.
 
-Two and a half to three minutes per call, on a review the user is waiting to
-start, is the empirical confirmation of `gd-26r.4`: this cannot be synchronous.
+Two and a half to three and a quarter minutes per call, on a review the user is
+waiting to start, is the empirical confirmation of `gd-26r.4`: this cannot be
+synchronous.
 The heuristics must render immediately and refine must arrive later or not at
 all.
 
@@ -914,28 +936,32 @@ has to hold state across.
 
 | fixture | shape | agreement mean | worst | files with identical group-mates every run | mean group-mate overlap |
 | --- | --- | --- | --- | --- | --- |
-| 1 | full | 0.830 | 0.739 | 27.3% | 0.797 |
-| 1 | full-coarse | 0.836 | 0.762 | 18.6% | 0.790 |
-| 1 | merge-only | 0.790 | 0.676 | 1.2% | 0.710 |
-| 2 | full | 0.802 | 0.632 | 21.5% | 0.756 |
-| 2 | full-coarse | 0.802 | 0.726 | 3.2% | 0.733 |
-| 2 | merge-only | 0.817 | 0.737 | 1.3% | 0.738 |
+| 1 | full | 0.827 | 0.715 | 11.8% | 0.790 |
+| 1 | full-coarse | 0.815 | 0.691 | 3.1% | 0.763 |
+| 1 | merge-only | 0.802 | 0.676 | 1.2% | 0.723 |
+| 2 | full | 0.795 | 0.632 | 3.2% | 0.740 |
+| 2 | full-coarse | 0.830 | 0.692 | 3.2% | 0.776 |
+| 2 | merge-only | 0.801 | 0.643 | 1.3% | 0.730 |
 | both | naming-only | 1.000 | 1.000 | 100% | 1.000 |
 
 Agreement is pairwise F1 of one run scored against another, so it is the same
 metric as accuracy with a run standing in for the gold standard.
 
 **Refine agrees with itself about as much as it agrees with the truth.** On
-fixture 2, accuracy 0.783 against self-agreement 0.802: the pass has essentially
+fixture 2, accuracy 0.763 against self-agreement 0.795: the pass has essentially
 reached its own noise floor, and nondeterminism — not capability — is now the
 binding constraint. On fixture 1 accuracy is well *below* self-agreement, so
 there the limit is judgement.
 
 Two consequences for `gd-26r.8`:
 
-- **Only about a quarter of files land with exactly the same group-mates in
-  every run.** Not a quarter of files move — mean group-mate overlap is 0.76–0.80
-  — but most files see *some* churn at their group's edges. Any state keyed on
+- **Almost no file lands with exactly the same group-mates in every run** — 3.1%
+  to 11.8% under `full`, and this is the number that moved most between five runs
+  and ten. At five runs it read 21.5% and 27.3%; every extra run can only take
+  files out of that set, and it kept taking them, which means the five-run figure
+  was an artefact of a short corpus rather than a property of the pass. Not that
+  every file moves — mean group-mate overlap is 0.72–0.79 — but essentially every
+  file sees *some* churn at its group's edges across ten runs. Any state keyed on
   "the group a file is in" will be invalidated wholesale by a re-run.
 - **Merge-only is by far the least stable per file**: 1.2% identical, despite
   respectable whole-partition agreement. Merging is all-or-nothing at group
@@ -943,23 +969,30 @@ Two consequences for `gd-26r.8`:
   Whole-partition agreement hides this; the per-file number is the one that
   matters for held state.
 
-Voting is the lever: consensus of three lifts fixture 1 from 0.361 to 0.411 and
-fixture 2 from 0.783 to 0.847, and it is deterministic given its inputs. Three
-votes is enough — consensus of five is no better on either fixture (0.409 and
-0.830), so the extra two calls buy nothing.
+Voting helps, and it is deterministic given its inputs, but it is not the lever
+the five-run corpus made it look like. Consensus of three lifts fixture 1 from
+0.353 to 0.411 and fixture 2 from 0.763 to 0.847. Three votes is enough —
+consensus of *ten* is no better on either fixture (0.408 and 0.845), so seven
+more calls buy nothing. That is the one voting claim ten runs strengthened.
 
-**Which three, though.** That 0.411 is one particular triple: the first three of
-the five recorded `full` runs. Five runs admit ten distinct triples, and
-replayed against the committed envelopes **seven of the ten clear fixture 1's
-0.394 bar and three do not — 0.372, 0.369 and 0.367.** That spread was computed
-ad hoc, by scoring the ten triples in a scratch harness rather than a committed
-printer: the corpus is about to change, and a printer written against five runs
-would only have to be rewritten. A shipped "three calls
-and a vote" draws an arbitrary triple, not that one, so on this corpus the
-fixture-1 consensus result is *provisional*: it holds for the triple that was
-measured and about seven times in ten in general. The corpus is being extended
-from five runs per shape to ten, and the verdict below is pending re-derivation
-against those. Fixture 2 is not close to its bar under any triple.
+**Which three, though.** That 0.411 is one particular triple: the first three
+recorded `full` runs. Ten runs admit 120 distinct triples, and `refine_report`
+now scores all of them. **On fixture 1, 50 of the 120 clear the 0.394 bar and 70
+do not.** The distribution runs 0.343 to 0.439 with a median of 0.369 — that is,
+**the median three-call vote lands below the bar.** A shipped "three calls and a
+vote" draws an arbitrary triple, so on fixture 1 consensus is a coin flip that
+loses slightly more often than it wins, not a fix.
+
+This is a correction, and it is the reason the corpus was doubled. The five-run
+version of this document reported that seven of ten triples cleared the bar and
+called the result provisional pending ten runs. At ten runs the honest figure is
+42%, and the earlier 0.411 headline was a favourable draw: it sits in the top
+quintile of the 120.
+
+Fixture 2 is nowhere near its bar under any triple — 120 of 120 clear, minimum
+0.640 against a bar of 0.378 — so nothing here qualifies that side of the split.
+And on fixture 1 the shape whose triples do reliably clear is not `full` at all
+but `merge-only`, at 107 of 120; see *The cheaper shapes*.
 
 ## The cheaper shapes
 
@@ -976,17 +1009,23 @@ concern names. That may well be worth $0.15 on its own — the point of grouping
 a review order a human can follow — but nothing in these fixtures can say so. It
 needs a different kind of evaluation.
 
-**Merge-only clears the bar on both fixtures, barely**: 0.410 against 0.394 and
-0.398 against 0.378, so +0.016 and +0.020 for about a quarter of the cost of
-full. It is genuinely the best value if the choice is one call. But it captures
-almost none of the fixture-2 benefit — 0.398 against full's 0.783 — because the
+**Merge-only clears the bar on both fixtures, and does it far more reliably than
+`full` does on fixture 1**: mean 0.417 against 0.394 and 0.398 against 0.378, with
+9 of 10 single calls and 107 of 120 triples over the bar on fixture 1, against
+`full`'s 0 of 10 and 50 of 120. At $0.137 and 28s it is under a third of full's
+cost. Its consensus is stable too — 0.438 at three votes, 0.448 at ten — which
+retires the "erratic consensus" claim the five-run corpus produced (0.351 at five
+votes was a short-corpus artefact).
+
+**On fixture 1 alone, merge-only is the shape that should ship.** But it captures
+almost none of the fixture-2 benefit — 0.398 against full's 0.763 — because the
 win there comes from *re-cutting* groups the heuristics drew wrong, and merge-only
 is constrained to coarsen (`merge_only_can_only_coarsen` locks that it can only
-trade precision for recall). Its consensus is also erratic: 0.438 at three votes,
-0.351 at five, worse than a single call.
+trade precision for recall). +0.020 over the bar is not a result worth an API
+call and a nondeterministic dependency.
 
-So no, the cheap shapes do not capture most of the benefit. The benefit *is* the
-splitting.
+So the cheap shapes do not capture most of the benefit. The benefit *is* the
+splitting — where splitting helps at all.
 
 ## What the paths-only fixtures could not measure
 
@@ -995,7 +1034,7 @@ Stated plainly, because it is a large hole:
 - **Nothing here tested a pass that reads hunks.** Both fixtures are paths and
   status only, since the source repos are private. Every number above is for a
   model reading file paths, change kinds, and the heuristic grouping. Whether
-  reading the diff would add to 0.783, and what that would cost, is unmeasured
+  reading the diff would add to 0.763, and what that would cost, is unmeasured
   and cannot be measured on these fixtures at all.
 - **The cost of a hunk-reading pass is out of reach anyway, on this evidence.**
   Fixture 1's diff is roughly 11.9k changed lines, on the order of 120–200k
@@ -1009,7 +1048,7 @@ Stated plainly, because it is a large hole:
   reading order (rule 2, intent-centrality) and the report prints it, but the
   scorer is
   order-blind, so no number in this document says whether the order is good.
-- **Two fixtures, one model, five runs.** Both are single feature-branch PRs of
+- **Two fixtures, one model, ten runs.** Both are single feature-branch PRs of
   ~160 files. Nothing here speaks to a 400-file changeset, a merge commit, a
   refactor sweep, or a cheaper model — `sonnet` resolves on this deployment and
   was not run.
@@ -1019,31 +1058,37 @@ Stated plainly, because it is a large hole:
 
 ## Verdict
 
-**Ship it, opt-in, as full refine with a consensus of three calls.**
+**Ship it, opt-in, as full refine with a consensus of three calls — on the
+strength of one fixture, not two.**
 
-- **Full, not the cheap shapes.** Merge-only clears the bar by a hair and misses
-  the entire fixture-2 win; naming-only cannot move the metric by construction.
-  The value is in re-cutting groups, which only full can do.
-- **Not `full-coarse`.** It buys fixture 1 by selling fixture 2 and does not fix
-  the actual disagreement.
-- **Three calls, voted.** A single call is below the bar on fixture 1. Consensus
-  of three clears it on both (0.411 and 0.847), makes the result deterministic
-  given its inputs, and five votes add nothing. Cost is roughly $1.50–1.90 and,
-  run in parallel, about the wall clock of one `full` call — the measured means
-  are 146.8s on fixture 1 and 182.7s on fixture 2.
-  `consensus_of_three_clears_the_bar_where_one_call_does_not` locks this against
-  the committed runs. **Provisional on fixture 1**: it is the measured triple
-  that clears the bar, and only seven of the ten triples the five recorded runs
-  admit do — see *Which three, though*. This bullet is pending re-derivation
-  against a ten-run corpus.
+- **Full, not the cheap shapes.** Merge-only is the better shape on fixture 1 and
+  it still is not worth shipping for: +0.020 on fixture 2 against full's +0.385.
+  Naming-only cannot move the metric by construction. The value is in re-cutting
+  groups, which only full can do, and where re-cutting helps it is worth more than
+  everything else combined.
+- **Not `full-coarse`.** It does not clear fixture 1's bar either (mean 0.386, 58
+  of 120 triples) and it sells fixture 2 to get there. It does not fix the actual
+  disagreement.
+- **Three calls, voted** — but for determinism, not for accuracy on fixture 1.
+  Voting makes the result reproducible given its inputs and lifts fixture 2 to
+  0.847, and ten votes add nothing over three. What it does *not* do is rescue
+  fixture 1: no single call cleared that bar in ten attempts and only 50 of 120
+  triples do, with the median triple at 0.369 under a 0.394 bar. Cost is roughly
+  $1.40–2.00 and, run in parallel, about the wall clock of one `full` call —
+  141.8s on fixture 1 and 190.6s on fixture 2.
+  `voting_does_not_rescue_fixture_one` locks the negative half against the
+  committed runs, so a future change that quietly fixes fixture 1 will fail a test
+  and force this section to be rewritten.
 - **Opt-in and async, degrading to heuristics-only**, exactly as `gd-26r.4`
   settled. The wall-clock numbers are the empirical case for it, not a
   re-litigation.
-- **Honest summary of the accuracy claim:** refine is worth roughly nothing on
-  fixture 1 and worth a doubling on fixture 2. It should be offered, not
-  defaulted, until a third fixture says which of the two is typical. That is the
-  strongest claim two changesets support.
+- **Honest summary of the accuracy claim:** on fixture 1 refine is slightly worse
+  than doing nothing; on fixture 2 it doubles the score. Ten runs turned that from
+  "roughly a wash on fixture 1" into a measured small loss, and it is the reason
+  this must be offered rather than defaulted. Two changesets cannot say which of
+  the two is typical, and until a third does, the pass is a bet the user takes
+  knowingly.
 
-`gd-26r.8` should assume group membership is not stable across re-runs: about a
-quarter of files keep identical group-mates, and held state keyed on group
+`gd-26r.8` should assume group membership is not stable across re-runs: 3–12% of
+files keep identical group-mates across ten runs, and held state keyed on group
 identity will not survive a refresh.

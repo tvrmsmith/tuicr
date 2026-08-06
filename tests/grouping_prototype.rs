@@ -1031,6 +1031,13 @@ struct Run {
     refined: refine::Refined,
 }
 
+/// Every unordered triple of `n` run indices. A three-call vote picks one of
+/// these at random in production, so a claim about "consensus of three" is a
+/// claim about all of them.
+fn triples(n: usize) -> impl Iterator<Item = (usize, usize, usize)> {
+    (0..n).flat_map(move |i| ((i + 1)..n).flat_map(move |j| ((j + 1)..n).map(move |k| (i, j, k))))
+}
+
 /// Every recorded run on disk, or a panic naming the one that could not be
 /// read. Every claim on this branch is a property of *N* runs, so a run that
 /// dropped out quietly would shrink N with no signal — "no runs recorded" and
@@ -1172,6 +1179,36 @@ fn refine_report() {
                         );
                     }
                 }
+                // "Consensus of 3" above is one arbitrary triple, and a shipped
+                // three-call vote draws a different one every time. What decides
+                // whether voting is a fix is therefore the whole distribution, so
+                // it is printed rather than left to be reasoned about from one
+                // draw.
+                let mut voted: Vec<f64> = triples(partitions.len())
+                    .filter_map(|(i, j, k)| {
+                        let ballot = [
+                            partitions[i].clone(),
+                            partitions[j].clone(),
+                            partitions[k].clone(),
+                        ];
+                        refine::consensus(&ballot).map(|c| c.score_against(&expected).f1)
+                    })
+                    .collect();
+                if !voted.is_empty() {
+                    voted.sort_by(|a, b| a.partial_cmp(b).expect("F1 is never NaN"));
+                    let over = voted.iter().filter(|f1| **f1 > bar).count();
+                    println!(
+                        "  every triple: {over}/{} clear the bar  min {:.3} median {:.3} \
+                         max {:.3} mean {:.3}",
+                        voted.len(),
+                        voted[0],
+                        voted[voted.len() / 2],
+                        voted[voted.len() - 1],
+                        voted.iter().sum::<f64>() / voted.len() as f64,
+                    );
+                    let singles = f1s.iter().filter(|f1| **f1 > bar).count();
+                    println!("  single calls clearing the bar: {singles}/{}", f1s.len());
+                }
 
                 let calls = runs.len() as f64;
                 let sum = |f: fn(&RunRecord) -> f64| runs.iter().map(|r| f(&r.record)).sum::<f64>();
@@ -1194,26 +1231,47 @@ fn refine_report() {
 
                 if matches!(shape, Shape::Full | Shape::FullCoarse) {
                     println!(
-                        "  where it wins and loses, per expected group (heuristic -> refine):"
+                        "  where it wins and loses, per expected group \
+                         (heuristic -> run 0 / mean of {} runs, then every run):",
+                        partitions.len()
                     );
                     let heuristic_recall = refine::recall_per_expected_group(
                         &passes::group(&changeset, GroupingConfig::default()).partition(),
                         &expected,
                     );
-                    let refined_recall =
-                        refine::recall_per_expected_group(&partitions[0], &expected);
+                    // Run 0 alone invited the question "is that a typical run?"
+                    // often enough that the mean and the whole spread are printed
+                    // beside it, rather than recomputed by hand each time.
+                    let per_run: Vec<Vec<f64>> = partitions
+                        .iter()
+                        .map(|partition| {
+                            refine::recall_per_expected_group(partition, &expected)
+                                .into_iter()
+                                .map(|(_, _, recall)| recall)
+                                .collect()
+                        })
+                        .collect();
                     let mut rows: Vec<_> = heuristic_recall
                         .iter()
-                        .zip(&refined_recall)
-                        .map(|((name, size, before), (_, _, after))| {
-                            (name.clone(), *size, *before, *after)
+                        .enumerate()
+                        .map(|(group, (name, size, before))| {
+                            let spread: Vec<f64> = per_run.iter().map(|run| run[group]).collect();
+                            let mean = spread.iter().sum::<f64>() / spread.len() as f64;
+                            (name.clone(), *size, *before, spread, mean)
                         })
                         .collect();
                     rows.sort_by_key(|row| std::cmp::Reverse(row.1));
-                    for (name, size, before, after) in rows {
+                    for (name, size, before, spread, mean) in rows {
+                        let every = spread
+                            .iter()
+                            .map(|recall| format!("{recall:.2}"))
+                            .collect::<Vec<_>>()
+                            .join(" ");
                         println!(
-                            "    {name:<28} {size:>3} files   {before:.2} -> {after:.2}  {:+.2}",
-                            after - before
+                            "    {name:<28} {size:>3} files   {before:.2} -> {:.2} / {mean:.2}  \
+                             {:+.2}   [{every}]",
+                            spread[0],
+                            mean - before
                         );
                     }
                 }
@@ -1325,12 +1383,19 @@ fn no_committed_run_needed_a_repair() {
     }
 }
 
-/// The verdict in docs/GROUPING_PASSES.md, locked against the committed runs.
-/// A single full call is below the bar on this fixture (0.361 mean vs 0.394)
-/// and only the consensus of three clears it, so the shape that ships is three
-/// calls and a vote, not one call. If this test fails the verdict has moved.
+/// The negative half of the verdict in docs/GROUPING_PASSES.md, locked against
+/// the committed runs: on fixture 1 `full` loses to the heuristics, and voting
+/// does not repair it.
+///
+/// This replaces a test that asserted the *first* triple clears the bar. It did
+/// — 0.411 — but at ten runs that draw turns out to sit in the top quintile of
+/// the 120 triples, and the median is below the bar. Locking one favourable
+/// draw made a coin flip read as a result, so what is locked now is the
+/// distribution: no single call clears, and a minority of triples do. A change
+/// that genuinely fixed fixture 1 would fail this test, which is the point —
+/// the verdict would have moved and the document would have to say so.
 #[test]
-fn consensus_of_three_clears_the_bar_where_one_call_does_not() {
+fn voting_does_not_rescue_fixture_one() {
     let (label, changeset, expected) = fixtures()
         .into_iter()
         .find(|(label, _, _)| label == ORCA_FIXTURE)
@@ -1354,13 +1419,29 @@ fn consensus_of_three_clears_the_bar_where_one_call_does_not() {
         .iter()
         .map(|run| run.refined.partition.clone())
         .collect();
-    let voted = refine::consensus(&partitions[..3])
-        .expect("three partitions vote")
-        .score_against(&expected)
-        .f1;
+    let mut voted: Vec<f64> = triples(partitions.len())
+        .filter_map(|(i, j, k)| {
+            let ballot = [
+                partitions[i].clone(),
+                partitions[j].clone(),
+                partitions[k].clone(),
+            ];
+            refine::consensus(&ballot).map(|c| c.score_against(&expected).f1)
+        })
+        .collect();
+    voted.sort_by(|a, b| a.partial_cmp(b).expect("F1 is never NaN"));
+
+    let over = voted.iter().filter(|f1| **f1 > bar).count();
     assert!(
-        voted > bar,
-        "consensus of three scored {voted:.3}, under {bar:.3}"
+        over * 2 < voted.len(),
+        "most triples now clear the bar ({over} of {}), so voting does rescue \
+         fixture 1 and the verdict has moved",
+        voted.len()
+    );
+    assert!(
+        voted[voted.len() / 2] < bar,
+        "the median triple scored {:.3}, at or over {bar:.3}",
+        voted[voted.len() / 2]
     );
 }
 
