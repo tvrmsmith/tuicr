@@ -127,20 +127,26 @@ launch_tuicr_pane() {
   log_info "Launching tuicr in $TUICR_PANE_DIRECTION-split pane"
   log_info "Directory: $target_dir"
 
-  # FIFO for blocking until tuicr exits (zellij has no wait-for primitive)
-  local fifo
+  # FIFO for blocking until tuicr exits (zellij has no wait-for primitive).
+  # Removed from a trap rather than after the read: every path out of here can
+  # leave it behind otherwise, including a `zellij run` that never spawns.
   fifo=$(mktemp -u "/tmp/tuicr-fifo.XXXXXX")
   mkfifo "$fifo"
+  trap 'rm -f "$fifo"' EXIT
 
   # Optional --stdout capture
   local output_file=""
-  local tuicr_cmd
-  tuicr_cmd="$(command -v tuicr)"
+  local tuicr_bin quoted_tuicr tuicr_cmd
+  tuicr_bin="$(command -v tuicr)"
+  printf -v quoted_tuicr '%q' "$tuicr_bin"
+  tuicr_cmd="$quoted_tuicr"
   local use_stdout=false
 
   if check_tuicr_stdout_support; then
     output_file=$(mktemp /tmp/tuicr-output.XXXXXX)
-    tuicr_cmd="$tuicr_cmd --stdout > '$output_file'"
+    local quoted_output
+    printf -v quoted_output '%q' "$output_file"
+    tuicr_cmd="$quoted_tuicr --stdout > $quoted_output"
     use_stdout=true
     log_info "Using --stdout mode (output will be captured)"
   else
@@ -160,8 +166,9 @@ launch_tuicr_pane() {
   # The pane inherits this wrapper's working directory, so a target directory
   # passed as an argument has to be entered explicitly — otherwise tuicr reviews
   # wherever the wrapper was invoked from, and the already-reviewing check above
-  # matches a pane that is looking at a different repository. A path holding a
-  # quote or a space survives `%q` and would break out of single quotes.
+  # matches a pane that is looking at a different repository. Every path this
+  # wrapper interpolates into the `sh -c` string goes through `%q` first, so one
+  # holding a quote or a space cannot break out of the command it belongs to.
   local quoted_dir quoted_fifo
   printf -v quoted_dir '%q' "$target_dir"
   printf -v quoted_fifo '%q' "$fifo"
@@ -178,10 +185,15 @@ launch_tuicr_pane() {
   log_info "tuicr is running in a $TUICR_PANE_DIRECTION pane"
   log_info "Waiting for tuicr to exit..."
 
-  # Block until the spawned command writes to the FIFO
+  # Block until the spawned command writes to the FIFO. A pane that dies without
+  # writing closes the other end, and the read then fails — which under `set -e`
+  # would abort the script here rather than reporting the failure, so the failure
+  # is handled instead of tested afterwards.
   local status
-  read -r status < "$fifo"
-  rm -f "$fifo"
+  if ! read -r status < "$fifo"; then
+    log_error "The tuicr pane exited without reporting a status"
+    status=1
+  fi
   [[ "$status" =~ ^[0-9]+$ ]] || status=1
 
   if [[ "$status" -eq 0 ]]; then

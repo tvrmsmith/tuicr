@@ -192,7 +192,17 @@ launch_tuicr_pane() {
   local satisfied
   satisfied=$(printf '%s\n' "$wait_response" | "$JQ_BIN" -r '.result.wait.satisfied')
   if [[ "$satisfied" != "true" ]]; then
+    # A timeout means this wrapper stopped waiting, not that tuicr exited.
+    # Dropping the handle keeps the EXIT trap from closing a pane where a review
+    # is still open and its unexported instructions still unsaved; the trap still
+    # closes the pane on the crash and interrupt paths.
+    new_pane_handle=""
+    if [[ -n "$output_file" ]]; then
+      rm -f "$output_file"
+    fi
     log_error "Timed out after ${TUICR_ORCA_TIMEOUT_MS}ms waiting for tuicr to exit"
+    log_warn "The tuicr pane is still open and the review is still running."
+    log_warn "Finish it there, then read the comments with \`tuicr review comments\`."
     return 1
   fi
 

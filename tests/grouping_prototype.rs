@@ -681,6 +681,13 @@ const FULL_AGREEMENT_MEAN: f64 = 0.827;
 const FULL_AGREEMENT_WORST: f64 = 0.715;
 const FULL_IDENTICAL_SHARE: f64 = 0.118;
 const FULL_MEAN_OVERLAP: f64 = 0.790;
+/// Agreement and overlap sit where the F1s do, so they carry the same slack.
+const PUBLISHED_STABILITY_SLACK: f64 = 0.02;
+/// The identical share does not: 0.118 of 161 files is nineteen of them, and an
+/// F1-sized band would let five more or five fewer through while "11.8% of files
+/// land in the same group every time" stayed published. A tenth of the figure is
+/// under two files, which is as fine as a re-record can be held to.
+const PUBLISHED_SHARE_SLACK: f64 = 0.012;
 
 /// The third fixture-1 arm: `full-coarse` mean 0.386 under the 0.394 bar, 4 of
 /// 10 single calls over it, 58 of 120 triples. Bracketed like the other two, so
@@ -715,33 +722,82 @@ fn emit_refine_prompts() {
     }
 }
 
-/// `docs/GROUPING.md` as the numbered rules it declares: every top-level item
-/// of its ordered list. The doc is the authored contract the prompt's digest
-/// restates — a stable, owned text shape, since the digest is derived from it by
-/// hand. A rule's title is bold by convention, but the ordinal is what makes it
-/// a rule, so an unbolded one still counts here rather than dropping out of the
-/// comparison and taking its digest entry with it.
-fn documented_rule_numbers() -> BTreeSet<u32> {
-    const GROUPING_MD: &str = include_str!("../docs/GROUPING.md");
-    GROUPING_MD
-        .lines()
-        .filter_map(|line| line.split_once(". "))
-        .filter_map(|(head, _)| head.parse::<u32>().ok())
+/// A markdown ordered list read back as the items it declares: ordinal to text,
+/// with each item's continuation lines folded into it and anything unindented or
+/// blank closing the item it follows. Both `docs/GROUPING.md` and the digest the
+/// prompt carries are written as one of these, which is what makes them
+/// comparable at all. A rule's title is bold by convention, but the ordinal is
+/// what makes it a rule, so an unbolded one still counts here rather than
+/// dropping out of the comparison and taking its digest entry with it.
+fn numbered_items(text: &str) -> BTreeMap<u32, String> {
+    let mut items: BTreeMap<u32, String> = BTreeMap::new();
+    let mut open: Option<u32> = None;
+
+    for line in text.lines() {
+        let indented = line.starts_with([' ', '\t']);
+        let starts = line
+            .split_once(". ")
+            .and_then(|(head, rest)| head.parse::<u32>().ok().map(|ordinal| (ordinal, rest)));
+
+        match starts {
+            Some((ordinal, rest)) if !indented => {
+                items.insert(ordinal, rest.to_string());
+                open = Some(ordinal);
+            }
+            _ if indented && !line.trim().is_empty() => {
+                if let Some(ordinal) = open {
+                    let item = items.get_mut(&ordinal).expect("an open item has an entry");
+                    item.push(' ');
+                    item.push_str(line.trim());
+                }
+            }
+            _ => open = None,
+        }
+    }
+
+    items
+}
+
+/// The words a rule is made of, for matching one statement of it against
+/// another: lowercased, punctuation and markdown emphasis dropped, and anything
+/// under three characters left out as carrying no subject matter.
+fn rule_words(text: &str) -> BTreeSet<String> {
+    text.split(|c: char| !c.is_alphanumeric() && c != '-')
+        .filter(|word| word.len() > 2)
+        .map(str::to_ascii_lowercase)
         .collect()
+}
+
+/// How much of a digest rule the documented rule accounts for. Containment
+/// rather than symmetric overlap: the digest is a compression, so the doc says
+/// more than it does and a Jaccard score would punish the longest doc rules for
+/// being long.
+fn covered_by(digest: &BTreeSet<String>, documented: &BTreeSet<String>) -> f64 {
+    if digest.is_empty() {
+        return 0.0;
+    }
+    digest.intersection(documented).count() as f64 / digest.len() as f64
 }
 
 /// The prompt carries a hand-written digest of `docs/GROUPING.md`, so an added
 /// or removed rule in the doc leaves the digest a rule short with nothing
-/// failing — rule 11's wording already drifted once on this branch. The prose is
-/// deliberately not compared: the digest is a compression of it, not a copy.
-/// What is locked is that both sides carry the same rules, by ordinal — which
-/// means a reordering that keeps the same ordinals, or a reworded rule under an
-/// unchanged number, passes here and is left to review.
+/// failing — rule 11's wording already drifted once on this branch. The two are
+/// not compared as prose: the digest is a compression, and asserting the texts
+/// match would fail on the compression itself. What is locked is that each
+/// digest rule still restates *its own* documented rule — its vocabulary has to
+/// come from that rule more than from any other — so a rule renumbered, swapped
+/// with its neighbour, or replaced under an unchanged number fails here, while
+/// a rewording that says the same thing passes.
 #[test]
 fn every_documented_rule_reaches_the_model() {
-    let documented = documented_rule_numbers();
+    const GROUPING_MD: &str = include_str!("../docs/GROUPING.md");
+    let documented: BTreeMap<u32, BTreeSet<String>> = numbered_items(GROUPING_MD)
+        .into_iter()
+        .map(|(ordinal, text)| (ordinal, rule_words(&text)))
+        .collect();
+    let ordinals: BTreeSet<u32> = documented.keys().copied().collect();
     assert_eq!(
-        documented,
+        ordinals,
         (1..=documented.len() as u32).collect::<BTreeSet<u32>>(),
         "docs/GROUPING.md's rules are a contiguous numbered list from 1"
     );
@@ -749,23 +805,31 @@ fn every_documented_rule_reaches_the_model() {
     let changeset = Changeset::parse(FIRE_CHECK_FILES);
     let grouping = passes::group(&changeset, GroupingConfig::default());
     for shape in Shape::ALL {
+        let slug = shape.slug();
+        let digest = numbered_items(&refine::prompt(&changeset, &grouping, shape));
         assert_eq!(
-            prompt_rule_numbers(&refine::prompt(&changeset, &grouping, shape)),
-            documented,
-            "{}: the prompt's digest and docs/GROUPING.md name different rules",
-            shape.slug()
+            digest.keys().copied().collect::<BTreeSet<u32>>(),
+            ordinals,
+            "{slug}: the prompt's digest and docs/GROUPING.md name different rules"
         );
-    }
-}
 
-/// The rule ordinals the prompt's digest states, read back out of the emitted
-/// prompt the way the model reads them.
-fn prompt_rule_numbers(prompt: &str) -> BTreeSet<u32> {
-    prompt
-        .lines()
-        .filter_map(|line| line.split_once('.'))
-        .filter_map(|(head, _)| head.parse::<u32>().ok())
-        .collect()
+        for (ordinal, text) in &digest {
+            let words = rule_words(text);
+            let mut ranked: Vec<(f64, u32)> = documented
+                .iter()
+                .map(|(number, rule)| (covered_by(&words, rule), *number))
+                .collect();
+            ranked.sort_by(|left, right| right.0.total_cmp(&left.0));
+            let (best, matched) = ranked[0];
+            let (runner_up, other) = ranked[1];
+            assert!(
+                matched == *ordinal && best > runner_up,
+                "{slug}: the digest's rule {ordinal} reads as docs/GROUPING.md rule {matched} \
+                 ({best:.2} of its words) ahead of rule {other} ({runner_up:.2}), so the two \
+                 lists no longer state the same rule under this number"
+            );
+        }
+    }
 }
 
 /// The prompt is the one part of this pass that deterministic CI can pin: it is
@@ -2279,20 +2343,36 @@ fn voting_does_not_rescue_fixture_one() {
     // The nondeterminism half of the verdict, from the same ten runs.
     let agreement = refine::agreement(&partitions).expect("ten runs agree about something");
     let stability = refine::file_stability(&partitions).expect("ten runs place files somewhere");
-    for (label, published, actual) in [
-        ("mean agreement", FULL_AGREEMENT_MEAN, agreement.mean),
-        ("worst agreement", FULL_AGREEMENT_WORST, agreement.worst),
+    for (label, published, actual, slack) in [
+        (
+            "mean agreement",
+            FULL_AGREEMENT_MEAN,
+            agreement.mean,
+            PUBLISHED_STABILITY_SLACK,
+        ),
+        (
+            "worst agreement",
+            FULL_AGREEMENT_WORST,
+            agreement.worst,
+            PUBLISHED_STABILITY_SLACK,
+        ),
         (
             "identical share",
             FULL_IDENTICAL_SHARE,
             stability.identical_share,
+            PUBLISHED_SHARE_SLACK,
         ),
-        ("mean overlap", FULL_MEAN_OVERLAP, stability.mean_overlap),
+        (
+            "mean overlap",
+            FULL_MEAN_OVERLAP,
+            stability.mean_overlap,
+            PUBLISHED_STABILITY_SLACK,
+        ),
     ] {
         assert!(
-            (actual - published).abs() <= PUBLISHED_F1_SLACK,
+            (actual - published).abs() <= slack,
             "full's {label} is {actual:.3}, off the published {published:.3} by more than \
-             {PUBLISHED_F1_SLACK:.3}"
+             {slack:.3}"
         );
     }
 
@@ -2432,6 +2512,20 @@ fn full_coarse_lands_between_the_other_shapes_on_fixture_one() {
         f1s.len()
     );
 
+    // The betweenness itself, off one corpus in one place. Each arm's own row is
+    // bracketed above, but three bands that happen to be ordered are not the
+    // same claim as an ordering: a re-record that landed all three inside their
+    // bands with `full-coarse` on the wrong side of a neighbour would leave the
+    // argument the document makes from this row unsupported and nothing failing.
+    let full_mean = shape_mean_f1(&changeset, &expected, Shape::Full);
+    let merge_only_mean = shape_mean_f1(&changeset, &expected, Shape::MergeOnly);
+    assert!(
+        full_mean < mean && mean < merge_only_mean,
+        "the shapes are published as full {full_mean:.3} < full-coarse {mean:.3} < merge-only \
+         {merge_only_mean:.3}; that ordering no longer holds, so over-splitting is not what the \
+         corpus shows"
+    );
+
     let voted = triple_f1s(&partitions, &expected);
     let over = voted.iter().filter(|f1| **f1 > bar).count();
     assert!(
@@ -2441,6 +2535,18 @@ fn full_coarse_lands_between_the_other_shapes_on_fixture_one() {
          verdict has moved",
         voted.len()
     );
+}
+
+/// One shape's mean single-call F1 over the whole published fixture-1 corpus,
+/// for the comparisons that are claims about more than one arm.
+fn shape_mean_f1(changeset: &Changeset, expected: &Partition, shape: Shape) -> f64 {
+    let runs = published_arm(ORCA_FIXTURE, changeset, shape);
+    expect_full_corpus(ORCA_FIXTURE, &runs, shape);
+    let total: f64 = runs
+        .iter()
+        .map(|run| run.refined.partition.score_against(expected).f1)
+        .sum();
+    total / runs.len() as f64
 }
 
 fn ablations(default: GroupingConfig) -> Vec<(String, GroupingConfig)> {
@@ -2663,6 +2769,19 @@ fn scoring_harness_is_calibrated() {
     assert!((self_score.largest_share - 38.0 / 161.0).abs() < 1e-9);
 }
 
+/// The heuristic row docs/GROUPING_PASSES.md publishes for fixture 1: F1 0.394
+/// out of precision 0.479 and recall 0.334, over 19 groups whose largest holds
+/// 22.4% of the changeset. The whole row is locked, and every figure on both
+/// sides — a one-sided check passes a pass that got better as readily as one
+/// that regressed, and both leave the published row false. Deterministic
+/// figures off a checked-in fixture, so the band is a rounding, not a re-record
+/// allowance.
+const RECORDED_PRECISION: f64 = 0.479;
+const RECORDED_RECALL: f64 = 0.334;
+const RECORDED_LARGEST_SHARE: f64 = 0.224;
+const RECORDED_GROUP_COUNT: usize = 19;
+const RECORDED_SLACK: f64 = 0.005;
+
 /// Locks the numbers recorded in docs/GROUPING_PASSES.md so a change to the
 /// passes has to move them deliberately.
 #[test]
@@ -2677,15 +2796,25 @@ fn recorded_numbers_hold() {
         "F1 drifted: {:.3}",
         score.f1
     );
-    assert!(
-        score.precision > 0.45,
-        "precision drifted: {:.3}",
-        score.precision
-    );
-    assert!(
-        score.largest_share < 0.25,
-        "largest group share drifted: {:.3}",
-        score.largest_share
+    for (label, published, actual) in [
+        ("precision", RECORDED_PRECISION, score.precision),
+        ("recall", RECORDED_RECALL, score.recall),
+        (
+            "largest group share",
+            RECORDED_LARGEST_SHARE,
+            score.largest_share,
+        ),
+    ] {
+        assert!(
+            (actual - published).abs() <= RECORDED_SLACK,
+            "{label} drifted: {actual:.3}, off the published {published:.3} by more than \
+             {RECORDED_SLACK:.3}"
+        );
+    }
+    assert_eq!(
+        score.group_count, RECORDED_GROUP_COUNT,
+        "the heuristics produced {} groups, not the published {RECORDED_GROUP_COUNT}",
+        score.group_count
     );
 
     let no_stoplist = passes::group(

@@ -134,6 +134,12 @@ launch_tuicr_pane() {
   # Create unique channel for wait-for
   local wait_channel="tuicr-$$"
 
+  # `tmux wait-for` carries no payload, so tuicr's exit status has to travel out
+  # of the pane some other way. Removed from a trap: every path out of here can
+  # leave it behind otherwise, including a split-window that never spawns.
+  status_file=$(mktemp /tmp/tuicr-status.XXXXXX)
+  trap 'rm -f "$status_file"' EXIT
+
   # Check if --stdout is supported and set up output capture
   local output_file=""
   local tuicr_cmd="tuicr"
@@ -141,18 +147,28 @@ launch_tuicr_pane() {
 
   if check_tuicr_stdout_support; then
     output_file=$(mktemp /tmp/tuicr-output.XXXXXX)
-    tuicr_cmd="tuicr --stdout > '$output_file'"
+    local quoted_output
+    printf -v quoted_output '%q' "$output_file"
+    tuicr_cmd="tuicr --stdout > $quoted_output"
     use_stdout=true
     log_info "Using --stdout mode (output will be captured)"
   else
     log_warn "tuicr --stdout not supported, output will be copied to clipboard"
   fi
 
+  # Every path interpolated into the pane's shell command goes through `%q`
+  # first, so one holding a quote or a space cannot break out of the command it
+  # belongs to and run as shell in the new pane.
+  local quoted_dir quoted_status quoted_channel
+  printf -v quoted_dir '%q' "$target_dir"
+  printf -v quoted_status '%q' "$status_file"
+  printf -v quoted_channel '%q' "$wait_channel"
+
   # Create the split pane with tuicr, signal when done
   # Use -d to not switch, -P to print pane info so we can capture the ID
   local new_pane_id
   new_pane_id=$(tmux split-window -d -P -F '#{pane_id}' "${split_args[@]}" \
-    "cd '$target_dir' && $tuicr_cmd; tmux wait-for -S '$wait_channel'")
+    "cd $quoted_dir && $tuicr_cmd; echo \$? > $quoted_status; tmux wait-for -S $quoted_channel")
 
   # Switch focus to the new tuicr pane
   tmux select-pane -t "$new_pane_id"
@@ -163,7 +179,17 @@ launch_tuicr_pane() {
   # Block until tuicr exits
   tmux wait-for "$wait_channel"
 
-  log_info "tuicr finished"
+  # The channel is signalled however tuicr ended, so the status is what says
+  # whether it ended well — the same answer the zellij and Orca wrappers return.
+  local status
+  status=$(cat "$status_file" 2>/dev/null || true)
+  [[ "$status" =~ ^[0-9]+$ ]] || status=1
+
+  if [[ "$status" -eq 0 ]]; then
+    log_info "tuicr finished"
+  else
+    log_error "tuicr exited with status $status"
+  fi
 
   # Output captured instructions if --stdout was used
   if [[ "$use_stdout" == true ]] && [[ -f "$output_file" ]]; then
@@ -180,6 +206,8 @@ launch_tuicr_pane() {
   else
     log_info "If you exported instructions, they are in your clipboard - paste them here"
   fi
+
+  return "$status"
 }
 
 main() {
@@ -234,7 +262,7 @@ main() {
     exit 1
   fi
 
-  # Launch tuicr in a split pane
+  # Launch tuicr in a split pane, and exit with what tuicr exited with
   launch_tuicr_pane "$target_dir"
 }
 

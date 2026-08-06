@@ -41,14 +41,16 @@ model="${TUICR_REFINE_MODEL:-claude-opus-5}"
 # named `<shape>-opus-NN.json`, and a re-record has to land on those exact names
 # or it writes a parallel corpus beside the one every published number rests on
 # instead of resuming it. Set alongside TUICR_REFINE_MODEL when recording a
-# second arm — and it has to be set, because the default slug names the
-# published arm's files: a second arm recorded under it finds all ten slots
-# already on disk, skips every one of them, and reports a re-record that never
-# sent a call.
-if [[ -n "${TUICR_REFINE_MODEL:-}" && -z "${TUICR_REFINE_MODEL_SLUG:-}" ]]; then
-  echo "TUICR_REFINE_MODEL=$model needs TUICR_REFINE_MODEL_SLUG too: the default" >&2
-  echo "slug 'opus' names the published arm's files, so this run would resume that" >&2
-  echo "corpus rather than record a second one." >&2
+# second arm — and the two have to move together. Setting only the model leaves
+# every target named for the published arm, so all ten slots are already on disk
+# and the run reports a re-record that never sent a call; setting only the slug
+# files the published model's answers under another arm's name. Either way the
+# corpus stops meaning what its file names say.
+if [[ -n "${TUICR_REFINE_MODEL:-}" && -z "${TUICR_REFINE_MODEL_SLUG:-}" ]] \
+  || [[ -z "${TUICR_REFINE_MODEL:-}" && -n "${TUICR_REFINE_MODEL_SLUG:-}" ]]; then
+  echo "TUICR_REFINE_MODEL and TUICR_REFINE_MODEL_SLUG have to be set together:" >&2
+  echo "the model decides who answers, the slug decides which corpus the answers" >&2
+  echo "are filed under, and one without the other mislabels the recording." >&2
   exit 1
 fi
 slug="${TUICR_REFINE_MODEL_SLUG:-opus}"
@@ -117,6 +119,17 @@ for fixture_prompts in "$prompts"/*/; do
         "$target.partial" 2>/dev/null || true)"
       if [[ "$billed" != "$model" ]]; then
         echo "  answered by \`${billed:-unknown}\`, not \`$model\`; leaving $target.partial" >&2
+        failed=$((failed + 1))
+        continue
+      fi
+      # The CLI exits 0 on its own failures — a turn limit, an execution error —
+      # and still fills in `modelUsage`, so the model check above passes and an
+      # envelope carrying no answer would be committed as evidence. The resume
+      # guard then skips that slot forever and the hole surfaces much later as a
+      # parse failure against a checked-in fixture.
+      if ! jq -e '.is_error == false and .subtype == "success"' \
+        "$target.partial" >/dev/null 2>&1; then
+        echo "  the CLI reported an error for this run; leaving $target.partial" >&2
         failed=$((failed + 1))
         continue
       fi
