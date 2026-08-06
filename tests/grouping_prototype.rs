@@ -324,7 +324,7 @@ fn check_unfired_passes_fire(label: &str, changeset: &Changeset) {
 /// on any input. What rule 11 asks for is a property of the representation, and
 /// this is the test that says so.
 #[test]
-fn a_rename_is_one_file_in_one_group() {
+fn a_rename_is_one_file_in_the_changeset() {
     let changeset = Changeset::parse(
         "M\tsrc/app/scheduler.ts\n\
          R096\tsrc/app/old-catalog.ts\tsrc/app/widget-catalog.ts\n\
@@ -338,19 +338,17 @@ fn a_rename_is_one_file_in_one_group() {
         Some("src/app/old-catalog.ts")
     );
 
-    let partition = passes::group(&changeset, GroupingConfig::default()).partition();
-    let holders: Vec<&String> = partition
-        .groups
-        .iter()
-        .filter(|(_, members)| members.iter().any(|m| m == &renamed.path))
-        .map(|(name, _)| name)
-        .collect();
-    assert_eq!(holders.len(), 1, "a rename is in exactly one group");
+    assert_eq!(
+        changeset.len(),
+        3,
+        "the rename contributed one file and not two"
+    );
     assert!(
-        !partition.groups.values().any(|members| members
+        !changeset
+            .files
             .iter()
-            .any(|m| Some(m.as_str()) == renamed.rename_from.as_deref())),
-        "the old path is not a file in the changeset and must not be grouped"
+            .any(|file| Some(file.path.as_str()) == renamed.rename_from.as_deref()),
+        "the old path is not a file in the changeset"
     );
 }
 
@@ -1313,6 +1311,27 @@ fn published_arm(fixture: &str, changeset: &Changeset, shape: Shape) -> Vec<Run>
         .collect()
 }
 
+/// The committed corpus is ten published-model runs per shape, and every claim
+/// docs/GROUPING_PASSES.md pins on a replay test is a property of all ten. A
+/// replay test that skips an empty run list would otherwise stay green after
+/// half the envelopes were deleted, so the checked-in fixture is held to its
+/// full corpus while the external one may be absent.
+fn expect_full_corpus(label: &str, runs: &[Run], shape: Shape) {
+    if label != ORCA_FIXTURE {
+        return;
+    }
+    let published = runs
+        .iter()
+        .filter(|run| run.record.model == PUBLISHED_MODEL)
+        .count();
+    assert_eq!(
+        published,
+        RECORDED_RUNS,
+        "{label} {}: the committed corpus is {RECORDED_RUNS} {PUBLISHED_MODEL} runs",
+        shape.slug()
+    );
+}
+
 #[test]
 #[ignore = "printer; run with --ignored --nocapture refine_report"]
 fn refine_report() {
@@ -1519,22 +1538,20 @@ fn refine_report() {
 /// than a caveat on it.
 #[test]
 fn naming_only_cannot_move_the_metric() {
-    for (label, changeset, expected) in fixtures() {
+    for (label, changeset, _) in fixtures() {
         let runs = load_runs(&label, &changeset, Shape::NamingOnly);
+        expect_full_corpus(&label, &runs, Shape::NamingOnly);
         if runs.is_empty() {
             println!("no naming-only runs for {label}");
             continue;
         }
-        let heuristic = passes::group(&changeset, GroupingConfig::default())
-            .partition()
-            .score_against(&expected);
-        for run in &runs {
-            let score = run.refined.partition.score_against(&expected);
-            assert!(
-                (score.f1 - heuristic.f1).abs() < 1e-9,
-                "{label}: naming-only moved F1 {:.6} from {:.6}, so it changed the partition",
-                score.f1,
-                heuristic.f1
+        let heuristic =
+            co_membership(&passes::group(&changeset, GroupingConfig::default()).partition());
+        for (index, run) in runs.iter().enumerate() {
+            assert_eq!(
+                co_membership(&run.refined.partition),
+                heuristic,
+                "{label} run {index}: naming-only changed the partition, not only the names"
             );
         }
     }
@@ -1547,6 +1564,7 @@ fn naming_only_cannot_move_the_metric() {
 fn merge_only_can_only_coarsen() {
     for (label, changeset, _) in fixtures() {
         let runs = load_runs(&label, &changeset, Shape::MergeOnly);
+        expect_full_corpus(&label, &runs, Shape::MergeOnly);
         if runs.is_empty() {
             println!("no merge-only runs for {label}");
             continue;
@@ -1579,7 +1597,9 @@ fn merge_only_can_only_coarsen() {
 fn every_recorded_run_yields_a_strict_partition() {
     for (label, changeset, _) in fixtures() {
         for shape in Shape::ALL {
-            for (index, run) in load_runs(&label, &changeset, shape).iter().enumerate() {
+            let runs = load_runs(&label, &changeset, shape);
+            expect_full_corpus(&label, &runs, shape);
+            for (index, run) in runs.iter().enumerate() {
                 assert_eq!(
                     run.refined.partition.file_count(),
                     changeset.len(),
@@ -1957,14 +1977,5 @@ fn grouping_is_a_strict_partition() {
             changeset.len(),
             "{label}: every file assigned exactly once"
         );
-        let mut seen = std::collections::BTreeSet::new();
-        for members in partition.groups.values() {
-            for path in members {
-                assert!(
-                    seen.insert(path.clone()),
-                    "{label}: {path} appears in two groups"
-                );
-            }
-        }
     }
 }

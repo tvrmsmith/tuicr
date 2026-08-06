@@ -593,9 +593,11 @@ pub struct RunRecord {
     pub body: String,
     pub input_tokens: f64,
     pub output_tokens: f64,
-    /// Cache creation plus cache read. On a `claude -p` call this is dominated
-    /// by the CLI's own system prompt, which the task text does not control —
-    /// see the cost section of docs/GROUPING_PASSES.md.
+    /// Cache creation plus cache read. Every one of the forty committed
+    /// fixture-1 envelopes wrote cache and read none, and the write sits a
+    /// near-constant ~2,690 tokens above that run's `input_tokens` on all four
+    /// shapes, so this column tracks the task text with a fixed CLI preamble on
+    /// top — see the cost section of docs/GROUPING_PASSES.md.
     pub cached_tokens: f64,
     pub cost_usd: f64,
     pub wall_clock_ms: f64,

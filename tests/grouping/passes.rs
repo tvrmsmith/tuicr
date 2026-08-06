@@ -132,7 +132,7 @@ pub fn group(changeset: &Changeset, config: GroupingConfig) -> Grouping {
     }
     // No rename pass: git reports a rename as one entry keyed by the new path,
     // so a rename's two halves are already one file and GROUPING.md rule 11 is
-    // satisfied by construction. See `a_rename_is_one_file_in_one_group`.
+    // satisfied by construction. See `a_rename_is_one_file_in_the_changeset`.
     directory_fallback_pass(&files, &mut assigned);
 
     Grouping {

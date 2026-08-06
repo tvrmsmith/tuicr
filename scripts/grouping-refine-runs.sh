@@ -46,6 +46,7 @@ fi
 common=(--print --output-format json --setting-sources '' --tools '' --max-turns 1 --model "$model")
 
 sent=0
+failed=0
 
 for fixture_prompts in "$prompts"/*/; do
   fixture="$(basename "$fixture_prompts")"
@@ -72,6 +73,7 @@ for fixture_prompts in "$prompts"/*/; do
       scratch="$(mktemp -d)" || exit 1
       if ! (cd "$scratch" && claude "${common[@]}" < "$prompt") > "$target.partial"; then
         echo "  failed; leaving $target.partial for inspection" >&2
+        failed=$((failed + 1))
         rm -rf "$scratch"
         continue
       fi
@@ -86,6 +88,14 @@ done
 # that reproduces the corpus every published number rests on.
 if (( sent == 0 )); then
   echo "no prompts under $prompts — run emit_refine_prompts first" >&2
+  exit 1
+fi
+
+# A call that fails prints and continues so one bad answer does not throw away
+# the rest of the corpus, but a re-record where every call failed must not
+# report success on the path every published number rests on.
+if (( failed > 0 )); then
+  echo "$failed of $sent calls failed; the corpus is incomplete" >&2
   exit 1
 fi
 

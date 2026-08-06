@@ -661,7 +661,7 @@ The fix is not to rewrite it. There is no pair to reunite: a rename's two halves
 are **one file** in the diff, so rule 11 is satisfied by construction. Rule 11 is
 recast in `docs/GROUPING.md` as a constraint on the representation — any
 representation that splits a rename into a delete and an add is wrong, rather
-than a case to reconcile afterwards — and `a_rename_is_one_file_in_one_group`
+than a case to reconcile afterwards — and `a_rename_is_one_file_in_the_changeset`
 replaces the pass.
 
 Using the old path as *evidence* (a renamed file also carrying its former name's
@@ -926,6 +926,12 @@ not track file count either — it rises 5,373 to 9,497, +77%, on the fixture wi
 three *fewer* files — but it is small enough beside output that the shape, not
 the input, is what the bill follows. What either of them does past ~160 files is
 not measured here; see *What this does not answer*.
+
+The cached column is cache *writes*: `cacheReadInputTokens` is zero in all forty
+committed fixture-1 envelopes, so no call here was served from a warm cache, and
+every row's cached figure sits a near-constant ~2,690 tokens above its own input
+— the CLI's fixed preamble on top of the task text, not a term that grows on its
+own.
 
 `full` and `full-coarse` run from just under two and a half minutes to a little
 over three per call, and the cheaper shapes from 20.2s to 56.9s. On a review the
