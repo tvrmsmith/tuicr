@@ -45,6 +45,8 @@ fi
 # repo it is grouping would measure something the shipped pass cannot do.
 common=(--print --output-format json --setting-sources '' --tools '' --max-turns 1 --model "$model")
 
+sent=0
+
 for fixture_prompts in "$prompts"/*/; do
   fixture="$(basename "$fixture_prompts")"
   if [[ "$fixture" == orca-* ]]; then
@@ -58,6 +60,7 @@ for fixture_prompts in "$prompts"/*/; do
     shape="$(basename "$prompt" .txt)"
     for run in $(seq 1 "$runs"); do
       target="$out/$shape-$model-$(printf '%02d' "$run").json"
+      sent=$((sent + 1))
       if [[ -f "$target" ]]; then
         echo "have  $fixture/$shape run $run"
         continue
@@ -69,12 +72,22 @@ for fixture_prompts in "$prompts"/*/; do
       scratch="$(mktemp -d)" || exit 1
       if ! (cd "$scratch" && claude "${common[@]}" < "$prompt") > "$target.partial"; then
         echo "  failed; leaving $target.partial for inspection" >&2
+        rm -rf "$scratch"
         continue
       fi
+      rm -rf "$scratch"
       mv "$target.partial" "$target"
     done
   done
 done
+
+# nullglob turns an empty prompts tree into a loop that never runs, so a script
+# that recorded nothing would otherwise print success and exit 0 on the one path
+# that reproduces the corpus every published number rests on.
+if (( sent == 0 )); then
+  echo "no prompts under $prompts — run emit_refine_prompts first" >&2
+  exit 1
+fi
 
 echo
 echo "recorded. now: cargo test --test grouping_prototype -- --ignored --nocapture refine_report"

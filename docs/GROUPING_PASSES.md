@@ -819,8 +819,8 @@ by construction rather than by failing — see *The cheaper shapes*.
 On fixture 2 full refine is transformational: 0.763 against a bar of 0.378, every
 one of ten calls over it, every one of 120 triples over it, 0.847 voted. On
 fixture 1 **no single full call cleared the bar in ten attempts**, and voting is a
-coin flip rather than a fix — 50 of 120 triples clear, and the median triple
-scores 0.369 against the 0.394 bar. Refine is not uniformly better than the
+coin flip rather than a fix — 50 of 120 triples clear, and the upper median
+triple scores 0.369 against the 0.394 bar. Refine is not uniformly better than the
 heuristics: it is enormously better on one changeset and slightly *worse* on the
 other.
 
@@ -852,8 +852,9 @@ partly being graded against their own reasoning. But that is an explanation, not
 an excuse: the metric is the metric, and by it a single call loses here.
 
 `full-coarse` exists to test whether the loss is *granularity* — it instructs the
-model toward fewer, larger groups without naming a number, to avoid fitting the
-prompt to the answers. It lifts fixture 1 to 0.386 — still under the bar — and
+model toward fewer, larger groups without naming a group count, to avoid fitting
+the prompt to the answers. It does name one number — no concern group under four
+files — which is a floor on group size, not a target for how many. It lifts fixture 1 to 0.386 — still under the bar — and
 drops fixture 2 to 0.754, and on fixture 1 it does not reliably repair the two
 groups the model splits. Across the ten `full-coarse` runs, `project-view` recall
 is 0.34, 0.34, 0.75, 0.34, 0.69, 0.37, 0.34, 0.29, 0.34, 0.34 (mean 0.41, against
@@ -926,9 +927,10 @@ three *fewer* files — but it is small enough beside output that the shape, not
 the input, is what the bill follows. What either of them does past ~160 files is
 not measured here; see *What this does not answer*.
 
-From just under two and a half minutes to a little over three per call, on a
-review the user is waiting to start, is the empirical confirmation of `gd-26r.4`: this cannot be
-synchronous.
+`full` and `full-coarse` run from just under two and a half minutes to a little
+over three per call, and the cheaper shapes from 20.2s to 56.9s. On a review the
+user is waiting to start, that is the empirical confirmation of `gd-26r.4`: this
+cannot be synchronous.
 The heuristics must render immediately and refine must arrive later or not at
 all.
 
@@ -981,8 +983,9 @@ more calls buy nothing. That is the one voting claim ten runs strengthened.
 **Which three, though.** That 0.411 is one particular triple: the first three
 recorded `full` runs. Ten runs admit 120 distinct triples, and `refine_report`
 now scores all of them. **On fixture 1, 50 of the 120 clear the 0.394 bar and 70
-do not.** The distribution runs 0.343 to 0.439 with a median of 0.369 — that is,
-**the median three-call vote lands below the bar.** A shipped "three calls and a
+do not.** The distribution runs 0.343 to 0.439 with an upper median of 0.369 —
+the statistic `refine_report` prints under that name, the 61st of the 120 sorted
+ascending — that is, **the middle three-call vote lands below the bar.** A shipped "three calls and a
 vote" draws an arbitrary triple, so on fixture 1 consensus is a coin flip that
 loses slightly more often than it wins, not a fix.
 
@@ -990,10 +993,10 @@ This is a correction, and it is the reason the corpus was doubled. The five-run
 version of this document reported that seven of ten triples cleared the bar and
 called the result provisional pending ten runs. At ten runs the honest figure is
 42%, and the earlier 0.411 headline was a mildly favourable draw rather than a
-typical one: it ranks 42nd of the 120 triples from the top — the upper third,
-above the 0.369 median but below the 0.439 best. `refine_report` prints that
-rank beside the distribution, so it re-derives offline like every other number
-here.
+typical one: 41 of the 120 triples score above it, so it ranks 42nd from the top,
+above the 0.369 upper median and below the 0.439 best. `refine_report` prints
+that rank beside the distribution, so it re-derives offline like every other
+number here.
 
 Fixture 2 is nowhere near its bar under any triple — 120 of 120 clear, minimum
 0.640 against a bar of 0.378 — so nothing here qualifies that side of the split.
@@ -1079,7 +1082,7 @@ strength of one fixture, not two.**
   Voting makes the result reproducible given its inputs and lifts fixture 2 to
   0.847, and ten votes add nothing over three. What it does *not* do is rescue
   fixture 1: no single call cleared that bar in ten attempts and only 50 of 120
-  triples do, with the median triple at 0.369 under a 0.394 bar. Cost is roughly
+  triples do, with the upper median triple at 0.369 under a 0.394 bar. Cost is roughly
   $1.40–2.00 and, run in parallel, about the wall clock of one `full` call —
   141.8s on fixture 1 and 190.6s on fixture 2.
   `voting_does_not_rescue_fixture_one` locks the negative half against the

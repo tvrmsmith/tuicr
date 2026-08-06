@@ -28,7 +28,7 @@ use serde_json::Value;
 
 use super::changeset::{ChangeKind, Changeset};
 use super::passes::Grouping;
-use super::score::Partition;
+use super::score::{Partition, free_name};
 
 /// How much freedom the refine call is given. The ticket asks whether a
 /// cheaper shape captures most of the benefit, so the shapes are the
@@ -40,10 +40,11 @@ pub enum Shape {
     /// [`Shape::Full`] plus a push toward coarser groups. Fixture 1's loss
     /// under `Full` was concentrated in two large groups the model subdivided,
     /// so this asks whether that is a granularity problem the prompt can fix
-    /// or a judgement the model will not change. The instruction is
-    /// deliberately non-numeric: telling it how many groups to produce when
-    /// both fixtures happen to have thirteen or fourteen would be fitting the
-    /// prompt to the answers.
+    /// or a judgement the model will not change. The instruction names no
+    /// group count: telling it how many groups to produce when both fixtures
+    /// happen to have thirteen or fourteen would be fitting the prompt to the
+    /// answers. It does name a floor on group size, four files, which is a
+    /// statement about what "coarser" means rather than about either answer.
     FullCoarse,
     /// Whole heuristic groups may be unioned and renamed. No individual file
     /// moves, so the refined partition is always a coarsening of the
@@ -377,16 +378,6 @@ fn group_name(
     name
 }
 
-fn free_name(base: &str, used: &BTreeSet<String>) -> String {
-    if !used.contains(base) {
-        return base.to_string();
-    }
-    (2..)
-        .map(|suffix| format!("{base}-{suffix}"))
-        .find(|candidate| !used.contains(candidate))
-        .expect("a free name exists")
-}
-
 /// How far two runs of the same prompt moved, as pairwise co-membership F1 of
 /// one run's partition against the other's. 1.000 is byte-identical grouping;
 /// the heuristics score 1.000 here by construction.
@@ -555,10 +546,7 @@ pub fn consensus(runs: &[Partition]) -> Option<Partition> {
     let mut votes = vec![vec![0usize; paths.len()]; paths.len()];
     for run in runs {
         for members in run.groups.values() {
-            let ids: Vec<usize> = members
-                .iter()
-                .filter_map(|path| index.get(path.as_str()).copied())
-                .collect();
+            let ids: Vec<usize> = members.iter().map(|path| index[path.as_str()]).collect();
             for (n, &a) in ids.iter().enumerate() {
                 for &b in &ids[n + 1..] {
                     votes[a][b] += 1;

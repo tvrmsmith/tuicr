@@ -4,7 +4,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use super::changeset::{ChangeKind, ChangedFile, Changeset};
-use super::score::Partition;
+use super::score::{Partition, free_name};
 
 /// Where a file ended up, which pass put it there, and — on close calls only —
 /// the group it nearly went to instead. Derived state, recomputed per regroup.
@@ -533,17 +533,7 @@ pub fn agglomerative_grouping(changeset: &Changeset, target_groups: usize) -> Pa
     let mut assignments = Vec::new();
     let mut used: BTreeSet<String> = BTreeSet::new();
     for members in &clusters {
-        let base = derive_group_name(&files, members);
-        let name = (1..)
-            .map(|suffix| {
-                if suffix == 1 {
-                    base.clone()
-                } else {
-                    format!("{base}-{suffix}")
-                }
-            })
-            .find(|candidate| !used.contains(candidate))
-            .expect("a free name exists");
+        let name = free_name(&derive_group_name(&files, members), &used);
         used.insert(name.clone());
         assignments.extend(
             members

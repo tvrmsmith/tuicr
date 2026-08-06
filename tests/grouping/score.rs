@@ -1,7 +1,21 @@
 //! Pairwise co-membership scoring, per tests/fixtures/grouping/README.md.
 //! Group names are ignored; only the partition is judged.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
+
+/// The first of `base`, `base-2`, `base-3`, … that `used` does not already
+/// hold. [`Partition`] buckets by name, so anything that files two distinct
+/// groups under one name unions them silently; every producer of group names
+/// resolves collisions the same way, from here.
+pub fn free_name(base: &str, used: &BTreeSet<String>) -> String {
+    if !used.contains(base) {
+        return base.to_string();
+    }
+    (2..)
+        .map(|suffix| format!("{base}-{suffix}"))
+        .find(|candidate| !used.contains(candidate))
+        .expect("a free name exists")
+}
 
 #[derive(Debug, Clone, Default)]
 pub struct Partition {

@@ -32,8 +32,8 @@ const FIRE_CHECK_FILES: &str = include_str!("fixtures/grouping/fire-check-synthe
 
 /// The second, hand-grouped fixture: one .NET-dominant PR, 158 files.
 const SECOND_FIXTURE: &str = "meridian-6c22fda02";
-/// Paths-only, no expected grouping: exists purely so the three passes that
-/// fired on nothing in fixture 1 meet a lockfile, a CI file and a rename.
+/// Paths-only, no expected grouping: exists purely so the two passes that
+/// fired on nothing in fixture 1 meet a lockfile and a CI file.
 const FIRE_CHECK_FIXTURE: &str = "meridian-097e2defa-10cc878df";
 
 fn orca() -> (Changeset, Partition) {
@@ -253,10 +253,11 @@ fn report_fixture(label: &str, changeset: &Changeset, expected: &Partition) {
     }
 }
 
-/// The three passes that matched nothing in fixture 1 were kept as unscored
+/// The two passes that matched nothing in fixture 1 were kept as unscored
 /// bets. These are the changesets that make them fire or expose them as dead
-/// code: each carries a lockfile, a CI workflow and a rename. There is no hand
-/// grouping for either, so nothing here is scored — only whether a pass fires.
+/// code: each carries a lockfile and a CI workflow, and a rename besides, so
+/// the deleted rename pass stays deleted. There is no hand grouping for either,
+/// so nothing here is scored — only whether a pass fires.
 ///
 /// The synthetic one is checked in precisely so this runs in CI, where the
 /// private fixture is absent and neither calibration fixture carries a lockfile
@@ -353,6 +354,35 @@ fn a_rename_is_one_file_in_one_group() {
     );
 }
 
+/// The agglomerative baseline answers "could paths alone do better", so it has
+/// to report the group count it was asked for. It names groups from the
+/// changeset's own vocabulary, and two clusters of the same vocabulary derive
+/// the same name; `Partition` buckets by name, so an unsuffixed collision would
+/// union them and the baseline would score as a coarser grouping than the one
+/// it actually produced.
+#[test]
+fn the_agglomerative_baseline_keeps_its_group_count_when_two_clusters_share_a_name() {
+    let changeset = Changeset::parse(
+        "M\talpha/widget-catalog.ts\n\
+         M\talpha/widget-catalog.test.ts\n\
+         M\tbeta/widget-catalog.ts\n\
+         M\tbeta/widget-catalog.test.ts\n",
+    );
+
+    let partition = passes::agglomerative_grouping(&changeset, 2);
+    assert_eq!(
+        partition.groups.len(),
+        2,
+        "two clusters were asked for and two must be reported: {:?}",
+        partition.groups
+    );
+    assert_eq!(
+        partition.file_count(),
+        changeset.len(),
+        "suffixing a colliding name must not drop or duplicate a file"
+    );
+}
+
 // --- the model refine pass (`gd-26r.11`) ------------------------------------
 //
 // The call itself is nondeterministic and costs money, so no test makes one.
@@ -383,6 +413,11 @@ const ORCA_FIXTURE: &str = "orca-971b16754";
 /// of this N, so the tests that lock those figures assert it rather than
 /// accepting whatever happens to be on disk.
 const RECORDED_RUNS: usize = 10;
+
+/// The model docs/GROUPING_PASSES.md reports. A run is only comparable with
+/// runs of the same model, so a second arm recorded with `TUICR_REFINE_MODEL`
+/// is a second experiment beside this one rather than five more runs of it.
+const PUBLISHED_MODEL: &str = "claude-opus-5";
 
 /// The published count of fixture-1 `full` triples clearing the bar is 50 of
 /// 120. A little slack absorbs a re-record; anything much above it is the
@@ -1087,7 +1122,11 @@ fn consensus_keeps_a_pair_two_of_three_runs_agree_on_and_drops_a_lone_vote() {
 
 /// Groups are the connected components of the surviving pairs, so a majority on
 /// `a-b` and a majority on `b-c` puts `a`, `b` and `c` together even though no
-/// run proposed that group and no majority ever voted for `a-c` directly.
+/// majority ever voted for `a-c` directly — here only one run of the three
+/// proposed that group. Two majorities of the same runs always overlap, and the
+/// overlapping run's own partition is transitive, so some run always does
+/// propose the closure; what the vote adds is that a minority proposal survives
+/// when the chain of majorities reaches it.
 #[test]
 fn consensus_closes_a_chain_of_majorities_transitively() {
     let ab = partition_of(&[("x", &["a", "b"]), ("y", &["c"])]);
@@ -1116,9 +1155,38 @@ fn consensus_of_one_run_is_that_run() {
         co_membership(&run),
         "a single run is unanimous with itself"
     );
-    assert!(
-        refine::consensus(&[]).is_none(),
-        "no runs is no consensus, not an empty partition"
+}
+
+/// No runs is no consensus, not an empty partition: an empty partition would
+/// score against the hand grouping like any other answer and publish a figure
+/// derived from nothing.
+#[test]
+fn consensus_of_no_runs_is_none() {
+    assert!(refine::consensus(&[]).is_none());
+}
+
+/// A strict majority, not half. The published "consensus of 10" column is an
+/// even-N vote, where a 5-5 split must lose; at the odd N the other tests use,
+/// a tie-permitting threshold would score identically and the column would move
+/// with nothing failing.
+#[test]
+fn consensus_needs_more_than_half_at_an_even_number_of_runs() {
+    let both = partition_of(&[("a", &["one", "two", "three"])]);
+    let split = partition_of(&[("a", &["one", "two"]), ("b", &["three"])]);
+    let neither = partition_of(&[("a", &["one"]), ("b", &["two"]), ("c", &["three"])]);
+    let voted = refine::consensus(&[both.clone(), both, split, neither])
+        .expect("four runs are enough to vote");
+
+    let mates = co_membership(&voted);
+    assert_eq!(
+        mates["one"],
+        vec!["one".to_string(), "two".to_string()],
+        "one and two carry three of four votes"
+    );
+    assert_eq!(
+        mates["three"],
+        vec!["three".to_string()],
+        "two of four is not a majority, so three travels alone"
     );
 }
 
@@ -1132,43 +1200,17 @@ fn consensus_carries_every_path_any_run_grouped() {
     let voted = refine::consensus(&[short.clone(), long.clone(), long])
         .expect("three runs are enough to vote");
 
+    let one_two = vec!["one".to_string(), "two".to_string()];
     assert_eq!(
-        voted.file_count(),
-        3,
-        "the voted partition carries the union of the runs' paths, not run 0's"
+        co_membership(&voted),
+        BTreeMap::from([
+            ("one".to_string(), one_two.clone()),
+            ("two".to_string(), one_two),
+            ("three".to_string(), vec!["three".to_string()]),
+        ]),
+        "the voted partition carries the union of the runs' paths, not run 0's, \
+         and the path only later runs grouped is a group of its own"
     );
-    assert!(
-        co_membership(&voted).contains_key("three"),
-        "a path only later runs carried is still in the consensus"
-    );
-}
-
-/// The voted partition is scored by the same harness as any pass, so it has to
-/// be a strict partition of the changeset — the property
-/// `every_recorded_run_yields_a_strict_partition` locks for `apply`.
-#[test]
-fn every_recorded_triple_votes_a_strict_partition() {
-    let (changeset, _) = orca();
-    for shape in Shape::ALL {
-        let partitions: Vec<Partition> = load_runs(ORCA_FIXTURE, &changeset, shape)
-            .iter()
-            .map(|run| run.refined.partition.clone())
-            .collect();
-        for (i, j, k) in triples(partitions.len()) {
-            let ballot = [
-                partitions[i].clone(),
-                partitions[j].clone(),
-                partitions[k].clone(),
-            ];
-            let voted = refine::consensus(&ballot).expect("three runs are enough to vote");
-            assert_eq!(
-                voted.file_count(),
-                changeset.len(),
-                "{} triple ({i},{j},{k}): every file voted exactly once",
-                shape.slug()
-            );
-        }
-    }
 }
 
 struct Run {
@@ -1256,6 +1298,18 @@ fn load_runs(fixture: &str, changeset: &Changeset, shape: Shape) -> Vec<Run> {
                 .unwrap_or_else(|error| panic!("{}: unusable answer: {error}", path.display()));
             Run { record, refined }
         })
+        .collect()
+}
+
+/// The published arm alone. `load_runs` returns every arm on disk and
+/// `refine_report` reports them apart, so a test that locks an N-run figure
+/// filters to the model that figure is about — otherwise recording the second
+/// arm the run script advertises fails the lock with a message blaming the
+/// corpus size.
+fn published_arm(fixture: &str, changeset: &Changeset, shape: Shape) -> Vec<Run> {
+    load_runs(fixture, changeset, shape)
+        .into_iter()
+        .filter(|run| run.record.model == PUBLISHED_MODEL)
         .collect()
 }
 
@@ -1374,17 +1428,17 @@ fn refine_report() {
                     // whole distribution. Published as a rank rather than
                     // reasoned about, so no claim about that draw rests on a
                     // statistic this printer does not emit.
-                    if let Some(first) = refine::consensus(&partitions[..3.min(partitions.len())])
-                        .filter(|_| partitions.len() >= 3)
-                        .map(|c| c.score_against(&expected).f1)
-                    {
-                        let above = voted.iter().filter(|f1| **f1 > first).count();
-                        println!(
-                            "  first triple {first:.3} ranks {} of {} from the top",
-                            above + 1,
-                            voted.len()
-                        );
-                    }
+                    let first = refine::consensus(&partitions[..3])
+                        .expect("a non-empty triple distribution means three runs")
+                        .score_against(&expected)
+                        .f1;
+                    let above = voted.iter().filter(|f1| **f1 > first).count();
+                    println!(
+                        "  first triple {first:.3}: {above} of {} score above it, so it ranks \
+                         {} from the top",
+                        voted.len(),
+                        above + 1
+                    );
                     let singles = f1s.iter().filter(|f1| **f1 > bar).count();
                     println!("  single calls clearing the bar: {singles}/{}", f1s.len());
                 }
@@ -1545,11 +1599,11 @@ fn every_recorded_run_yields_a_strict_partition() {
 fn no_committed_run_needed_a_repair() {
     let (changeset, _) = orca();
     for shape in Shape::ALL {
-        let runs = load_runs(ORCA_FIXTURE, &changeset, shape);
+        let runs = published_arm(ORCA_FIXTURE, &changeset, shape);
         assert_eq!(
             runs.len(),
             RECORDED_RUNS,
-            "{}: the published zero is a property of a {RECORDED_RUNS}-run corpus",
+            "{}: the published zero is a property of {RECORDED_RUNS} {PUBLISHED_MODEL} runs",
             shape.slug()
         );
         for (index, run) in runs.iter().enumerate() {
@@ -1568,30 +1622,26 @@ fn no_committed_run_needed_a_repair() {
 /// does not repair it.
 ///
 /// This replaces a test that asserted the *first* triple clears the bar. It did
-/// — 0.411 — but at ten runs that draw turns out to rank 42nd of the 120
-/// triples from the top, in the upper third rather than anywhere decisive, and
-/// the median is below the bar. Locking one favourable draw made a coin flip
-/// read as a result, so what is locked now is the distribution: no single call
-/// clears, and a minority of triples do. A change that genuinely fixed fixture
+/// — 0.411 — but at ten runs 41 of the 120 triples score above that draw, so it
+/// ranks 42nd from the top, and the upper median is below the bar. Locking one
+/// favourable draw made a coin flip read as a result, so what is locked now is
+/// the distribution: no single call clears, and a minority of triples do. A change that genuinely fixed fixture
 /// 1 would fail this test, which is the point — the verdict would have moved
 /// and the document would have to say so. `refine_report` prints that rank
 /// beside the distribution, so the claim above is re-derivable offline like
 /// every other published number.
 #[test]
 fn voting_does_not_rescue_fixture_one() {
-    let (label, changeset, expected) = fixtures()
-        .into_iter()
-        .find(|(label, _, _)| label == ORCA_FIXTURE)
-        .expect("the checked-in fixture is always present");
-    let runs = load_runs(&label, &changeset, Shape::Full);
-    // Every headline this test locks — "0 of 10", "50 of 120", the median — is
-    // a property of ten runs. At three, `triples` yields a single triple and
-    // "the median of the distribution" degenerates back into the one-draw lock
-    // this test exists to replace.
+    let (changeset, expected) = orca();
+    let runs = published_arm(ORCA_FIXTURE, &changeset, Shape::Full);
+    // Every headline this test locks — "0 of 10", "50 of 120", the upper median
+    // — is a property of ten runs of one model. At three, `triples` yields a
+    // single triple and "the middle of the distribution" degenerates back into
+    // the one-draw lock this test exists to replace.
     assert_eq!(
         runs.len(),
         RECORDED_RUNS,
-        "the locked distribution is a property of a {RECORDED_RUNS}-run corpus"
+        "the locked distribution is a property of {RECORDED_RUNS} {PUBLISHED_MODEL} runs"
     );
 
     let bar = passes::group(&changeset, GroupingConfig::default())
