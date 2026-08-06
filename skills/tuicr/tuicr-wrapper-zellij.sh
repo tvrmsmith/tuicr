@@ -160,8 +160,16 @@ launch_tuicr_pane() {
   # The pane inherits this wrapper's working directory, so a target directory
   # passed as an argument has to be entered explicitly — otherwise tuicr reviews
   # wherever the wrapper was invoked from, and the already-reviewing check above
-  # matches a pane that is looking at a different repository.
-  zellij_args+=(-- sh -c "cd '$target_dir' && $tuicr_cmd; echo done > '$fifo'")
+  # matches a pane that is looking at a different repository. A path holding a
+  # quote or a space survives `%q` and would break out of single quotes.
+  local quoted_dir quoted_fifo
+  printf -v quoted_dir '%q' "$target_dir"
+  printf -v quoted_fifo '%q' "$fifo"
+
+  # The FIFO carries tuicr's exit status, not just the fact that it exited: the
+  # pane is closed by --close-on-exit, so this write is the only place the status
+  # can be read from.
+  zellij_args+=(-- sh -c "cd $quoted_dir && $tuicr_cmd; echo \$? > $quoted_fifo")
 
   "$ZELLIJ_BIN" run\
     "${zellij_args[@]}"
@@ -171,10 +179,16 @@ launch_tuicr_pane() {
   log_info "Waiting for tuicr to exit..."
 
   # Block until the spawned command writes to the FIFO
-  read -r _ < "$fifo"
+  local status
+  read -r status < "$fifo"
   rm -f "$fifo"
+  [[ "$status" =~ ^[0-9]+$ ]] || status=1
 
-  log_info "tuicr finished"
+  if [[ "$status" -eq 0 ]]; then
+    log_info "tuicr finished"
+  else
+    log_error "tuicr exited with status $status"
+  fi
 
   # Output captured instructions if --stdout was used
   if [[ "$use_stdout" == true ]] && [[ -f "$output_file" ]]; then
@@ -191,6 +205,8 @@ launch_tuicr_pane() {
   else
     log_info "If you exported instructions, they are in your clipboard - paste them here"
   fi
+
+  return "$status"
 }
 
 main() {
@@ -246,7 +262,7 @@ main() {
     exit 1
   fi
 
-  # Launch tuicr in a split pane
+  # Launch tuicr in a split pane, and exit with what tuicr exited with
   launch_tuicr_pane "$target_dir"
 }
 

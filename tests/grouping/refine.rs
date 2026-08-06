@@ -310,8 +310,9 @@ pub fn apply(
                 // that structural rather than a property of the answers: a
                 // claimed source group is written whole under one name, a
                 // source claimed twice is skipped, and an unclaimed one is kept
-                // whole below. No syntactically applicable body can split a
-                // heuristic group across two names, so no test asserts it.
+                // whole below, so no body can split a heuristic group across two
+                // names. `merge_only_cannot_split_a_heuristic_group` aims a body
+                // that asks for exactly that at this loop and holds it here.
                 for source in sources {
                     let Some(members) = heuristic.groups.get(&source) else {
                         repairs.push(format!("unknown input group ignored: {source}"));

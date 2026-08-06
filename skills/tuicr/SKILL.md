@@ -91,8 +91,8 @@ Wrapper paths are relative to this skill directory:
 ```
 
 The Herdr wrapper requires `jq` to read pane IDs and completion results from
-Herdr's JSON responses. The Orca and zellij wrappers require `lsof`, which is
-how they tell a tuicr reviewing this repository from one reviewing another. The
+Herdr's JSON responses. The tmux, Orca and zellij wrappers require `lsof`, which
+is how they tell a tuicr reviewing this repository from one reviewing another. The
 Orca wrapper also requires `jq` and the `orca` CLI; it splits the current Orca
 terminal, so run it from inside an Orca-managed pane.
 

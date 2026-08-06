@@ -41,7 +41,16 @@ model="${TUICR_REFINE_MODEL:-claude-opus-5}"
 # named `<shape>-opus-NN.json`, and a re-record has to land on those exact names
 # or it writes a parallel corpus beside the one every published number rests on
 # instead of resuming it. Set alongside TUICR_REFINE_MODEL when recording a
-# second arm.
+# second arm — and it has to be set, because the default slug names the
+# published arm's files: a second arm recorded under it finds all ten slots
+# already on disk, skips every one of them, and reports a re-record that never
+# sent a call.
+if [[ -n "${TUICR_REFINE_MODEL:-}" && -z "${TUICR_REFINE_MODEL_SLUG:-}" ]]; then
+  echo "TUICR_REFINE_MODEL=$model needs TUICR_REFINE_MODEL_SLUG too: the default" >&2
+  echo "slug 'opus' names the published arm's files, so this run would resume that" >&2
+  echo "corpus rather than record a second one." >&2
+  exit 1
+fi
 slug="${TUICR_REFINE_MODEL_SLUG:-opus}"
 
 if [[ ! -d "$prompts" ]]; then

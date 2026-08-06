@@ -406,6 +406,201 @@ fn the_agglomerative_baseline_keeps_its_group_count_when_two_clusters_share_a_na
     );
 }
 
+// --- the passes that only fixture-wide scores covered -----------------------
+//
+// Rule 4, rule 9, absorption and the close-call annotation were exercised only
+// by the two calibration fixtures' aggregate F1, where any of them could stop
+// firing and cost a point or two of a number nobody reads as a pass boundary.
+// Each is aimed at here with a changeset built to make it decide something, and
+// judged on where the files land rather than on how the pass is written.
+
+/// Concern-bearing filler, in dirs and vocabulary the tests below never touch.
+/// Cluster keys are dropped once they name more than `ubiquity_threshold` of the
+/// changeset, so a pass that only decides between two clusters still needs a
+/// changeset big enough for either to be distinctive.
+const FILLER: &str = "M\tsrc/theme/color-token.ts\n\
+     M\tsrc/theme/color-scale.ts\n\
+     M\tsrc/theme/color-mode.ts\n\
+     M\tsrc/upload/chunk-reader.ts\n\
+     M\tsrc/upload/chunk-writer.ts\n\
+     M\tsrc/upload/chunk-queue.ts\n\
+     M\tsrc/mailer/digest-daily.ts\n\
+     M\tsrc/mailer/digest-weekly.ts\n\
+     M\tsrc/mailer/digest-retry.ts\n\
+     M\tsrc/mailer/digest-bounce.ts\n\
+     M\tsrc/locale/plural-rule.ts\n\
+     M\tsrc/locale/plural-format.ts\n\
+     M\tsrc/locale/plural-parse.ts\n";
+
+/// Where each path landed, by group name.
+fn placement(changeset: &Changeset, config: GroupingConfig) -> BTreeMap<String, String> {
+    passes::group(changeset, config)
+        .assignments
+        .iter()
+        .map(|a| (a.path.clone(), a.group.clone()))
+        .collect()
+}
+
+/// GROUPING.md rule 4: a test file follows its production file even when a token
+/// cluster has already claimed it for a different concern. Here
+/// `export-invoice.test.ts` carries both `invoice` and `export`, and the
+/// `invoice` cluster is the stronger of the two, so the cluster pass takes it
+/// away from the file it tests — which is what the rule exists to undo. The
+/// config switch is the control: same changeset, same clusters, and the only
+/// thing that moves is the file the rule is about.
+#[test]
+fn a_test_file_leaves_its_cluster_for_the_group_of_the_file_it_tests() {
+    let changeset = Changeset::parse(&format!(
+        "M\tsrc/billing/invoice.ts\n\
+         M\tsrc/billing/invoice-void.ts\n\
+         A\tsrc/billing/invoice-tax.test.ts\n\
+         A\tsrc/billing/invoice-line.test.ts\n\
+         A\tsrc/billing/export-invoice.test.ts\n\
+         M\tsrc/billing/export.ts\n\
+         M\tsrc/report/export-csv.ts\n\
+         M\tsrc/report/export-pdf.ts\n\
+         M\tsrc/report/export-html.ts\n\
+         {FILLER}"
+    ));
+    let test = "src/billing/export-invoice.test.ts";
+    let production = "src/billing/export.ts";
+
+    let following = placement(&changeset, GroupingConfig::default());
+    let cluster_keeps_it = placement(
+        &changeset,
+        GroupingConfig {
+            tests_follow_production: false,
+            ..GroupingConfig::default()
+        },
+    );
+
+    assert_eq!(
+        following[test], following[production],
+        "the test did not follow {production}; the whole placement was {following:?}"
+    );
+    assert_ne!(
+        cluster_keeps_it[test], cluster_keeps_it[production],
+        "with the rule off the cluster must keep the test, or this changeset does not \
+         exercise rule 4 at all: {cluster_keeps_it:?}"
+    );
+    assert_eq!(
+        cluster_keeps_it[test], cluster_keeps_it["src/billing/invoice.ts"],
+        "the cluster that loses the test must be the invoice one: {cluster_keeps_it:?}"
+    );
+}
+
+/// GROUPING.md rule 9: a doc covering the whole change is its own group, and a
+/// doc sitting beside the code it documents is not. The two halves are one
+/// decision — the pass tests scope, not the extension — so both are asserted
+/// against one changeset.
+#[test]
+fn a_whole_change_doc_groups_apart_from_a_doc_beside_its_code() {
+    let changeset = Changeset::parse(&format!(
+        "M\tREADME.md\n\
+         M\tdocs/architecture.md\n\
+         A\tdocs/grouping.md\n\
+         M\tsrc/upload/README.md\n\
+         {FILLER}"
+    ));
+
+    let placed = placement(&changeset, GroupingConfig::default());
+    let whole_change = &placed["README.md"];
+    assert_eq!(
+        placed["docs/architecture.md"], *whole_change,
+        "the whole-change docs must be one group: {placed:?}"
+    );
+    assert_eq!(
+        placed["docs/grouping.md"], *whole_change,
+        "the whole-change docs must be one group: {placed:?}"
+    );
+    assert_ne!(
+        placed["src/upload/README.md"], *whole_change,
+        "a doc beside the code it documents belongs to that code, not to the docs group: \
+         {placed:?}"
+    );
+}
+
+/// Absorption is the alternative to a directory bucket for a file no cluster
+/// claimed: `stream-reader.ts` carries no key any cluster formed on, and its
+/// only evidence is one filename token and a directory shared with the chunk
+/// cluster. Switched off it falls through to `dir:`, the outcome GROUPING.md
+/// rule 6 calls a smell — so the switch shows both what the pass does and what
+/// it is for.
+#[test]
+fn an_unclaimed_file_is_absorbed_by_its_nearest_group_instead_of_a_directory_bucket() {
+    let changeset = Changeset::parse(&format!(
+        "M\tsrc/billing/invoice.ts\n\
+         M\tsrc/billing/invoice-void.ts\n\
+         M\tsrc/billing/invoice-tax.ts\n\
+         M\tsrc/billing/invoice-line.ts\n\
+         M\tsrc/billing/invoice-note.ts\n\
+         M\tsrc/upload/chunk-retry.ts\n\
+         M\tsrc/upload/chunk-abort.ts\n\
+         M\tsrc/upload/stream-reader.ts\n\
+         {FILLER}"
+    ));
+    let stray = "src/upload/stream-reader.ts";
+
+    let absorbed = placement(&changeset, GroupingConfig::default());
+    let dropped = placement(
+        &changeset,
+        GroupingConfig {
+            absorb_leftovers: false,
+            ..GroupingConfig::default()
+        },
+    );
+
+    assert_eq!(
+        absorbed[stray], absorbed["src/upload/chunk-reader.ts"],
+        "the stray must join the group it shares its vocabulary with: {absorbed:?}"
+    );
+    assert!(
+        dropped[stray].starts_with("dir:"),
+        "with absorption off the stray must fall through to a directory bucket, or this \
+         changeset does not exercise the pass: {dropped:?}"
+    );
+}
+
+/// The close-call annotation GROUPING.md asks for, which `gd-26r.8` will show a
+/// reviewer as "nearly went here instead". `query-cache.ts` carries two formed
+/// cluster keys with close scores: the stronger takes it, and the weaker has to
+/// be recorded rather than forgotten. Only a file whose second-best claim is a
+/// real group gets one, so the filler files must come back unannotated.
+#[test]
+fn a_file_two_clusters_nearly_took_records_the_one_that_lost() {
+    let changeset = Changeset::parse(&format!(
+        "M\tsrc/core/query-parser.ts\n\
+         M\tsrc/core/query-plan.ts\n\
+         M\tsrc/core/query-filter.ts\n\
+         M\tsrc/core/query-index.ts\n\
+         M\tsrc/core/query-cache.ts\n\
+         M\tsrc/store/cache-warm.ts\n\
+         M\tsrc/store/cache-evict.ts\n\
+         M\tsrc/store/cache-stat.ts\n\
+         {FILLER}"
+    ));
+    let contested = "src/core/query-cache.ts";
+
+    let grouping = passes::group(&changeset, GroupingConfig::default());
+    let close_calls: BTreeMap<&str, &passes::RunnerUp> = grouping
+        .close_calls()
+        .into_iter()
+        .map(|a| (a.path.as_str(), a.runner_up.as_ref().unwrap()))
+        .collect();
+
+    let runner_up = close_calls
+        .get(contested)
+        .unwrap_or_else(|| panic!("{contested} was contested and must say so: {close_calls:?}"));
+    assert_eq!(
+        runner_up.group, "cache",
+        "the group that lost {contested} must be named: {runner_up:?}"
+    );
+    assert!(
+        !close_calls.contains_key("src/core/query-parser.ts"),
+        "a file only one cluster ever claimed is not a close call: {close_calls:?}"
+    );
+}
+
 // --- the model refine pass (`gd-26r.11`) ------------------------------------
 //
 // The call itself is nondeterministic and costs money, so no test makes one.
@@ -463,9 +658,37 @@ const PUBLISHED_F1_SLACK: f64 = 0.02;
 /// would leave "the shape that should ship on fixture 1" false, and one that got
 /// better would leave the comparison with `full` understated.
 const MERGE_ONLY_MEAN_F1: f64 = 0.417;
-const MERGE_ONLY_SINGLES_OVER_BAR_FLOOR: usize = 8;
+/// A count out of ten admits no band: the proportional slack the triple bands
+/// carry rounds to half a run, and both 8 and 10 make the published "9 of 10"
+/// false, so the figure is locked as itself.
+const MERGE_ONLY_SINGLES_OVER_BAR: usize = 9;
 const MERGE_ONLY_TRIPLES_OVER_BAR_FLOOR: usize = 100;
 const MERGE_ONLY_TRIPLES_OVER_BAR_CEILING: usize = 115;
+
+/// `full`'s own fixture-1 row, published as mean 0.353 across a 0.321-0.373
+/// spread. The triple distribution was bracketed and the single calls only
+/// checked against the bar, so the arm could have moved a long way under the bar
+/// — in either direction — with the row left stale and nothing failing.
+const FULL_MEAN_F1: f64 = 0.353;
+const FULL_WORST_F1: f64 = 0.321;
+const FULL_BEST_F1: f64 = 0.373;
+
+/// `full`'s fixture-1 stability row: pairwise agreement 0.827 mean against 0.715
+/// worst, 11.8% of files identically placed in all ten runs, 0.790 mean overlap.
+/// These are the figures the "opt-in, not on by default" recommendation rests on
+/// as much as the accuracy ones.
+const FULL_AGREEMENT_MEAN: f64 = 0.827;
+const FULL_AGREEMENT_WORST: f64 = 0.715;
+const FULL_IDENTICAL_SHARE: f64 = 0.118;
+const FULL_MEAN_OVERLAP: f64 = 0.790;
+
+/// The third fixture-1 arm: `full-coarse` mean 0.386 under the 0.394 bar, 4 of
+/// 10 single calls over it, 58 of 120 triples. Bracketed like the other two, so
+/// the middle shape cannot drift into either of its neighbours unremarked.
+const FULL_COARSE_MEAN_F1: f64 = 0.386;
+const FULL_COARSE_SINGLES_OVER_BAR: usize = 4;
+const FULL_COARSE_TRIPLES_OVER_BAR_FLOOR: usize = 52;
+const FULL_COARSE_TRIPLES_OVER_BAR_CEILING: usize = 64;
 
 /// Writes one prompt per fixture per shape for the run script to send. Not an
 /// assertion but a side effect on `target/`, so it is ignored by default and
@@ -492,24 +715,28 @@ fn emit_refine_prompts() {
     }
 }
 
-/// `docs/GROUPING.md` as the numbered rules it declares. The doc is the
-/// authored contract the prompt's digest restates, and its rules are a numbered
-/// list with a bold title — a stable, owned text shape, since the digest is
-/// derived from it by hand.
+/// `docs/GROUPING.md` as the numbered rules it declares: every top-level item
+/// of its ordered list. The doc is the authored contract the prompt's digest
+/// restates — a stable, owned text shape, since the digest is derived from it by
+/// hand. A rule's title is bold by convention, but the ordinal is what makes it
+/// a rule, so an unbolded one still counts here rather than dropping out of the
+/// comparison and taking its digest entry with it.
 fn documented_rule_numbers() -> BTreeSet<u32> {
     const GROUPING_MD: &str = include_str!("../docs/GROUPING.md");
     GROUPING_MD
         .lines()
-        .filter_map(|line| line.split_once(". **"))
+        .filter_map(|line| line.split_once(". "))
         .filter_map(|(head, _)| head.parse::<u32>().ok())
         .collect()
 }
 
-/// The prompt carries a hand-written digest of `docs/GROUPING.md`, so an added,
-/// removed or renumbered rule in the doc leaves the digest a rule short with
-/// nothing failing — rule 11's wording already drifted once on this branch. The
-/// prose is deliberately not compared: the digest is a compression of it, not a
-/// copy. What is locked is that both sides carry the same rules, by ordinal.
+/// The prompt carries a hand-written digest of `docs/GROUPING.md`, so an added
+/// or removed rule in the doc leaves the digest a rule short with nothing
+/// failing — rule 11's wording already drifted once on this branch. The prose is
+/// deliberately not compared: the digest is a compression of it, not a copy.
+/// What is locked is that both sides carry the same rules, by ordinal — which
+/// means a reordering that keeps the same ordinals, or a reworded rule under an
+/// unchanged number, passes here and is left to review.
 #[test]
 fn every_documented_rule_reaches_the_model() {
     let documented = documented_rule_numbers();
@@ -1048,7 +1275,8 @@ fn merge_only_records_a_group_that_omits_its_merge() {
 /// refined group is a union of whole heuristic groups however the answer is
 /// written. Here the body asks for `alpha` split down the middle — the one thing
 /// `full` could do and this shape may not — and the split is refused rather than
-/// half-applied.
+/// half-applied. This is the regression lock on `apply`'s merge-only loop, which
+/// is where "coarsen only" is made structural rather than trusted to the answer.
 #[test]
 fn merge_only_cannot_split_a_heuristic_group() {
     let (changeset, grouping) = two_groups();
@@ -1995,7 +2223,10 @@ fn no_committed_run_needed_a_repair() {
 /// 1 would fail this test, which is the point — the verdict would have moved
 /// and the document would have to say so. `refine_report` prints that rank
 /// beside the distribution, so the claim above is re-derivable offline like
-/// every other published number.
+/// every other published number. `full`'s own row — mean, worst, best, and the
+/// agreement and file-stability figures the nondeterminism half of the verdict
+/// rests on — is bracketed here too, since all of it can move while every single
+/// call stays under the bar.
 #[test]
 fn voting_does_not_rescue_fixture_one() {
     let (changeset, expected) = orca();
@@ -2022,6 +2253,49 @@ fn voting_does_not_rescue_fixture_one() {
         .iter()
         .map(|run| run.refined.partition.clone())
         .collect();
+
+    // Under the bar is not one number: the document publishes the whole row, and
+    // a `full` arm that collapsed or crept up to the bar would still be under it
+    // and leave the row false.
+    let f1s: Vec<f64> = partitions
+        .iter()
+        .map(|partition| partition.score_against(&expected).f1)
+        .collect();
+    let mean = f1s.iter().sum::<f64>() / f1s.len() as f64;
+    let worst = f1s.iter().copied().fold(f64::INFINITY, f64::min);
+    let best = f1s.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+    for (label, published, actual) in [
+        ("mean", FULL_MEAN_F1, mean),
+        ("worst", FULL_WORST_F1, worst),
+        ("best", FULL_BEST_F1, best),
+    ] {
+        assert!(
+            (actual - published).abs() <= PUBLISHED_F1_SLACK,
+            "full's {label} single call scored {actual:.3}, off the published {published:.3} by \
+             more than {PUBLISHED_F1_SLACK:.3}"
+        );
+    }
+
+    // The nondeterminism half of the verdict, from the same ten runs.
+    let agreement = refine::agreement(&partitions).expect("ten runs agree about something");
+    let stability = refine::file_stability(&partitions).expect("ten runs place files somewhere");
+    for (label, published, actual) in [
+        ("mean agreement", FULL_AGREEMENT_MEAN, agreement.mean),
+        ("worst agreement", FULL_AGREEMENT_WORST, agreement.worst),
+        (
+            "identical share",
+            FULL_IDENTICAL_SHARE,
+            stability.identical_share,
+        ),
+        ("mean overlap", FULL_MEAN_OVERLAP, stability.mean_overlap),
+    ] {
+        assert!(
+            (actual - published).abs() <= PUBLISHED_F1_SLACK,
+            "full's {label} is {actual:.3}, off the published {published:.3} by more than \
+             {PUBLISHED_F1_SLACK:.3}"
+        );
+    }
+
     let voted = triple_f1s(&partitions, &expected);
 
     // The document publishes 50 of 120 clearing, a 0.343-0.439 spread and a
@@ -2089,10 +2363,11 @@ fn merge_only_clears_the_bar_on_fixture_one() {
     );
 
     let singles = f1s.iter().filter(|f1| **f1 > bar).count();
-    assert!(
-        singles >= MERGE_ONLY_SINGLES_OVER_BAR_FLOOR,
-        "{singles} of {} single merge-only calls clear the bar, under the published \
-         {MERGE_ONLY_SINGLES_OVER_BAR_FLOOR}",
+    assert_eq!(
+        singles,
+        MERGE_ONLY_SINGLES_OVER_BAR,
+        "{singles} of {} single merge-only calls clear the bar, not the published \
+         {MERGE_ONLY_SINGLES_OVER_BAR}, so the published row has moved",
         f1s.len()
     );
 
@@ -2109,6 +2384,62 @@ fn merge_only_clears_the_bar_on_fixture_one() {
         upper_median(&voted) > bar,
         "the upper median merge-only triple scored {:.3}, at or under {bar:.3}",
         upper_median(&voted)
+    );
+}
+
+/// The middle of the three model shapes on fixture 1, locked the same way as the
+/// two either side of it. `full-coarse` is the shape the document uses to argue
+/// that `full`'s losses are over-splitting rather than misreading — it asks for
+/// the same freedom over fewer groups and lands between `full` and `merge-only`
+/// — and that argument is a claim about all three rows, so leaving this one
+/// unlocked left the comparison free to close up with nothing failing.
+#[test]
+fn full_coarse_lands_between_the_other_shapes_on_fixture_one() {
+    let (changeset, expected) = orca();
+    let runs = published_arm(ORCA_FIXTURE, &changeset, Shape::FullCoarse);
+    expect_full_corpus(ORCA_FIXTURE, &runs, Shape::FullCoarse);
+
+    let bar = passes::group(&changeset, GroupingConfig::default())
+        .partition()
+        .score_against(&expected)
+        .f1;
+    let partitions: Vec<_> = runs
+        .iter()
+        .map(|run| run.refined.partition.clone())
+        .collect();
+    let f1s: Vec<f64> = partitions
+        .iter()
+        .map(|partition| partition.score_against(&expected).f1)
+        .collect();
+
+    let mean = f1s.iter().sum::<f64>() / f1s.len() as f64;
+    assert!(
+        mean < bar,
+        "full-coarse averaged {mean:.3}, at or over the {bar:.3} bar it is published as missing"
+    );
+    assert!(
+        (mean - FULL_COARSE_MEAN_F1).abs() <= PUBLISHED_F1_SLACK,
+        "full-coarse averaged {mean:.3}, off the published {FULL_COARSE_MEAN_F1:.3} by more \
+         than {PUBLISHED_F1_SLACK:.3}"
+    );
+
+    let singles = f1s.iter().filter(|f1| **f1 > bar).count();
+    assert_eq!(
+        singles,
+        FULL_COARSE_SINGLES_OVER_BAR,
+        "{singles} of {} single full-coarse calls clear the bar, not the published \
+         {FULL_COARSE_SINGLES_OVER_BAR}, so the published row has moved",
+        f1s.len()
+    );
+
+    let voted = triple_f1s(&partitions, &expected);
+    let over = voted.iter().filter(|f1| **f1 > bar).count();
+    assert!(
+        (FULL_COARSE_TRIPLES_OVER_BAR_FLOOR..=FULL_COARSE_TRIPLES_OVER_BAR_CEILING).contains(&over),
+        "{over} of {} full-coarse triples clear the bar, outside the published \
+         {FULL_COARSE_TRIPLES_OVER_BAR_FLOOR}-{FULL_COARSE_TRIPLES_OVER_BAR_CEILING}, so the \
+         verdict has moved",
+        voted.len()
     );
 }
 

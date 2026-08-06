@@ -1014,7 +1014,7 @@ but `merge-only`, at 107 of 120; see *The cheaper shapes*.
 **Naming-only cannot move the metric.** Not "did not" — *cannot*. The scorer
 ignores group names by design, so a shape that only renames scores exactly the
 heuristic number on every run, on both fixtures, forever.
-Two tests lock this between them. The *cannot* is structural, and adversarial
+Five tests lock this between them. The *cannot* is structural, and adversarial
 hand-written bodies show it: a naming-only answer that supplies a `files` array
 interleaving two heuristic groups, one that claims an input group twice, one that
 omits its `was` and one that names a group that does not exist all leave the

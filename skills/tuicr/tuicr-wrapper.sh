@@ -72,11 +72,36 @@ check_git_repo() {
   return 0
 }
 
-check_tuicr_running() {
-  # Check if tuicr is already running in any tmux pane
-  if tmux list-panes -a -F '#{pane_current_command}' 2>/dev/null | grep -q '^tuicr$'; then
-    return 0  # tuicr is running
+check_lsof() {
+  if ! command -v lsof &> /dev/null; then
+    log_error "lsof not found on PATH"
+    return 1
   fi
+  return 0
+}
+
+# True only when a tuicr is already reviewing *this* repository. A machine-wide
+# pane scan reports success because of a tuicr in some unrelated repo and sends
+# the user hunting for a pane that does not exist here. The spawned pane runs
+# tuicr with the repository as its working directory, so that is what is
+# matched — the same check the zellij and Orca wrappers make, so all three
+# launch paths answer the question the same way.
+check_tuicr_running() {
+  local target_dir="$1"
+  local pid cwd
+
+  while read -r pid; do
+    [[ -n "$pid" ]] || continue
+    cwd=$(lsof -a -p "$pid" -d cwd -Fn 2>/dev/null | sed -n 's/^n//p')
+    if [[ -z "$cwd" ]]; then
+      log_warn "Cannot read the working directory of running tuicr $pid; assuming it is elsewhere"
+      continue
+    fi
+    if [[ "$cwd" == "$target_dir" ]]; then
+      return 0
+    fi
+  done < <(pgrep -x tuicr 2>/dev/null)
+
   return 1
 }
 
@@ -169,9 +194,15 @@ main() {
     exit 1
   fi
 
-  # Determine target directory
+  if ! check_lsof; then
+    exit 1
+  fi
+
+  # Determine target directory. Physical path: lsof reports a process's working
+  # directory with symlinks resolved, so a logical `pwd` through a symlinked
+  # checkout would never compare equal in check_tuicr_running.
   local target_dir="${1:-.}"
-  target_dir=$(cd "$target_dir" && pwd)  # Get absolute path
+  target_dir=$(cd "$target_dir" && pwd -P)
 
   # Verify it's a git repo
   if ! check_git_repo "$target_dir"; then
@@ -192,11 +223,15 @@ main() {
     exit 1
   fi
 
-  # Check if tuicr is already running
-  if check_tuicr_running; then
-    log_warn "tuicr is already running in another pane"
-    log_info "Switch to it with Ctrl-b + arrow keys"
-    exit 0
+  # Check if tuicr is already reviewing this repository
+  if check_tuicr_running "$target_dir"; then
+    log_error "tuicr is already reviewing $target_dir"
+    echo ""
+    echo "Switch to its pane with Ctrl-b + arrow keys, or quit it there and run"
+    echo "/tuicr again. To review a different repository, pass its directory:"
+    echo ""
+    echo "  $(basename "$0") <directory>"
+    exit 1
   fi
 
   # Launch tuicr in a split pane
