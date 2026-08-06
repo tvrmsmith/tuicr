@@ -92,13 +92,21 @@ check_git_repo() {
 # repo and send the user hunting for a pane that does not exist here.
 check_tuicr_running() {
   local target_dir="$1"
-  local pid
+  local pid cwd
 
   while read -r pid; do
     [[ -n "$pid" ]] || continue
     # The launched pane runs `cd <dir> && tuicr`, so the review's repository is
     # the process's working directory rather than an argument.
-    if [[ "$(lsof -a -p "$pid" -d cwd -Fn 2>/dev/null | sed -n 's/^n//p')" == "$target_dir" ]]; then
+    cwd=$(lsof -a -p "$pid" -d cwd -Fn 2>/dev/null | sed -n 's/^n//p')
+    if [[ -z "$cwd" ]]; then
+      # Unreadable working directory means this check cannot tell "elsewhere"
+      # from "right here", and answering "not running" would open a second
+      # review of the same repository. Say so rather than deciding silently.
+      log_warn "Cannot read the working directory of running tuicr $pid; assuming it is elsewhere"
+      continue
+    fi
+    if [[ "$cwd" == "$target_dir" ]]; then
       return 0
     fi
   done < <(pgrep -x tuicr 2>/dev/null)
@@ -244,13 +252,17 @@ main() {
   require_command "$ORCA_BIN" "Orca CLI"
   require_command "$JQ_BIN" "jq"
   require_command "tuicr" "tuicr"
+  require_command "lsof" "lsof"
 
   local target_dir="${1:-.}"
   if [[ ! -d "$target_dir" ]]; then
     log_error "Directory not found: $target_dir"
     exit 1
   fi
-  target_dir=$(cd "$target_dir" && pwd)
+  # Physical path: lsof reports a process's working directory with symlinks
+  # resolved, so a logical `pwd` through a symlinked checkout would never
+  # compare equal and the already-reviewing check would never fire.
+  target_dir=$(cd "$target_dir" && pwd -P)
 
   if ! check_git_repo "$target_dir"; then
     exit 1

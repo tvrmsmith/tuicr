@@ -22,7 +22,7 @@ use std::path::PathBuf;
 use grouping::changeset::{self, ChangeKind, ChangedFile, Changeset};
 use grouping::passes::{self, GroupingConfig};
 use grouping::refine::{self, RunRecord, Shape};
-use grouping::score::{Partition, Score};
+use grouping::score::{self, Partition, Score};
 
 const ORCA_FILES: &str = include_str!("fixtures/grouping/orca-971b16754.files");
 const ORCA_GROUPS: &str = include_str!("fixtures/grouping/orca-971b16754.groups");
@@ -108,9 +108,9 @@ fn row(label: &str, score: Score) {
 /// `Partition::parse` opens for stray lines is required to be absent.
 fn assert_well_formed(label: &str, changeset: &Changeset, expected: &Partition) {
     assert!(
-        !expected.groups.contains_key("ungrouped"),
+        !expected.groups.contains_key(score::UNGROUPED),
         "{label}: {} lines precede the first [group] header",
-        expected.groups.get("ungrouped").map_or(0, Vec::len)
+        expected.groups.get(score::UNGROUPED).map_or(0, Vec::len)
     );
 
     let grouped: BTreeSet<&str> = expected
@@ -340,10 +340,6 @@ fn check_unfired_passes_fire(label: &str, changeset: &Changeset) {
         !renamed.is_empty(),
         "{label}: the fire-check changeset is supposed to carry a rename"
     );
-    assert!(
-        !hits.contains_key("rename-pair"),
-        "{label}: there is no rename pass any more: rule 11 holds by construction"
-    );
 }
 
 /// GROUPING.md rule 11, as it now reads. Git reports a rename as a single entry
@@ -461,6 +457,16 @@ const PUBLISHED_TRIPLE_UPPER_MEDIAN: f64 = 0.369;
 /// narrow enough that a moved distribution fails.
 const PUBLISHED_F1_SLACK: f64 = 0.02;
 
+/// The other half of the fixture-1 verdict: `merge-only` mean 0.417 against the
+/// 0.394 bar, 9 of 10 single calls over it, 107 of 120 triples. Bracketed on
+/// both sides like the `full` figures — a merge-only arm that quietly got worse
+/// would leave "the shape that should ship on fixture 1" false, and one that got
+/// better would leave the comparison with `full` understated.
+const MERGE_ONLY_MEAN_F1: f64 = 0.417;
+const MERGE_ONLY_SINGLES_OVER_BAR_FLOOR: usize = 8;
+const MERGE_ONLY_TRIPLES_OVER_BAR_FLOOR: usize = 100;
+const MERGE_ONLY_TRIPLES_OVER_BAR_CEILING: usize = 115;
+
 /// Writes one prompt per fixture per shape for the run script to send. Not an
 /// assertion but a side effect on `target/`, so it is ignored by default and
 /// invoked deliberately — run it, then run the script. What the prompt must
@@ -486,6 +492,55 @@ fn emit_refine_prompts() {
     }
 }
 
+/// `docs/GROUPING.md` as the numbered rules it declares. The doc is the
+/// authored contract the prompt's digest restates, and its rules are a numbered
+/// list with a bold title — a stable, owned text shape, since the digest is
+/// derived from it by hand.
+fn documented_rule_numbers() -> BTreeSet<u32> {
+    const GROUPING_MD: &str = include_str!("../docs/GROUPING.md");
+    GROUPING_MD
+        .lines()
+        .filter_map(|line| line.split_once(". **"))
+        .filter_map(|(head, _)| head.parse::<u32>().ok())
+        .collect()
+}
+
+/// The prompt carries a hand-written digest of `docs/GROUPING.md`, so an added,
+/// removed or renumbered rule in the doc leaves the digest a rule short with
+/// nothing failing — rule 11's wording already drifted once on this branch. The
+/// prose is deliberately not compared: the digest is a compression of it, not a
+/// copy. What is locked is that both sides carry the same rules, by ordinal.
+#[test]
+fn every_documented_rule_reaches_the_model() {
+    let documented = documented_rule_numbers();
+    assert_eq!(
+        documented,
+        (1..=documented.len() as u32).collect::<BTreeSet<u32>>(),
+        "docs/GROUPING.md's rules are a contiguous numbered list from 1"
+    );
+
+    let changeset = Changeset::parse(FIRE_CHECK_FILES);
+    let grouping = passes::group(&changeset, GroupingConfig::default());
+    for shape in Shape::ALL {
+        assert_eq!(
+            prompt_rule_numbers(&refine::prompt(&changeset, &grouping, shape)),
+            documented,
+            "{}: the prompt's digest and docs/GROUPING.md name different rules",
+            shape.slug()
+        );
+    }
+}
+
+/// The rule ordinals the prompt's digest states, read back out of the emitted
+/// prompt the way the model reads them.
+fn prompt_rule_numbers(prompt: &str) -> BTreeSet<u32> {
+    prompt
+        .lines()
+        .filter_map(|line| line.split_once('.'))
+        .filter_map(|(head, _)| head.parse::<u32>().ok())
+        .collect()
+}
+
 /// The prompt is the one part of this pass that deterministic CI can pin: it is
 /// a generated interface handed to an agent, and `emit_refine_prompts` only
 /// writes it to disk. What the model then does with it is not testable here.
@@ -499,17 +554,6 @@ fn the_emitted_prompt_carries_the_contract() {
     for shape in Shape::ALL {
         let prompt = refine::prompt(&changeset, &grouping, shape);
         let slug = shape.slug();
-
-        let rules: std::collections::BTreeSet<u32> = prompt
-            .lines()
-            .filter_map(|line| line.split_once('.'))
-            .filter_map(|(head, _)| head.parse::<u32>().ok())
-            .collect();
-        assert_eq!(
-            rules,
-            (1..=11).collect::<std::collections::BTreeSet<u32>>(),
-            "{slug}: every numbered rule of GROUPING.md reaches the model"
-        );
 
         let blocks = parse_prompt_groups(&prompt);
         let shown: BTreeMap<&str, Vec<&str>> = blocks
@@ -967,6 +1011,76 @@ fn merge_only_keeps_an_unclaimed_input_group_under_a_free_name() {
     );
 }
 
+/// The merge-only mirror of `naming_only_records_a_group_that_omits_its_was`: a
+/// group with no `merge` has still taken a name and a reading-order slot, so the
+/// omission is named where it happens rather than surfacing downstream as an
+/// input group nobody claimed.
+#[test]
+fn merge_only_records_a_group_that_omits_its_merge() {
+    let refined = refine_with(
+        r#"{"groups":[{"name":"m","merge":["alpha"]},{"name":"n"}]}"#,
+        Shape::MergeOnly,
+    );
+    assert_eq!(
+        buckets(&refined),
+        vec![
+            (
+                "beta".to_string(),
+                vec!["src/c.ts".to_string(), "src/d.ts".to_string()]
+            ),
+            (
+                "m".to_string(),
+                vec!["src/a.ts".to_string(), "src/b.ts".to_string()]
+            ),
+        ]
+    );
+    assert_eq!(
+        refined.repairs,
+        vec![
+            "group `n` has no `merge`",
+            "input group never claimed, kept as-is under `beta`: beta",
+        ]
+    );
+    assert_eq!(refined.order, vec!["m".to_string(), "n".to_string()]);
+}
+
+/// The shape's whole promise: merge-only can coarsen and nothing else, so a
+/// refined group is a union of whole heuristic groups however the answer is
+/// written. Here the body asks for `alpha` split down the middle — the one thing
+/// `full` could do and this shape may not — and the split is refused rather than
+/// half-applied.
+#[test]
+fn merge_only_cannot_split_a_heuristic_group() {
+    let (changeset, grouping) = two_groups();
+    let refined = refine::apply(
+        r#"{"groups":[
+            {"name":"m","merge":["alpha"],"files":["src/a.ts"]},
+            {"name":"n","merge":["src/b.ts","beta"]}]}"#,
+        &changeset,
+        &grouping,
+        Shape::MergeOnly,
+    )
+    .expect("a parseable body applies");
+
+    let heuristic = grouping.partition();
+    let refined_group = refined.partition.group_of();
+    for (name, members) in &heuristic.groups {
+        let landed: BTreeSet<&str> = members
+            .iter()
+            .map(|path| refined_group[path.as_str()])
+            .collect();
+        assert_eq!(
+            landed.len(),
+            1,
+            "heuristic group `{name}` was split across {landed:?}"
+        );
+    }
+    assert_eq!(
+        refined.repairs,
+        vec!["unknown input group ignored: src/b.ts"]
+    );
+}
+
 /// Applies an adversarial naming-only body and asserts the two things that
 /// shape promises: the partition the scorer sees is byte-for-byte the heuristic
 /// one, and every deviation from the contract was named as a repair.
@@ -1224,21 +1338,18 @@ fn partition_of(groups: &[(&str, &[&str])]) -> Partition {
     }))
 }
 
-/// The co-membership the scorer sees: for each path, its sorted group-mates
-/// including itself. Names are not part of the answer `consensus` gives, so a
-/// test that asserted them would be asserting `format!("consensus-{root}")`.
-fn co_membership(partition: &Partition) -> BTreeMap<String, Vec<String>> {
-    partition
-        .groups
-        .values()
-        .flat_map(|members| {
-            let mut mates = members.clone();
-            mates.sort();
-            members
-                .iter()
-                .map(move |path| (path.clone(), mates.clone()))
-        })
-        .collect()
+/// The co-membership the scorer sees: for each path, its group-mates including
+/// itself. Names are not part of the answer `consensus` gives, so a test that
+/// asserted them would be asserting `format!("consensus-{root}")`. This is
+/// `Partition::companions`, which `refine::file_stability` measures stability
+/// with — one definition of "the same grouping" for both.
+fn co_membership(partition: &Partition) -> BTreeMap<String, BTreeSet<String>> {
+    partition.companions()
+}
+
+/// One expected set of group-mates, spelled the way a test reads it.
+fn mates(paths: &[&str]) -> BTreeSet<String> {
+    paths.iter().map(|path| (*path).to_string()).collect()
 }
 
 /// The threshold the whole "three calls and a vote" recommendation rests on: a
@@ -1250,15 +1361,15 @@ fn consensus_keeps_a_pair_two_of_three_runs_agree_on_and_drops_a_lone_vote() {
     let voted = refine::consensus(&[together.clone(), together, apart])
         .expect("three runs are enough to vote");
 
-    let mates = co_membership(&voted);
+    let voted_mates = co_membership(&voted);
     assert_eq!(
-        mates["one"],
-        vec!["one".to_string(), "two".to_string()],
+        voted_mates["one"],
+        mates(&["one", "two"]),
         "two of three runs co-grouped one and two"
     );
     assert_eq!(
-        mates["three"],
-        vec!["three".to_string()],
+        voted_mates["three"],
+        mates(&["three"]),
         "only one of three runs co-grouped two and three"
     );
 }
@@ -1277,10 +1388,9 @@ fn consensus_closes_a_chain_of_majorities_transitively() {
     let all = partition_of(&[("x", &["a", "b", "c"])]);
     let voted = refine::consensus(&[ab, bc, all]).expect("three runs are enough to vote");
 
-    let mates = co_membership(&voted);
     assert_eq!(
-        mates["a"],
-        vec!["a".to_string(), "b".to_string(), "c".to_string()],
+        co_membership(&voted)["a"],
+        mates(&["a", "b", "c"]),
         "a-b and b-c both carry two of three votes, so the component is all three"
     );
 }
@@ -1320,15 +1430,15 @@ fn consensus_needs_more_than_half_at_an_even_number_of_runs() {
     let voted = refine::consensus(&[both.clone(), both, split, neither])
         .expect("four runs are enough to vote");
 
-    let mates = co_membership(&voted);
+    let voted_mates = co_membership(&voted);
     assert_eq!(
-        mates["one"],
-        vec!["one".to_string(), "two".to_string()],
+        voted_mates["one"],
+        mates(&["one", "two"]),
         "one and two carry three of four votes"
     );
     assert_eq!(
-        mates["three"],
-        vec!["three".to_string()],
+        voted_mates["three"],
+        mates(&["three"]),
         "two of four is not a majority, so three travels alone"
     );
 }
@@ -1343,13 +1453,12 @@ fn consensus_carries_every_path_any_run_grouped() {
     let voted = refine::consensus(&[short.clone(), long.clone(), long])
         .expect("three runs are enough to vote");
 
-    let one_two = vec!["one".to_string(), "two".to_string()];
     assert_eq!(
         co_membership(&voted),
         BTreeMap::from([
-            ("one".to_string(), one_two.clone()),
-            ("two".to_string(), one_two),
-            ("three".to_string(), vec!["three".to_string()]),
+            ("one".to_string(), mates(&["one", "two"])),
+            ("two".to_string(), mates(&["one", "two"])),
+            ("three".to_string(), mates(&["three"])),
         ]),
         "the voted partition carries the union of the runs' paths, not run 0's, \
          and the path only later runs grouped is a group of its own"
@@ -1422,6 +1531,64 @@ fn a_path_missing_from_one_run_counts_against_stability_either_way_round() {
             stability.mean_overlap
         );
     }
+}
+
+/// `worst` and `best` are published beside `mean` in the stability table, and
+/// two runs make all three the same number — so a fold that returned the wrong
+/// end of the distribution would pass every two-run test here. Three runs with
+/// three distinct pairwise F1s: {ab|cd} against {abc|d} is 0.400, against
+/// {abcd} is 0.500, and {abc|d} against {abcd} is 2/3.
+#[test]
+fn three_runs_report_the_ends_of_the_agreement_spread_not_just_its_middle() {
+    let pair = partition_of(&[("x", &["a", "b"]), ("y", &["c", "d"])]);
+    let three = partition_of(&[("x", &["a", "b", "c"]), ("y", &["d"])]);
+    let all = partition_of(&[("x", &["a", "b", "c", "d"])]);
+
+    let agreement = refine::agreement(&[pair, three, all]).expect("three runs agree");
+    let expected = (0.4 + 0.5 + 2.0 / 3.0) / 3.0;
+    for (label, actual, want) in [
+        ("mean", agreement.mean, expected),
+        ("worst", agreement.worst, 0.4),
+        ("best", agreement.best, 2.0 / 3.0),
+    ] {
+        assert!(
+            (actual - want).abs() < 1e-9,
+            "agreement {label} {actual:.6}, expected {want:.6}"
+        );
+    }
+}
+
+/// The per-group slice is how docs/GROUPING_PASSES.md says where a pass wins and
+/// loses, worked out by hand: of the three pairs in a three-file expected group,
+/// a partition that keeps `a` with `b` and puts `c` elsewhere keeps one.
+#[test]
+fn recall_per_expected_group_counts_the_pairs_a_partition_keeps() {
+    let expected = partition_of(&[("A", &["a", "b", "c"])]);
+    let split = partition_of(&[("x", &["a", "b"]), ("y", &["c"])]);
+
+    let recall = refine::recall_per_expected_group(&split, &expected);
+    assert_eq!(recall.len(), 1);
+    let (name, size, kept) = &recall[0];
+    assert_eq!((name.as_str(), *size), ("A", 3));
+    assert!((kept - 1.0 / 3.0).abs() < 1e-9, "recall {kept:.6}");
+}
+
+/// A path the partition does not place is not co-grouped with anything —
+/// including another path the partition does not place. Comparing the two
+/// lookups directly scored an absent pair as kept, so a partition that lost half
+/// an expected group outright read as *better* than one that merely split it.
+#[test]
+fn recall_per_expected_group_does_not_credit_pairs_of_paths_it_never_placed() {
+    let expected = partition_of(&[("A", &["a", "b", "c", "d"])]);
+    let half_missing = partition_of(&[("x", &["a", "b"])]);
+
+    let recall = refine::recall_per_expected_group(&half_missing, &expected);
+    let (_, _, kept) = &recall[0];
+    assert!(
+        (kept - 1.0 / 6.0).abs() < 1e-9,
+        "recall {kept:.6}: only a-b of the six pairs survived, and c-d is not a pair \
+         the partition kept together"
+    );
 }
 
 #[test]
@@ -1532,10 +1699,12 @@ fn published_arm(fixture: &str, changeset: &Changeset, shape: Shape) -> Vec<Run>
 }
 
 /// The committed corpus is ten published-model runs per shape, and every claim
-/// docs/GROUPING_PASSES.md pins on a replay test is a property of all ten. A
-/// replay test that skips an empty run list would otherwise stay green after
-/// half the envelopes were deleted, so the checked-in fixture is held to its
-/// full corpus while the external one may be absent.
+/// docs/GROUPING_PASSES.md pins on a replay test is a property of all ten — a
+/// replay test that skipped a short run list would stay green after half the
+/// envelopes were deleted, publishing figures derived from the remainder. Every
+/// test that locks a fixture-1 figure comes through here rather than counting
+/// for itself, so there is one place the corpus size is asserted and one
+/// message when it is wrong. The external fixture may legitimately be absent.
 fn expect_full_corpus(label: &str, runs: &[Run], shape: Shape) {
     if label != ORCA_FIXTURE {
         return;
@@ -1547,7 +1716,8 @@ fn expect_full_corpus(label: &str, runs: &[Run], shape: Shape) {
     assert_eq!(
         published,
         RECORDED_RUNS,
-        "{label} {}: the committed corpus is {RECORDED_RUNS} {PUBLISHED_MODEL} runs",
+        "{label} {}: every published figure is a property of {RECORDED_RUNS} \
+         {PUBLISHED_MODEL} runs",
         shape.slug()
     );
 }
@@ -1772,6 +1942,15 @@ fn every_recorded_naming_only_run_applied_to_the_heuristic_partition() {
         let heuristic =
             co_membership(&passes::group(&changeset, GroupingConfig::default()).partition());
         for (index, run) in runs.iter().enumerate() {
+            // The equality above holds for any parseable body, `{"groups":[]}`
+            // included, because unclaimed groups are restored whole. What says
+            // the answer was applied rather than rebuilt from the input is that
+            // it needed no repair to get there.
+            assert!(
+                run.refined.repairs.is_empty(),
+                "{label} run {index} needed repairs: {:?}",
+                run.refined.repairs
+            );
             assert_eq!(
                 co_membership(&run.refined.partition),
                 heuristic,
@@ -1790,12 +1969,7 @@ fn no_committed_run_needed_a_repair() {
     let (changeset, _) = orca();
     for shape in Shape::ALL {
         let runs = published_arm(ORCA_FIXTURE, &changeset, shape);
-        assert_eq!(
-            runs.len(),
-            RECORDED_RUNS,
-            "{}: the published zero is a property of {RECORDED_RUNS} {PUBLISHED_MODEL} runs",
-            shape.slug()
-        );
+        expect_full_corpus(ORCA_FIXTURE, &runs, shape);
         for (index, run) in runs.iter().enumerate() {
             assert!(
                 run.refined.repairs.is_empty(),
@@ -1830,11 +2004,7 @@ fn voting_does_not_rescue_fixture_one() {
     // — is a property of ten runs of one model. At three, `triples` yields a
     // single triple and "the middle of the distribution" degenerates back into
     // the one-draw lock this test exists to replace.
-    assert_eq!(
-        runs.len(),
-        RECORDED_RUNS,
-        "the locked distribution is a property of {RECORDED_RUNS} {PUBLISHED_MODEL} runs"
-    );
+    expect_full_corpus(ORCA_FIXTURE, &runs, Shape::Full);
 
     let bar = passes::group(&changeset, GroupingConfig::default())
         .partition()
@@ -1881,6 +2051,65 @@ fn voting_does_not_rescue_fixture_one() {
              than {PUBLISHED_F1_SLACK:.3}"
         );
     }
+}
+
+/// The positive half of the fixture-1 verdict, locked against the same corpus:
+/// `merge-only` beats the heuristics where `full` loses to them. Only the
+/// negative half was locked before, so a regression that flattened the shapes
+/// into each other would have failed nothing — and "merge-only is the shape that
+/// should ship on fixture 1" is the recommendation the document actually makes.
+#[test]
+fn merge_only_clears_the_bar_on_fixture_one() {
+    let (changeset, expected) = orca();
+    let runs = published_arm(ORCA_FIXTURE, &changeset, Shape::MergeOnly);
+    expect_full_corpus(ORCA_FIXTURE, &runs, Shape::MergeOnly);
+
+    let bar = passes::group(&changeset, GroupingConfig::default())
+        .partition()
+        .score_against(&expected)
+        .f1;
+    let partitions: Vec<_> = runs
+        .iter()
+        .map(|run| run.refined.partition.clone())
+        .collect();
+    let f1s: Vec<f64> = partitions
+        .iter()
+        .map(|partition| partition.score_against(&expected).f1)
+        .collect();
+
+    let mean = f1s.iter().sum::<f64>() / f1s.len() as f64;
+    assert!(
+        mean > bar,
+        "merge-only averaged {mean:.3}, at or under the {bar:.3} bar it is published as clearing"
+    );
+    assert!(
+        (mean - MERGE_ONLY_MEAN_F1).abs() <= PUBLISHED_F1_SLACK,
+        "merge-only averaged {mean:.3}, off the published {MERGE_ONLY_MEAN_F1:.3} by more \
+         than {PUBLISHED_F1_SLACK:.3}"
+    );
+
+    let singles = f1s.iter().filter(|f1| **f1 > bar).count();
+    assert!(
+        singles >= MERGE_ONLY_SINGLES_OVER_BAR_FLOOR,
+        "{singles} of {} single merge-only calls clear the bar, under the published \
+         {MERGE_ONLY_SINGLES_OVER_BAR_FLOOR}",
+        f1s.len()
+    );
+
+    let voted = triple_f1s(&partitions, &expected);
+    let over = voted.iter().filter(|f1| **f1 > bar).count();
+    assert!(
+        (MERGE_ONLY_TRIPLES_OVER_BAR_FLOOR..=MERGE_ONLY_TRIPLES_OVER_BAR_CEILING).contains(&over),
+        "{over} of {} merge-only triples clear the bar, outside the published \
+         {MERGE_ONLY_TRIPLES_OVER_BAR_FLOOR}-{MERGE_ONLY_TRIPLES_OVER_BAR_CEILING}, so the \
+         verdict has moved",
+        voted.len()
+    );
+    assert!(
+        upper_median(&voted) > bar,
+        "the upper median merge-only triple scored {:.3}, at or under {bar:.3}",
+        upper_median(&voted)
+    );
 }
 
 fn ablations(default: GroupingConfig) -> Vec<(String, GroupingConfig)> {

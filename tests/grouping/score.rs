@@ -17,6 +17,11 @@ pub fn free_name(base: &str, used: &BTreeSet<String>) -> String {
         .expect("a free name exists")
 }
 
+/// The bucket [`Partition::parse`] opens for paths that precede the first
+/// `[group]` header. A fixture that lands anything here is malformed, and the
+/// check that says so has to name the same bucket the parser writes.
+pub const UNGROUPED: &str = "ungrouped";
+
 #[derive(Debug, Clone, Default)]
 pub struct Partition {
     /// Group name to member paths. Names carry no weight in scoring; they are
@@ -37,7 +42,7 @@ impl Partition {
     /// Parses the fixture's expected grouping: `[name]` headers, indented paths.
     pub fn parse(text: &str) -> Self {
         let mut groups: BTreeMap<String, Vec<String>> = BTreeMap::new();
-        let mut current = String::from("ungrouped");
+        let mut current = String::from(UNGROUPED);
         for line in text.lines() {
             let trimmed = line.trim();
             if trimmed.is_empty() || trimmed.starts_with('#') {
@@ -85,6 +90,22 @@ impl Partition {
                 members
                     .iter()
                     .map(move |path| (path.as_str(), name.as_str()))
+            })
+            .collect()
+    }
+
+    /// Path to the set of files sharing its group, itself included. The
+    /// name-free view of the partition: two partitions with the same companions
+    /// map are the same answer however their groups are called, which is what
+    /// every stability and equality check here means by "the same grouping".
+    pub fn companions(&self) -> BTreeMap<String, BTreeSet<String>> {
+        self.groups
+            .values()
+            .flat_map(|members| {
+                let mates: BTreeSet<String> = members.iter().cloned().collect();
+                members
+                    .iter()
+                    .map(move |path| (path.clone(), mates.clone()))
             })
             .collect()
     }

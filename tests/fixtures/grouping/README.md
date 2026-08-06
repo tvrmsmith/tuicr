@@ -144,7 +144,7 @@ name-keyed `BTreeMap`, and the report prints groups by size. So
 changes ordered last, mechanical and generated changes ordered last — are
 unscored on both arms and unattempted on the heuristic one.
 
-This is a known gap with a follow-up bead, not an oversight. Closing it means
+This is a known gap tracked as `gd-26r.22`, not an oversight. Closing it means
 giving the heuristics an order, adding an order metric, and adding ordered
 expectations to both fixtures' `.groups` files — a separate piece of work from
 the partition scoring this fixture exists for.

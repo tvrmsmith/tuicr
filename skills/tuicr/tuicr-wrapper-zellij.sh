@@ -80,11 +80,35 @@ check_git_repo() {
   return 0
 }
 
-check_tuicr_running() {
-  # Zellij has no panes-list CLI like tmux. Fall back to a process check.
-  if pgrep -x tuicr &> /dev/null; then
-    return 0
+check_lsof() {
+  if ! command -v lsof &> /dev/null; then
+    log_error "lsof not found on PATH"
+    return 1
   fi
+  return 0
+}
+
+# True only when a tuicr is already reviewing *this* repository. Zellij has no
+# panes-list CLI like tmux, so this is a process check — but a machine-wide one
+# reports success because of a tuicr in some unrelated repo and sends the user
+# hunting for a pane that does not exist here. The spawned pane runs tuicr with
+# the repository as its working directory, so that is what is matched.
+check_tuicr_running() {
+  local target_dir="$1"
+  local pid cwd
+
+  while read -r pid; do
+    [[ -n "$pid" ]] || continue
+    cwd=$(lsof -a -p "$pid" -d cwd -Fn 2>/dev/null | sed -n 's/^n//p')
+    if [[ -z "$cwd" ]]; then
+      log_warn "Cannot read the working directory of running tuicr $pid; assuming it is elsewhere"
+      continue
+    fi
+    if [[ "$cwd" == "$target_dir" ]]; then
+      return 0
+    fi
+  done < <(pgrep -x tuicr 2>/dev/null)
+
   return 1
 }
 
@@ -110,7 +134,8 @@ launch_tuicr_pane() {
 
   # Optional --stdout capture
   local output_file=""
-  local tuicr_cmd="$(command -v tuicr)"
+  local tuicr_cmd
+  tuicr_cmd="$(command -v tuicr)"
   local use_stdout=false
 
   if check_tuicr_stdout_support; then
@@ -132,7 +157,11 @@ launch_tuicr_pane() {
     zellij_args+=("--direction" "$TUICR_PANE_DIRECTION")
   fi
 
-  zellij_args+=(-- sh -c "$tuicr_cmd; echo done > '$fifo'")
+  # The pane inherits this wrapper's working directory, so a target directory
+  # passed as an argument has to be entered explicitly — otherwise tuicr reviews
+  # wherever the wrapper was invoked from, and the already-reviewing check above
+  # matches a pane that is looking at a different repository.
+  zellij_args+=(-- sh -c "cd '$target_dir' && $tuicr_cmd; echo done > '$fifo'")
 
   "$ZELLIJ_BIN" run\
     "${zellij_args[@]}"
@@ -176,9 +205,15 @@ main() {
     exit 1
   fi
 
-  # Determine target directory
+  if ! check_lsof; then
+    exit 1
+  fi
+
+  # Determine target directory. Physical path: lsof reports a process's working
+  # directory with symlinks resolved, so a logical `pwd` through a symlinked
+  # checkout would never compare equal in check_tuicr_running.
   local target_dir="${1:-.}"
-  target_dir=$(cd "$target_dir" && pwd)  # Get absolute path
+  target_dir=$(cd "$target_dir" && pwd -P)
 
   # Verify it's a git repo
   if ! check_git_repo "$target_dir"; then
@@ -199,11 +234,16 @@ main() {
     exit 1
   fi
 
-  # Check if tuicr is already running
-  if check_tuicr_running; then
-    log_warn "tuicr is already running"
-    log_info "Switch to its pane with Alt-arrow keys (default zellij binding)"
-    exit 0
+  # Check if tuicr is already reviewing this repository
+  if check_tuicr_running "$target_dir"; then
+    log_error "tuicr is already reviewing $target_dir"
+    echo ""
+    echo "Switch to its pane with Alt-arrow keys (default zellij binding), or quit"
+    echo "it there and run /tuicr again. To review a different repository, pass its"
+    echo "directory:"
+    echo ""
+    echo "  $(basename "$0") <directory>"
+    exit 1
   fi
 
   # Launch tuicr in a split pane

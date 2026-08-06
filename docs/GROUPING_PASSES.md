@@ -1078,9 +1078,10 @@ Stated plainly, because it is a large hole:
   group size. So `docs/GROUPING.md` rules 2, 3 and 8 — intent-centrality
   ordering, drive-bys last, mechanical changes last — are scored on neither arm,
   and the heuristic baseline the refine numbers are compared against does not
-  attempt them. This is a known gap with a follow-up bead, not an oversight:
+  attempt them. This is a known gap tracked as `gd-26r.22`, not an oversight:
   order-aware scoring means an order on the heuristic side, an order metric, and
-  ordered expectations in both fixtures, which is its own piece of work.
+  ordered expectations in both fixtures, which is its own piece of work and is
+  deliberately out of scope for `gd-26r.11`.
 - **Two fixtures, one model, ten runs.** Both are single feature-branch PRs of
   ~160 files. Nothing here speaks to a 400-file changeset, a merge commit, a
   refactor sweep, or a cheaper model — `sonnet` resolves on this deployment and

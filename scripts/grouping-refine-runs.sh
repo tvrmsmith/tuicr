@@ -31,11 +31,18 @@ repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 prompts="$repo/target/grouping-refine/prompts"
 fixture_dir="${TUICR_GROUPING_FIXTURES:-$HOME/.local/share/tuicr-fixtures}"
 # Pinned to the exact model id, not the floating `opus` alias: the harness
-# filters the published arm on the model name the envelope records, so once the
-# alias advances a re-record under it would write files the published tests
-# resolve to zero runs of. Set TUICR_REFINE_MODEL to record a second arm; runs
-# are reported per model.
+# filters the published arm on the model name the envelope records, so a
+# re-record under the alias would silently answer as whatever the alias points
+# at that week and be filed as the published arm anyway. The check below is what
+# catches that; the pin is what stops it happening. Set TUICR_REFINE_MODEL to
+# record a second arm; runs are reported per model.
 model="${TUICR_REFINE_MODEL:-claude-opus-5}"
+# The file-name segment, which is not the model id: the committed corpus is
+# named `<shape>-opus-NN.json`, and a re-record has to land on those exact names
+# or it writes a parallel corpus beside the one every published number rests on
+# instead of resuming it. Set alongside TUICR_REFINE_MODEL when recording a
+# second arm.
+slug="${TUICR_REFINE_MODEL_SLUG:-opus}"
 
 if [[ ! -d "$prompts" ]]; then
   echo "no prompts in $prompts — run emit_refine_prompts first" >&2
@@ -72,7 +79,7 @@ for fixture_prompts in "$prompts"/*/; do
   for prompt in "$fixture_prompts"*.txt; do
     shape="$(basename "$prompt" .txt)"
     for run in $(seq 1 "$runs"); do
-      target="$out/$shape-$model-$(printf '%02d' "$run").json"
+      target="$out/$shape-$slug-$(printf '%02d' "$run").json"
       slots=$((slots + 1))
       if [[ -f "$target" ]]; then
         echo "have  $fixture/$shape run $run"
@@ -91,11 +98,14 @@ for fixture_prompts in "$prompts"/*/; do
         continue
       fi
       rm -rf "$scratch"
-      # The file name says which model produced the run and the harness filters
-      # the published arm on the envelope's `modelUsage` key, so a CLI that
-      # resolved the request to some other model must not be filed under this
-      # one — that mislabels the corpus every published number rests on.
-      billed="$(jq -r '.modelUsage | keys[]' "$target.partial" 2>/dev/null || true)"
+      # The harness filters the published arm on the envelope's `modelUsage`
+      # key, so a CLI that resolved the request to some other model must not be
+      # filed under this one — that mislabels the corpus every published number
+      # rests on. A call may bill more than one model; the harness labels the run
+      # by the one that wrote the answer, so this reads the same key rather than
+      # every key, which would never compare equal.
+      billed="$(jq -r '.modelUsage | to_entries | max_by(.value.outputTokens) | .key' \
+        "$target.partial" 2>/dev/null || true)"
       if [[ "$billed" != "$model" ]]; then
         echo "  answered by \`${billed:-unknown}\`, not \`$model\`; leaving $target.partial" >&2
         failed=$((failed + 1))

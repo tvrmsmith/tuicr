@@ -284,26 +284,27 @@ pub fn apply(
                 // As in the `files` case above, a group that omits its source
                 // key has still taken a name and an order slot, so the omission
                 // is named rather than read as "claims nothing".
-                let sources: Vec<String> = if shape == Shape::MergeOnly {
-                    match group.get("merge").and_then(Value::as_array) {
-                        Some(list) => list
-                            .iter()
+                let key = if shape == Shape::MergeOnly {
+                    "merge"
+                } else {
+                    "was"
+                };
+                let sources = if shape == Shape::MergeOnly {
+                    group.get(key).and_then(Value::as_array).map(|list| {
+                        list.iter()
                             .filter_map(Value::as_str)
                             .map(str::to_string)
-                            .collect(),
-                        None => {
-                            repairs.push(format!("group `{name}` has no `merge`"));
-                            continue;
-                        }
-                    }
+                            .collect::<Vec<String>>()
+                    })
                 } else {
-                    match group.get("was").and_then(Value::as_str) {
-                        Some(was) => vec![was.to_string()],
-                        None => {
-                            repairs.push(format!("group `{name}` has no `was`"));
-                            continue;
-                        }
-                    }
+                    group
+                        .get(key)
+                        .and_then(Value::as_str)
+                        .map(|was| vec![was.to_string()])
+                };
+                let Some(sources) = sources else {
+                    repairs.push(format!("group `{name}` has no `{key}`"));
+                    continue;
                 };
                 // Merge-only can only coarsen, and it is this loop that makes
                 // that structural rather than a property of the answers: a
@@ -354,7 +355,10 @@ pub fn apply(
     // asserted over the recorded runs, where it could not fail.
     for path in &all_paths {
         if !assigned.contains_key(*path) {
-            let name = heuristic_group.get(path).copied().unwrap_or("unassigned");
+            let name = heuristic_group
+                .get(path)
+                .copied()
+                .expect("the heuristic grouping places every path in the changeset");
             repairs.push(format!("dropped path restored to `{name}`: {path}"));
             assigned.insert(path.to_string(), name.to_string());
         }
@@ -440,17 +444,7 @@ pub fn file_stability(runs: &[Partition]) -> Option<FileStability> {
     if runs.len() < 2 {
         return None;
     }
-    let companions = |partition: &Partition| -> BTreeMap<String, BTreeSet<String>> {
-        partition
-            .groups
-            .values()
-            .flat_map(|members| {
-                let set: BTreeSet<String> = members.iter().cloned().collect();
-                members.iter().map(move |path| (path.clone(), set.clone()))
-            })
-            .collect()
-    };
-    let all: Vec<_> = runs.iter().map(companions).collect();
+    let all: Vec<_> = runs.iter().map(Partition::companions).collect();
     // The union of every run's paths, not run 0's: a path only some runs carry
     // is exactly the least stable kind of path there is, and anchoring on run 0
     // would drop it from both figures and so overstate stability precisely when
@@ -474,21 +468,14 @@ pub fn file_stability(runs: &[Partition]) -> Option<FileStability> {
                 // run that does: overlap 0, not skipped. `mine` always holds
                 // the path itself, so a union of zero means both sides are
                 // absent, which is not a disagreement.
-                let (mine, theirs) = (left.get(*path), right.get(*path));
-                let union = match (mine, theirs) {
+                let overlap = match (left.get(*path), right.get(*path)) {
                     (None, None) => continue,
-                    _ => mine
-                        .into_iter()
-                        .flatten()
-                        .chain(theirs.into_iter().flatten())
-                        .collect::<BTreeSet<_>>()
-                        .len(),
+                    (Some(mine), Some(theirs)) => {
+                        mine.intersection(theirs).count() as f64 / mine.union(theirs).count() as f64
+                    }
+                    (Some(_), None) | (None, Some(_)) => 0.0,
                 };
-                let shared = match (mine, theirs) {
-                    (Some(mine), Some(theirs)) => mine.intersection(theirs).count(),
-                    _ => 0,
-                };
-                overlaps.push(shared as f64 / union as f64);
+                overlaps.push(overlap);
             }
         }
     }
@@ -532,7 +519,16 @@ pub fn recall_per_expected_group(
             for (index, left) in members.iter().enumerate() {
                 for right in &members[index + 1..] {
                     total += 1;
-                    if group_of.get(left.as_str()) == group_of.get(right.as_str()) {
+                    // A path the grouping does not place is not co-grouped with
+                    // anything. Comparing the two lookups directly made a pair
+                    // of absent paths compare `None == None` and score as kept,
+                    // which reads a group the pass lost entirely as recall 1.00.
+                    let together = match (group_of.get(left.as_str()), group_of.get(right.as_str()))
+                    {
+                        (Some(left), Some(right)) => left == right,
+                        _ => false,
+                    };
+                    if together {
                         kept += 1;
                     }
                 }
