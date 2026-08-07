@@ -443,27 +443,27 @@ fn placement(changeset: &Changeset, config: GroupingConfig) -> BTreeMap<String, 
 
 /// GROUPING.md rule 4: a test file follows its production file even when a token
 /// cluster has already claimed it for a different concern. Here
-/// `export-invoice.test.ts` carries both `invoice` and `export`, and the
-/// `invoice` cluster is the stronger of the two, so the cluster pass takes it
+/// `export-stock.test.ts` carries both `stock` and `export`, and the
+/// `stock` cluster is the stronger of the two, so the cluster pass takes it
 /// away from the file it tests — which is what the rule exists to undo. The
 /// config switch is the control: same changeset, same clusters, and the only
 /// thing that moves is the file the rule is about.
 #[test]
 fn a_test_file_leaves_its_cluster_for_the_group_of_the_file_it_tests() {
     let changeset = Changeset::parse(&format!(
-        "M\tsrc/billing/invoice.ts\n\
-         M\tsrc/billing/invoice-void.ts\n\
-         A\tsrc/billing/invoice-tax.test.ts\n\
-         A\tsrc/billing/invoice-line.test.ts\n\
-         A\tsrc/billing/export-invoice.test.ts\n\
-         M\tsrc/billing/export.ts\n\
+        "M\tsrc/inventory/stock.ts\n\
+         M\tsrc/inventory/stock-void.ts\n\
+         A\tsrc/inventory/stock-batch.test.ts\n\
+         A\tsrc/inventory/stock-line.test.ts\n\
+         A\tsrc/inventory/export-stock.test.ts\n\
+         M\tsrc/inventory/export.ts\n\
          M\tsrc/report/export-csv.ts\n\
          M\tsrc/report/export-pdf.ts\n\
          M\tsrc/report/export-html.ts\n\
          {FILLER}"
     ));
-    let test = "src/billing/export-invoice.test.ts";
-    let production = "src/billing/export.ts";
+    let test = "src/inventory/export-stock.test.ts";
+    let production = "src/inventory/export.ts";
 
     let following = placement(&changeset, GroupingConfig::default());
     let cluster_keeps_it = placement(
@@ -484,8 +484,8 @@ fn a_test_file_leaves_its_cluster_for_the_group_of_the_file_it_tests() {
          exercise rule 4 at all: {cluster_keeps_it:?}"
     );
     assert_eq!(
-        cluster_keeps_it[test], cluster_keeps_it["src/billing/invoice.ts"],
-        "the cluster that loses the test must be the invoice one: {cluster_keeps_it:?}"
+        cluster_keeps_it[test], cluster_keeps_it["src/inventory/stock.ts"],
+        "the cluster that loses the test must be the stock one: {cluster_keeps_it:?}"
     );
 }
 
@@ -529,11 +529,11 @@ fn a_whole_change_doc_groups_apart_from_a_doc_beside_its_code() {
 #[test]
 fn an_unclaimed_file_is_absorbed_by_its_nearest_group_instead_of_a_directory_bucket() {
     let changeset = Changeset::parse(&format!(
-        "M\tsrc/billing/invoice.ts\n\
-         M\tsrc/billing/invoice-void.ts\n\
-         M\tsrc/billing/invoice-tax.ts\n\
-         M\tsrc/billing/invoice-line.ts\n\
-         M\tsrc/billing/invoice-note.ts\n\
+        "M\tsrc/inventory/stock.ts\n\
+         M\tsrc/inventory/stock-void.ts\n\
+         M\tsrc/inventory/stock-batch.ts\n\
+         M\tsrc/inventory/stock-line.ts\n\
+         M\tsrc/inventory/stock-note.ts\n\
          M\tsrc/upload/chunk-retry.ts\n\
          M\tsrc/upload/chunk-abort.ts\n\
          M\tsrc/upload/stream-reader.ts\n\

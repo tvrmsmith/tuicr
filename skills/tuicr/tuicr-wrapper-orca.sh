@@ -176,8 +176,18 @@ launch_tuicr_pane() {
     --command "$pane_command" \
     --json)
 
-  new_pane_handle=$(printf '%s\n' "$split_response" | \
-    "$JQ_BIN" -er '.result.split.handle')
+  if ! new_pane_handle=$(printf '%s\n' "$split_response" | \
+    "$JQ_BIN" -er '.result.split.handle'); then
+    new_pane_handle=""
+    if [[ -n "$output_file" ]]; then
+      rm -f "$output_file"
+    fi
+    log_error "Could not read the new pane's handle from Orca's split response:"
+    log_error "$split_response"
+    log_warn "A tuicr pane may be open that this wrapper cannot address or close."
+    log_warn "Check your terminal and close it yourself if it is there."
+    return 1
+  fi
 
   log_info "tuicr is running in pane $new_pane_handle"
   log_info "Waiting for tuicr to exit..."
