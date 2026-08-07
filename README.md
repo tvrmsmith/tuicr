@@ -179,6 +179,12 @@ so collaborative tools can add comments immediately. Empty auto-created session
 files are removed when the TUI exits. `tuicr review list` marks currently open
 TUI sessions with `"active": true`.
 
+Every comment carries the `author` that wrote it, and `tuicr review add
+--reply-to <comment-id>` records an answer to a specific comment, anchored at
+that comment's file and line. Both fields are emitted by `tuicr review
+comments`, so an agent polling a session can tell the human's feedback from its
+own replies and see which comments it has already answered.
+
 ## Library API
 
 tuicr also exposes a Rust library API for tools that want to build on top of its

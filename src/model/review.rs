@@ -633,6 +633,10 @@ mod tests {
             comment.commit_id, None,
             "comment JSON without commit_id must default to None"
         );
+        assert_eq!(
+            comment.in_reply_to, None,
+            "comment JSON without in_reply_to must default to None"
+        );
     }
 
     #[test]

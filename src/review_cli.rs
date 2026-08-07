@@ -12,7 +12,7 @@ use crate::error::{Result, TuicrError};
 use crate::model::comment::{self, CommentLifecycleState};
 use crate::model::{Comment, CommentType, LineRange, LineSide, ReviewSession};
 use crate::review_store::{
-    AddCommentRequest, CommentTarget, ReviewStore, SessionRef, SessionSummary,
+    self, AddCommentRequest, CommentTarget, ReviewStore, SessionRef, SessionSummary,
 };
 use crate::slug::Slug;
 
@@ -34,6 +34,7 @@ fn run_with_writer(command: ReviewCommand, out: &mut impl Write) -> Result<()> {
             end_line,
             side,
             username,
+            reply_to,
             content,
         } => add_comment(
             &session,
@@ -46,6 +47,7 @@ fn run_with_writer(command: ReviewCommand, out: &mut impl Write) -> Result<()> {
                 end_line,
                 side,
                 username,
+                reply_to,
                 content,
             },
             out,
@@ -78,6 +80,7 @@ struct AddCommentOptions {
     end_line: Option<u32>,
     side: LineSideArg,
     username: Option<String>,
+    reply_to: Option<String>,
     content: Option<String>,
 }
 
@@ -90,7 +93,7 @@ fn add_comment(
     let store = ReviewStore::new();
     let session_ref = resolve_session_ref(&store, repo, session)?;
     let request_parts = build_add_request_parts(options)?;
-    let target = request_parts.target;
+    let (target, in_reply_to) = resolve_anchor(&store, &session_ref, request_parts.anchor)?;
     let comment_type = CommentType::from_id(&request_parts.comment_type);
     let author = resolve_cli_author(request_parts.username);
     let comment = store.add_comment(
@@ -100,6 +103,7 @@ fn add_comment(
             content: request_parts.content,
             comment_type,
             author,
+            in_reply_to,
             commit_id: None,
         },
     )?;
@@ -109,11 +113,44 @@ fn add_comment(
     Ok(())
 }
 
+#[derive(Debug)]
 struct AddRequestParts {
-    target: CommentTarget,
+    anchor: AddAnchor,
     comment_type: String,
     content: String,
     username: Option<String>,
+}
+
+/// Where a `review add` comment should land: either an explicitly targeted
+/// anchor, or the anchor of the comment it replies to. The reply case can
+/// only be resolved against the session, so it stays unresolved until
+/// [`resolve_anchor`].
+#[derive(Debug)]
+enum AddAnchor {
+    Target(CommentTarget),
+    Reply { parent_id: String },
+}
+
+/// Turn an [`AddAnchor`] into the target the comment attaches to plus the
+/// `in_reply_to` link to record. A reply inherits its parent's anchor, so a
+/// caller only ever names the comment it is answering.
+fn resolve_anchor(
+    store: &ReviewStore,
+    session_ref: &SessionRef,
+    anchor: AddAnchor,
+) -> Result<(CommentTarget, Option<String>)> {
+    match anchor {
+        AddAnchor::Target(target) => Ok((target, None)),
+        AddAnchor::Reply { parent_id } => {
+            let session = store.get_review(session_ref)?;
+            let target = review_store::comment_anchor(&session, &parent_id).ok_or_else(|| {
+                TuicrError::InvalidInput(format!(
+                    "no comment with id '{parent_id}' in this session. Run `tuicr review comments --session <session>` to list comment ids."
+                ))
+            })?;
+            Ok((target, Some(parent_id)))
+        }
+    }
 }
 
 /// Resolve the author for a CLI-authored comment.
@@ -146,6 +183,7 @@ fn build_add_request_parts(options: AddCommentOptions) -> Result<AddRequestParts
     let mut end_line = options.end_line;
     let mut side = options.side;
     let mut username = options.username;
+    let mut reply_to = options.reply_to;
     let mut target = None;
 
     if let Some(input) = options.input {
@@ -158,6 +196,9 @@ fn build_add_request_parts(options: AddCommentOptions) -> Result<AddRequestParts
         }
         if payload.username.is_some() {
             username = payload.username;
+        }
+        if payload.reply_to.is_some() {
+            reply_to = payload.reply_to;
         }
         if let Some(payload_target) = payload.target {
             target = Some(payload_target.into_comment_target()?);
@@ -182,13 +223,26 @@ fn build_add_request_parts(options: AddCommentOptions) -> Result<AddRequestParts
             "comment text is required either as COMMENT or JSON field `content`".to_string(),
         )
     })?;
-    let target = match target {
-        Some(target) => target,
-        None => build_comment_target(file, line, end_line, side)?,
+    let anchor = match reply_to {
+        // clap rejects the flag combination, but a JSON payload can still
+        // carry both, and a reply's anchor is its parent's by definition.
+        Some(parent_id) => {
+            if target.is_some() || file.is_some() || line.is_some() || end_line.is_some() {
+                return Err(TuicrError::InvalidInput(
+                    "reply_to anchors the comment at its parent; drop the target fields"
+                        .to_string(),
+                ));
+            }
+            AddAnchor::Reply { parent_id }
+        }
+        None => AddAnchor::Target(match target {
+            Some(target) => target,
+            None => build_comment_target(file, line, end_line, side)?,
+        }),
     };
 
     Ok(AddRequestParts {
-        target,
+        anchor,
         comment_type,
         content,
         username,
@@ -232,6 +286,8 @@ struct AddCommentPayload {
     side: Option<String>,
     #[serde(default, alias = "author")]
     username: Option<String>,
+    #[serde(default, alias = "in_reply_to")]
+    reply_to: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -549,6 +605,8 @@ struct CommentOutput {
     start_line: Option<u32>,
     end_line: Option<u32>,
     side: Option<&'static str>,
+    author: String,
+    in_reply_to: Option<String>,
     comment_type: String,
     lifecycle_state: &'static str,
     created_at: String,
@@ -598,6 +656,8 @@ impl CommentOutput {
             start_line,
             end_line,
             side: side_id(side),
+            author: comment.author.clone(),
+            in_reply_to: comment.in_reply_to.clone(),
             comment_type: comment.comment_type.id().to_string(),
             lifecycle_state: lifecycle_id(comment.lifecycle_state),
             created_at: comment.created_at.to_rfc3339(),
@@ -675,6 +735,7 @@ mod tests {
             end_line: None,
             side: LineSideArg::New,
             username: None,
+            reply_to: None,
             content: None,
         })
         .unwrap();
@@ -682,12 +743,12 @@ mod tests {
         assert_eq!(parts.comment_type, "issue");
         assert_eq!(parts.content, "fix it");
         assert!(matches!(
-            parts.target,
-            CommentTarget::Line {
+            parts.anchor,
+            AddAnchor::Target(CommentTarget::Line {
                 path,
                 line: 42,
                 side: LineSide::Old,
-            } if path.as_path() == Path::new("src/main.rs")
+            }) if path.as_path() == Path::new("src/main.rs")
         ));
     }
 
@@ -704,18 +765,19 @@ mod tests {
             end_line: None,
             side: LineSideArg::New,
             username: None,
+            reply_to: None,
             content: None,
         })
         .unwrap();
 
         assert_eq!(parts.comment_type, "suggestion");
         assert!(matches!(
-            parts.target,
-            CommentTarget::LineRange {
+            parts.anchor,
+            AddAnchor::Target(CommentTarget::LineRange {
                 range: LineRange { start: 5, end: 7 },
                 side: LineSide::New,
                 ..
-            }
+            })
         ));
     }
 
@@ -847,6 +909,7 @@ mod tests {
                     content: "check this".to_string(),
                     comment_type: CommentType::from_id("issue"),
                     author: crate::model::comment::DEFAULT_AUTHOR.to_string(),
+                    in_reply_to: None,
                     commit_id: None,
                 },
             )
@@ -865,5 +928,162 @@ mod tests {
         assert_eq!(value[0]["comment_type"], "issue");
         assert_eq!(value[0]["location"], "src/main.rs:42");
         assert_eq!(value[0]["content"], "check this");
+    }
+
+    /// A session holding one human line comment on `src/main.rs:42`, plus the
+    /// store it lives in. The shape the agent loop actually reads back.
+    fn session_with_human_comment(temp: &tempfile::TempDir) -> (ReviewStore, SessionRef, Comment) {
+        let repo = temp.path().join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        let store = ReviewStore::with_reviews_dir(temp.path().join("reviews"));
+        let session_ref = store.save_review(&test_session(repo)).unwrap();
+        let parent = store
+            .add_comment(
+                &session_ref,
+                AddCommentRequest {
+                    target: CommentTarget::Line {
+                        path: PathBuf::from("src/main.rs"),
+                        line: 42,
+                        side: LineSide::New,
+                    },
+                    content: "check this".to_string(),
+                    comment_type: CommentType::from_id("issue"),
+                    author: comment::DEFAULT_AUTHOR.to_string(),
+                    in_reply_to: None,
+                    commit_id: None,
+                },
+            )
+            .unwrap();
+        (store, session_ref, parent)
+    }
+
+    #[test]
+    fn should_emit_author_and_reply_link_on_comments() {
+        let temp = tempdir().unwrap();
+        let (store, session_ref, parent) = session_with_human_comment(&temp);
+        let (target, in_reply_to) = resolve_anchor(
+            &store,
+            &session_ref,
+            AddAnchor::Reply {
+                parent_id: parent.id.clone(),
+            },
+        )
+        .unwrap();
+        store
+            .add_comment(
+                &session_ref,
+                AddCommentRequest {
+                    target,
+                    content: "fixed it".to_string(),
+                    comment_type: CommentType::from_id("none"),
+                    author: "claude-agent".to_string(),
+                    in_reply_to,
+                    commit_id: None,
+                },
+            )
+            .unwrap();
+
+        let mut out = Vec::new();
+        show_comments(
+            &session_ref.path().display().to_string(),
+            temp.path(),
+            &mut out,
+        )
+        .unwrap();
+        let value: serde_json::Value = serde_json::from_slice(&out).unwrap();
+
+        // Both comments sit at the same anchor; only author + in_reply_to
+        // tell the human's feedback from the agent's answer to it.
+        assert_eq!(value[0]["location"], "src/main.rs:42");
+        assert_eq!(value[0]["author"], "user");
+        assert_eq!(value[0]["in_reply_to"], serde_json::Value::Null);
+        assert_eq!(value[1]["location"], "src/main.rs:42");
+        assert_eq!(value[1]["author"], "claude-agent");
+        assert_eq!(value[1]["in_reply_to"], parent.id);
+    }
+
+    #[test]
+    fn should_anchor_reply_at_its_parent() {
+        let temp = tempdir().unwrap();
+        let (store, session_ref, parent) = session_with_human_comment(&temp);
+
+        let (target, in_reply_to) = resolve_anchor(
+            &store,
+            &session_ref,
+            AddAnchor::Reply {
+                parent_id: parent.id.clone(),
+            },
+        )
+        .unwrap();
+
+        assert_eq!(
+            target,
+            CommentTarget::Line {
+                path: PathBuf::from("src/main.rs"),
+                line: 42,
+                side: LineSide::New,
+            }
+        );
+        assert_eq!(in_reply_to, Some(parent.id));
+    }
+
+    #[test]
+    fn should_reject_reply_to_an_unknown_comment_id() {
+        let temp = tempdir().unwrap();
+        let (store, session_ref, _) = session_with_human_comment(&temp);
+
+        let err = resolve_anchor(
+            &store,
+            &session_ref,
+            AddAnchor::Reply {
+                parent_id: "not-a-real-id".to_string(),
+            },
+        )
+        .unwrap_err();
+
+        assert!(matches!(err, TuicrError::InvalidInput(_)));
+    }
+
+    #[test]
+    fn should_build_reply_anchor_from_json_payload() {
+        let parts = build_add_request_parts(AddCommentOptions {
+            input: Some(r#"{"reply_to":"parent-id","content":"fixed it"}"#.to_string()),
+            comment_type: "none".to_string(),
+            file: None,
+            line: None,
+            end_line: None,
+            side: LineSideArg::New,
+            username: None,
+            reply_to: None,
+            content: None,
+        })
+        .unwrap();
+
+        assert!(matches!(
+            parts.anchor,
+            AddAnchor::Reply { parent_id } if parent_id == "parent-id"
+        ));
+    }
+
+    #[test]
+    fn should_reject_a_json_reply_that_also_names_a_target() {
+        // clap rejects the flag combination; the JSON path needs its own guard.
+        let err = build_add_request_parts(AddCommentOptions {
+            input: Some(
+                r#"{"reply_to":"parent-id","file":"src/main.rs","line":42,"content":"fixed it"}"#
+                    .to_string(),
+            ),
+            comment_type: "none".to_string(),
+            file: None,
+            line: None,
+            end_line: None,
+            side: LineSideArg::New,
+            username: None,
+            reply_to: None,
+            content: None,
+        })
+        .unwrap_err();
+
+        assert!(matches!(err, TuicrError::InvalidInput(_)));
     }
 }
