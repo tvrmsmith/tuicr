@@ -1459,3 +1459,44 @@ fn should_not_show_eof_gap_for_deleted_files() {
     // and: total_lines must match annotations
     assert_eq!(app.total_lines(), app.line_annotations.len());
 }
+
+#[test]
+fn should_clear_expanded_gaps_when_sorting_files() {
+    // given: expanded context in two files, keyed by GapId { file_idx, .. } —
+    // a position in diff_files, not a file identity
+    let file_a = make_file_with_hunks("a/early.rs", vec![make_hunk(31, 5)]);
+    let file_z = make_file_with_hunks("z/late.rs", vec![make_hunk(31, 5)]);
+    let mut app = build_app_with_files(vec![file_a, file_z], 100);
+    let gap_a = GapId {
+        file_idx: 0,
+        hunk_idx: 0,
+    };
+    let gap_z = GapId {
+        file_idx: 1,
+        hunk_idx: 0,
+    };
+    app.expand_gap(gap_a.clone(), ExpandDirection::Down, Some(10))
+        .unwrap();
+    app.expand_gap(gap_z.clone(), ExpandDirection::Up, Some(10))
+        .unwrap();
+    assert!(app.expanded_top.contains_key(&gap_a));
+    assert!(app.expanded_bottom.contains_key(&gap_z));
+
+    // when: files are re-sorted without the caller clearing gaps first, as a
+    // mid-session regroup would
+    app.sort_files_by_directory(false);
+
+    // then: nothing positional survives to be attributed to the wrong file
+    assert!(
+        app.expanded_top.is_empty(),
+        "expanded_top must not survive a reorder"
+    );
+    assert!(
+        app.expanded_bottom.is_empty(),
+        "expanded_bottom must not survive a reorder"
+    );
+    assert!(
+        app.file_line_count_cache.is_empty(),
+        "file_line_count_cache must not survive a reorder"
+    );
+}
