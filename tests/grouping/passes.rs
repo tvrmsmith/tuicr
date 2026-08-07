@@ -4,7 +4,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use super::changeset::{ChangeKind, ChangedFile, Changeset};
-use super::score::Partition;
+use super::score::{Partition, f1, free_name};
 
 /// Where a file ended up, which pass put it there, and — on close calls only —
 /// the group it nearly went to instead. Derived state, recomputed per regroup.
@@ -132,7 +132,7 @@ pub fn group(changeset: &Changeset, config: GroupingConfig) -> Grouping {
     }
     // No rename pass: git reports a rename as one entry keyed by the new path,
     // so a rename's two halves are already one file and GROUPING.md rule 11 is
-    // satisfied by construction. See `a_rename_is_one_file_in_one_group`.
+    // satisfied by construction. See `a_rename_is_one_file_in_the_changeset`.
     directory_fallback_pass(&files, &mut assigned);
 
     Grouping {
@@ -527,9 +527,14 @@ pub fn agglomerative_grouping(changeset: &Changeset, target_groups: usize) -> Pa
         clusters[a].extend(merged);
     }
 
+    // `Partition` buckets by name, so two clusters that derive the same name
+    // would be unioned and the result would quietly be smaller than the
+    // baseline the caller asked for. Colliding names are suffixed instead.
     let mut assignments = Vec::new();
+    let mut used: BTreeSet<String> = BTreeSet::new();
     for members in &clusters {
-        let name = derive_group_name(&files, members);
+        let name = free_name(&derive_group_name(&files, members), &used);
+        used.insert(name.clone());
         assignments.extend(
             members
                 .iter()
@@ -573,12 +578,7 @@ pub fn best_key_per_expected_group(
                     let hits = holders.intersection(&members).count() as f64;
                     let precision = hits / holders.len() as f64;
                     let recall = hits / members.len() as f64;
-                    let f1 = if precision + recall == 0.0 {
-                        0.0
-                    } else {
-                        2.0 * precision * recall / (precision + recall)
-                    };
-                    (key.clone(), f1)
+                    (key.clone(), f1(precision, recall))
                 })
                 .max_by(|a, b| a.1.partial_cmp(&b.1).unwrap())
                 .unwrap_or_default();

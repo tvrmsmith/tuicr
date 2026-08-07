@@ -86,10 +86,32 @@ check_git_repo() {
   return 0
 }
 
+# True only when a tuicr is already reviewing *this* repository. Orca panes do
+# not expose a running-command listing, so this is a process check — but a
+# machine-wide one would report success because of a tuicr in some unrelated
+# repo and send the user hunting for a pane that does not exist here.
 check_tuicr_running() {
-  # Orca panes do not expose a running-command listing, so fall back to a
-  # process check like the zellij wrapper.
-  pgrep -x tuicr &>/dev/null
+  local target_dir="$1"
+  local pid cwd
+
+  while read -r pid; do
+    [[ -n "$pid" ]] || continue
+    # The launched pane runs `cd <dir> && tuicr`, so the review's repository is
+    # the process's working directory rather than an argument.
+    cwd=$(lsof -a -p "$pid" -d cwd -Fn 2>/dev/null | sed -n 's/^n//p')
+    if [[ -z "$cwd" ]]; then
+      # Unreadable working directory means this check cannot tell "elsewhere"
+      # from "right here", and answering "not running" would open a second
+      # review of the same repository. Say so rather than deciding silently.
+      log_warn "Cannot read the working directory of running tuicr $pid; assuming it is elsewhere"
+      continue
+    fi
+    if [[ "$cwd" == "$target_dir" ]]; then
+      return 0
+    fi
+  done < <(pgrep -x tuicr 2>/dev/null)
+
+  return 1
 }
 
 check_tuicr_stdout_support() {
@@ -154,8 +176,18 @@ launch_tuicr_pane() {
     --command "$pane_command" \
     --json)
 
-  new_pane_handle=$(printf '%s\n' "$split_response" | \
-    "$JQ_BIN" -er '.result.split.handle')
+  if ! new_pane_handle=$(printf '%s\n' "$split_response" | \
+    "$JQ_BIN" -er '.result.split.handle'); then
+    new_pane_handle=""
+    if [[ -n "$output_file" ]]; then
+      rm -f "$output_file"
+    fi
+    log_error "Could not read the new pane's handle from Orca's split response:"
+    log_error "$split_response"
+    log_warn "A tuicr pane may be open that this wrapper cannot address or close."
+    log_warn "Check your terminal and close it yourself if it is there."
+    return 1
+  fi
 
   log_info "tuicr is running in pane $new_pane_handle"
   log_info "Waiting for tuicr to exit..."
@@ -170,7 +202,17 @@ launch_tuicr_pane() {
   local satisfied
   satisfied=$(printf '%s\n' "$wait_response" | "$JQ_BIN" -r '.result.wait.satisfied')
   if [[ "$satisfied" != "true" ]]; then
+    # A timeout means this wrapper stopped waiting, not that tuicr exited.
+    # Dropping the handle keeps the EXIT trap from closing a pane where a review
+    # is still open and its unexported instructions still unsaved; the trap still
+    # closes the pane on the crash and interrupt paths.
+    new_pane_handle=""
+    if [[ -n "$output_file" ]]; then
+      rm -f "$output_file"
+    fi
     log_error "Timed out after ${TUICR_ORCA_TIMEOUT_MS}ms waiting for tuicr to exit"
+    log_warn "The tuicr pane is still open and the review is still running."
+    log_warn "Finish it there, then read the comments with \`tuicr review comments\`."
     return 1
   fi
 
@@ -230,22 +272,30 @@ main() {
   require_command "$ORCA_BIN" "Orca CLI"
   require_command "$JQ_BIN" "jq"
   require_command "tuicr" "tuicr"
+  require_command "lsof" "lsof"
 
   local target_dir="${1:-.}"
   if [[ ! -d "$target_dir" ]]; then
     log_error "Directory not found: $target_dir"
     exit 1
   fi
-  target_dir=$(cd "$target_dir" && pwd)
+  # Physical path: lsof reports a process's working directory with symlinks
+  # resolved, so a logical `pwd` through a symlinked checkout would never
+  # compare equal and the already-reviewing check would never fire.
+  target_dir=$(cd "$target_dir" && pwd -P)
 
   if ! check_git_repo "$target_dir"; then
     exit 1
   fi
 
-  if check_tuicr_running; then
-    log_warn "tuicr is already running"
-    log_info "Switch to its pane by clicking it in the Orca UI"
-    exit 0
+  if check_tuicr_running "$target_dir"; then
+    log_error "tuicr is already reviewing $target_dir"
+    echo ""
+    echo "Switch to its pane by clicking it in the Orca UI, or quit it there and"
+    echo "run /tuicr again. To review a different repository, pass its directory:"
+    echo ""
+    echo "  $(basename "$0") <directory>"
+    exit 1
   fi
 
   trap cleanup EXIT
