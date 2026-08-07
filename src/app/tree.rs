@@ -131,7 +131,9 @@ impl App {
     pub(in crate::app) fn sort_files_by_directory(&mut self, reset_position: bool) {
         use std::collections::BTreeMap;
 
-        self.file_line_count_cache.clear();
+        // Both the line-count cache and the gap maps are keyed by `file_idx`,
+        // a position in `diff_files`, so reordering invalidates all of them.
+        self.clear_expanded_gaps();
 
         let current_path = if !reset_position {
             self.current_file_path().cloned()
