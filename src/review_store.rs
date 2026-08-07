@@ -180,6 +180,11 @@ pub struct AddCommentRequest {
     /// picking a sensible default (`Comment::DEFAULT_AUTHOR`) when none is
     /// supplied.
     pub author: String,
+    /// Id of the comment this one replies to, when the caller asked for a
+    /// threaded reply. Callers that want the reply to sit at its parent's
+    /// anchor resolve that anchor with [`comment_anchor`] and pass it as
+    /// `target`; this field only records the link.
+    pub in_reply_to: Option<String>,
     /// Commit SHA to stamp on the comment when it was created while the
     /// inline commit selector showed exactly one commit. `None` for
     /// review-level comments and full-range selections. Library callers
@@ -206,6 +211,52 @@ pub enum CommentTarget {
     },
 }
 
+/// The target an existing comment is anchored at, looked up by id.
+///
+/// `tuicr review add --reply-to` uses this so a reply lands at exactly the
+/// anchor of the comment it answers, instead of the caller restating a
+/// file/line that could drift from the parent's.
+pub fn comment_anchor(session: &ReviewSession, comment_id: &str) -> Option<CommentTarget> {
+    if session
+        .review_comments
+        .iter()
+        .any(|comment| comment.id == comment_id)
+    {
+        return Some(CommentTarget::Review);
+    }
+
+    for (path, review) in &session.files {
+        if review
+            .file_comments
+            .iter()
+            .any(|comment| comment.id == comment_id)
+        {
+            return Some(CommentTarget::File { path: path.clone() });
+        }
+
+        for (line, comments) in &review.line_comments {
+            let Some(comment) = comments.iter().find(|comment| comment.id == comment_id) else {
+                continue;
+            };
+            let side = comment.side.unwrap_or_default();
+            return Some(match comment.line_range {
+                Some(range) => CommentTarget::LineRange {
+                    path: path.clone(),
+                    range,
+                    side,
+                },
+                None => CommentTarget::Line {
+                    path: path.clone(),
+                    line: *line,
+                    side,
+                },
+            });
+        }
+    }
+
+    None
+}
+
 /// Add a local draft comment to an in-memory session.
 ///
 /// This is the shared primitive used by the TUI and by [`ReviewStore`].
@@ -220,45 +271,42 @@ pub fn add_comment_to_session(
         ));
     }
 
-    let author = request.author;
-    let commit_id = request.commit_id;
-    let comment = match request.target {
-        CommentTarget::Review => {
-            let comment = Comment::new(content, request.comment_type, None).with_author(author);
-            session.review_comments.push(comment.clone());
-            comment
+    let mut comment = match &request.target {
+        CommentTarget::Review | CommentTarget::File { .. } => {
+            Comment::new(content, request.comment_type, None)
         }
-        CommentTarget::File { path } => {
-            let review = file_review_mut(session, &path)?;
-            let mut comment = Comment::new(content, request.comment_type, None).with_author(author);
-            if let Some(sha) = &commit_id {
-                comment = comment.with_commit_id(sha.clone());
-            }
-            review.add_file_comment(comment.clone());
-            comment
+        CommentTarget::Line { side, .. } => {
+            Comment::new(content, request.comment_type, Some(*side))
         }
-        CommentTarget::Line { path, line, side } => {
-            let review = file_review_mut(session, &path)?;
-            let mut comment =
-                Comment::new(content, request.comment_type, Some(side)).with_author(author);
-            if let Some(sha) = &commit_id {
-                comment = comment.with_commit_id(sha.clone());
-            }
-            review.add_line_comment(line, comment.clone());
-            comment
-        }
-        CommentTarget::LineRange { path, range, side } => {
-            let review = file_review_mut(session, &path)?;
-            let mut comment =
-                Comment::new_with_range(content, request.comment_type, Some(side), range)
-                    .with_author(author);
-            if let Some(sha) = &commit_id {
-                comment = comment.with_commit_id(sha.clone());
-            }
-            review.add_line_comment(range.end, comment.clone());
-            comment
+        CommentTarget::LineRange { range, side, .. } => {
+            Comment::new_with_range(content, request.comment_type, Some(*side), *range)
         }
     };
+    comment = comment.with_author(request.author);
+    if let Some(parent_id) = request.in_reply_to {
+        comment = comment.with_in_reply_to(parent_id);
+    }
+    // Review-level comments are never commit-scoped: they describe the whole
+    // review, not a line in one commit's diff.
+    if let (Some(sha), false) = (
+        request.commit_id,
+        matches!(request.target, CommentTarget::Review),
+    ) {
+        comment = comment.with_commit_id(sha);
+    }
+
+    match request.target {
+        CommentTarget::Review => session.review_comments.push(comment.clone()),
+        CommentTarget::File { path } => {
+            file_review_mut(session, &path)?.add_file_comment(comment.clone());
+        }
+        CommentTarget::Line { path, line, .. } => {
+            file_review_mut(session, &path)?.add_line_comment(line, comment.clone());
+        }
+        CommentTarget::LineRange { path, range, .. } => {
+            file_review_mut(session, &path)?.add_line_comment(range.end, comment.clone());
+        }
+    }
 
     session.updated_at = Utc::now();
     Ok(comment)
@@ -289,6 +337,78 @@ mod tests {
         session
     }
 
+    /// Add a comment at `target` and return it. Keeps the anchor tests to
+    /// the one line that matters.
+    fn add(session: &mut ReviewSession, target: CommentTarget) -> Comment {
+        add_comment_to_session(
+            session,
+            AddCommentRequest {
+                target,
+                content: "check this".to_string(),
+                comment_type: CommentType::from_id("none"),
+                author: crate::model::comment::DEFAULT_AUTHOR.to_string(),
+                in_reply_to: None,
+                commit_id: None,
+            },
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn should_find_the_anchor_of_a_comment_at_every_target_kind() {
+        let mut session = test_session(PathBuf::from("/repo"));
+        let path = PathBuf::from("src/main.rs");
+        let targets = [
+            CommentTarget::Review,
+            CommentTarget::File { path: path.clone() },
+            CommentTarget::Line {
+                path: path.clone(),
+                line: 42,
+                side: LineSide::Old,
+            },
+            CommentTarget::LineRange {
+                path,
+                range: LineRange::new(10, 14),
+                side: LineSide::New,
+            },
+        ];
+
+        for target in targets {
+            let comment = add(&mut session, target.clone());
+            assert_eq!(comment_anchor(&session, &comment.id), Some(target));
+        }
+    }
+
+    #[test]
+    fn should_find_no_anchor_for_an_unknown_comment_id() {
+        let mut session = test_session(PathBuf::from("/repo"));
+        add(&mut session, CommentTarget::Review);
+
+        assert_eq!(comment_anchor(&session, "not-a-real-id"), None);
+    }
+
+    #[test]
+    fn should_record_the_reply_link_on_the_new_comment() {
+        let mut session = test_session(PathBuf::from("/repo"));
+        let parent = add(&mut session, CommentTarget::Review);
+
+        let reply = add_comment_to_session(
+            &mut session,
+            AddCommentRequest {
+                target: CommentTarget::Review,
+                content: "fixed it".to_string(),
+                comment_type: CommentType::from_id("none"),
+                author: "claude-agent".to_string(),
+                in_reply_to: Some(parent.id.clone()),
+                commit_id: None,
+            },
+        )
+        .unwrap();
+
+        assert_eq!(reply.in_reply_to, Some(parent.id));
+        assert_eq!(reply.author, "claude-agent");
+    }
+
     #[test]
     fn should_add_review_level_comment_to_session() {
         let mut session = test_session(PathBuf::from("/repo"));
@@ -300,6 +420,7 @@ mod tests {
                 content: "looks good".to_string(),
                 comment_type: CommentType::from_id("praise"),
                 author: crate::model::comment::DEFAULT_AUTHOR.to_string(),
+                in_reply_to: None,
                 commit_id: None,
             },
         )
@@ -321,6 +442,7 @@ mod tests {
                 content: "file note".to_string(),
                 comment_type: CommentType::from_id("note"),
                 author: crate::model::comment::DEFAULT_AUTHOR.to_string(),
+                in_reply_to: None,
                 commit_id: None,
             },
         )
@@ -346,6 +468,7 @@ mod tests {
                 content: "range note".to_string(),
                 comment_type: CommentType::from_id("suggestion"),
                 author: crate::model::comment::DEFAULT_AUTHOR.to_string(),
+                in_reply_to: None,
                 commit_id: None,
             },
         )
@@ -368,6 +491,7 @@ mod tests {
                 content: "note".to_string(),
                 comment_type: CommentType::from_id("note"),
                 author: crate::model::comment::DEFAULT_AUTHOR.to_string(),
+                in_reply_to: None,
                 commit_id: None,
             },
         )
@@ -414,6 +538,7 @@ mod tests {
                     content: "line note".to_string(),
                     comment_type: CommentType::from_id("note"),
                     author: crate::model::comment::DEFAULT_AUTHOR.to_string(),
+                    in_reply_to: None,
                     commit_id: None,
                 },
             )

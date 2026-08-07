@@ -93,6 +93,31 @@ Target flags:
 - use `--username <name>` to identify the comment author; otherwise tuicr uses
   the configured `username` or `"user"`
 
+`--username <name>` stamps the author on the new comment, falling back to the
+config `username` and then to `user`. Agents should always pass it, so their
+comments are distinguishable from the human's on the way back out.
+
+## Reply to a Comment
+
+`--reply-to <comment-id>` records that a comment answers another one. Ids come
+from `tuicr review comments`. The reply is anchored at its parent's file, line,
+and side, so the target flags are rejected alongside `--reply-to`:
+
+```bash
+tuicr review add --session agavra/tuicr@main/worktree \
+  --reply-to 79c9b3e1-0a7a-4efe-9d43-f7085d7c1a82 \
+  --username claude-agent \
+  "Fixed: extracted TOKEN_EXPIRY_SECONDS."
+```
+
+The link is what makes an agent's addressed-set reliable. Co-anchoring alone is
+ambiguous: two comments on one line cannot be told apart by position, and a
+reply at the same line looks like fresh feedback on the next poll.
+
+Replies are a local convention. They are stored as ordinary comments with an
+`in_reply_to` link, are not a lifecycle state (every local comment stays
+`local_draft`), and post to a forge as plain comments at the parent's anchor.
+
 ## JSON Input
 
 For machine input, pass a JSON payload with `--input`. The value can be literal
@@ -120,6 +145,8 @@ Flat JSON fields:
 - `side`: `old` or `new`, defaults to `new`
 - `username` or `author`: comment author; uses the same fallback as
   `--username`
+- `reply_to` (alias `in_reply_to`): id of the comment being answered; cannot be
+  combined with any target field
 
 Nested targets are also accepted:
 
@@ -194,6 +221,8 @@ PR slug:
     "start_line": 42,
     "end_line": 42,
     "side": "new",
+    "author": "user",
+    "in_reply_to": null,
     "comment_type": "issue",
     "author": "alice",
     "lifecycle_state": "local_draft",
@@ -203,5 +232,22 @@ PR slug:
 ]
 ```
 
-The `author` field is the username stored with the comment. It is present in
-the JSON emitted by both `review add` and `review comments`.
+`add` echoes the same shape for the comment it just created.
+
+`author` is the name the comment was written under: `user` for the human by
+default, whatever `--username` was passed for an agent. `in_reply_to` is the id
+of the comment this one answers, or `null` for a top-level comment.
+
+## Filtering by Author
+
+The CLI does not filter: `comments` always returns the whole session and
+callers filter client-side. The query an agent actually wants is not "not mine"
+but "human comments I have not answered yet", which is a join over both fields:
+
+```bash
+tuicr review comments --session agavra/tuicr@main/worktree | jq '
+  (map(select(.in_reply_to)) | map(.in_reply_to)) as $answered
+  | map(select(.author == "user" and (.id | IN($answered[]) | not)))'
+```
+
+Substitute the human's configured `username` for `"user"` if they set one.

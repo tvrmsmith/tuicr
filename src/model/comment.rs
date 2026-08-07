@@ -171,6 +171,14 @@ pub struct Comment {
     /// rehydrates as `"user"`.
     #[serde(default = "default_author")]
     pub author: String,
+    /// The id of the comment this one answers, when it was written as a
+    /// reply. Local-only threading for the agent loop: it lets a caller tell
+    /// which comments have been responded to without guessing from a shared
+    /// anchor. `None` for top-level comments and for session JSON predating
+    /// this field. Ignored by forge submit — replies post as ordinary
+    /// comments at the parent's anchor.
+    #[serde(default)]
+    pub in_reply_to: Option<String>,
     /// Where this comment sits in its remote forge lifecycle. Old session
     /// JSON predates this field and rehydrates as `LocalDraft`.
     #[serde(default)]
@@ -205,6 +213,7 @@ impl Comment {
             side,
             line_range: None,
             author: default_author(),
+            in_reply_to: None,
             lifecycle_state: CommentLifecycleState::default(),
             remote_review_id: None,
             remote_comment_id: None,
@@ -228,6 +237,7 @@ impl Comment {
             side,
             line_range: Some(line_range),
             author: default_author(),
+            in_reply_to: None,
             lifecycle_state: CommentLifecycleState::default(),
             remote_review_id: None,
             remote_comment_id: None,
@@ -240,6 +250,14 @@ impl Comment {
     /// the existing `Comment::new` call sites can stay untouched.
     pub fn with_author(mut self, author: impl Into<String>) -> Self {
         self.author = author.into();
+        self
+    }
+
+    /// Builder: mark this comment as a reply to `parent_id`. Set by
+    /// `tuicr review add --reply-to`, which also anchors the reply at the
+    /// parent's target.
+    pub fn with_in_reply_to(mut self, parent_id: impl Into<String>) -> Self {
+        self.in_reply_to = Some(parent_id.into());
         self
     }
 

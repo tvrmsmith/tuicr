@@ -230,6 +230,12 @@ reviews for the current checkout, so you can resume one by picking it instead of
 retyping the commit range it was opened with. Open it with `:sessions` or cycle
 to it with `Tab`.
 
+Every comment carries the `author` that wrote it, and `tuicr review add
+--reply-to <comment-id>` records an answer to a specific comment, anchored at
+that comment's file and line. Both fields are emitted by `tuicr review
+comments`, so an agent polling a session can tell the human's feedback from its
+own replies and see which comments it has already answered.
+
 ## Library API
 
 tuicr also exposes a Rust library API for tools that want to build on top of its
