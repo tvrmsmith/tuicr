@@ -53,11 +53,12 @@ no multi-membership.
     single entry keyed by the new path, so there is no second half to place.
     The rule stands as a constraint on any representation that splits a rename
     into a delete and an add — that representation is wrong, not a case to
-    reconcile afterwards. It needs no pass; see `a_rename_is_one_file_in_one_group`.
+    reconcile afterwards. It needs no pass; see `a_rename_is_one_file_in_the_changeset`.
 
 ## Ambiguous assignments
 
-Every file still lands in exactly one group — rule 1's strict partition holds
+Every file still lands in exactly one group — the strict partition assumed
+above, before the numbered rules, holds
 unconditionally. But where the call was close, the engine records the
 assignment it made alongside the alternative it rejected:
 
