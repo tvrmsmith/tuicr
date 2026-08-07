@@ -140,7 +140,22 @@ The command emits JSON. Each comment includes fields like:
 - `side`
 - `comment_type`
 - `lifecycle_state`
+- `author`
+- `in_reply_to`
 - `content`
+
+`author` tells the user's comments from your own: the user's default to `user`
+(or their configured username), while yours carry whatever `--username` you
+passed. `in_reply_to` is the id of the comment a reply answers, or `null`.
+
+Together they give you the set of comments still needing a response, without
+re-reading your own replies as fresh feedback:
+
+```bash
+tuicr review comments --repo /path/to/repo --session <slug> | jq '
+  (map(select(.in_reply_to)) | map(.in_reply_to)) as $answered
+  | map(select(.author != "<your username>" and (.id | IN($answered[]) | not)))'
+```
 
 Treat these comments as the user's review feedback:
 
@@ -191,6 +206,18 @@ tuicr review add --repo /path/to/repo --session <slug> \
   --type suggestion \
   --username "Codex" \
   "Consider splitting this file-level concern into a helper."
+```
+
+Reply to a specific comment with `--reply-to <comment-id>`, taking the id from
+`tuicr review comments`. The reply is anchored at its parent automatically, so
+do not pass target flags with it. Reply to each comment you address — that is
+what lets you and the user see what has been handled:
+
+```bash
+tuicr review add --repo /path/to/repo --session <slug> \
+  --reply-to 79c9b3e1-0a7a-4efe-9d43-f7085d7c1a82 \
+  --username "Codex" \
+  "Fixed: handled the empty case."
 ```
 
 Omit `--target-file` for a review-level comment. Add `--end-line` for a range

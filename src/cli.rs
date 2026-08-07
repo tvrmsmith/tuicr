@@ -240,6 +240,16 @@ pub enum ReviewCommand {
         #[arg(long, value_name = "NAME")]
         username: Option<String>,
 
+        /// Id of the comment this one answers (from `tuicr review comments`).
+        /// The reply is anchored at the parent's file/line, so the target
+        /// flags are rejected alongside it.
+        #[arg(
+            long = "reply-to",
+            value_name = "COMMENT_ID",
+            conflicts_with_all = ["file", "line", "end_line"]
+        )]
+        reply_to: Option<String>,
+
         /// Comment text.
         #[arg(
             value_name = "COMMENT",
@@ -968,9 +978,57 @@ mod tests {
                 end_line: None,
                 side: LineSideArg::Old,
                 username: None,
+                reply_to: None,
                 content: Some("Handle the empty case".to_string()),
             })
         );
+    }
+
+    #[test]
+    fn should_parse_review_add_reply_to() {
+        let parsed = parse_for_test(&[
+            "tuicr",
+            "review",
+            "add",
+            "--session",
+            "agavra/tuicr@main/worktree",
+            "--reply-to",
+            "79c9b3e1-0a7a-4efe-9d43-f7085d7c1a82",
+            "--username",
+            "claude-agent",
+            "Fixed.",
+        ])
+        .expect("parse should succeed");
+
+        assert!(matches!(
+            parsed.review_command,
+            Some(ReviewCommand::Add { reply_to: Some(id), .. })
+                if id == "79c9b3e1-0a7a-4efe-9d43-f7085d7c1a82"
+        ));
+    }
+
+    #[test]
+    fn should_reject_reply_to_alongside_a_target() {
+        // A reply is anchored at its parent, so naming a target as well is
+        // either redundant or a contradiction. Reject both cases.
+        for target in [
+            vec!["--target-file", "src/main.rs"],
+            vec!["--target-file", "src/main.rs", "--line", "42"],
+        ] {
+            let mut args = vec![
+                "tuicr",
+                "review",
+                "add",
+                "--session",
+                "agavra/tuicr@main/worktree",
+                "--reply-to",
+                "parent-id",
+            ];
+            args.extend(target);
+            args.push("Fixed.");
+
+            assert!(parse_for_test(&args).is_err());
+        }
     }
 
     #[test]
@@ -1000,6 +1058,7 @@ mod tests {
                 end_line: None,
                 side: LineSideArg::New,
                 username: None,
+                reply_to: None,
                 content: None,
             })
         );

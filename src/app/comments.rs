@@ -804,6 +804,7 @@ impl App {
                 content,
                 comment_type: self.comment_type.clone(),
                 author: self.username.clone(),
+                in_reply_to: None,
                 commit_id: None,
             };
             message = match add_comment_to_session(&mut self.session, request) {
@@ -840,6 +841,7 @@ impl App {
                 content,
                 comment_type: self.comment_type.clone(),
                 author: self.username.clone(),
+                in_reply_to: None,
                 commit_id: self.commit_id_for_new_comment(),
             };
             message = match add_comment_to_session(&mut self.session, request) {
