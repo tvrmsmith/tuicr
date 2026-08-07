@@ -84,11 +84,35 @@ check_repo() {
   return 1
 }
 
-check_tuicr_running() {
-  # Zellij has no panes-list CLI like tmux. Fall back to a process check.
-  if pgrep -x tuicr &> /dev/null; then
-    return 0
+check_lsof() {
+  if ! command -v lsof &> /dev/null; then
+    log_error "lsof not found on PATH"
+    return 1
   fi
+  return 0
+}
+
+# True only when a tuicr is already reviewing *this* repository. Zellij has no
+# panes-list CLI like tmux, so this is a process check — but a machine-wide one
+# reports success because of a tuicr in some unrelated repo and sends the user
+# hunting for a pane that does not exist here. The spawned pane runs tuicr with
+# the repository as its working directory, so that is what is matched.
+check_tuicr_running() {
+  local target_dir="$1"
+  local pid cwd
+
+  while read -r pid; do
+    [[ -n "$pid" ]] || continue
+    cwd=$(lsof -a -p "$pid" -d cwd -Fn 2>/dev/null | sed -n 's/^n//p')
+    if [[ -z "$cwd" ]]; then
+      log_warn "Cannot read the working directory of running tuicr $pid; assuming it is elsewhere"
+      continue
+    fi
+    if [[ "$cwd" == "$target_dir" ]]; then
+      return 0
+    fi
+  done < <(pgrep -x tuicr 2>/dev/null)
+
   return 1
 }
 
@@ -107,19 +131,26 @@ launch_tuicr_pane() {
   log_info "Launching tuicr in $TUICR_PANE_DIRECTION-split pane"
   log_info "Directory: $target_dir"
 
-  # FIFO for blocking until tuicr exits (zellij has no wait-for primitive)
-  local fifo
+  # FIFO for blocking until tuicr exits (zellij has no wait-for primitive).
+  # Removed from a trap rather than after the read: every path out of here can
+  # leave it behind otherwise, including a `zellij run` that never spawns.
   fifo=$(mktemp -u "/tmp/tuicr-fifo.XXXXXX")
   mkfifo "$fifo"
+  trap 'rm -f "$fifo"' EXIT
 
   # Optional --stdout capture
   local output_file=""
-  local tuicr_cmd="$(command -v tuicr)"
+  local tuicr_bin quoted_tuicr tuicr_cmd
+  tuicr_bin="$(command -v tuicr)"
+  printf -v quoted_tuicr '%q' "$tuicr_bin"
+  tuicr_cmd="$quoted_tuicr"
   local use_stdout=false
 
   if check_tuicr_stdout_support; then
     output_file=$(mktemp /tmp/tuicr-output.XXXXXX)
-    tuicr_cmd="$tuicr_cmd --stdout > '$output_file'"
+    local quoted_output
+    printf -v quoted_output '%q' "$output_file"
+    tuicr_cmd="$quoted_tuicr --stdout > $quoted_output"
     use_stdout=true
     log_info "Using --stdout mode (output will be captured)"
   else
@@ -136,7 +167,20 @@ launch_tuicr_pane() {
     zellij_args+=("--direction" "$TUICR_PANE_DIRECTION")
   fi
 
-  zellij_args+=(-- sh -c "$tuicr_cmd; echo done > '$fifo'")
+  # The pane inherits this wrapper's working directory, so a target directory
+  # passed as an argument has to be entered explicitly — otherwise tuicr reviews
+  # wherever the wrapper was invoked from, and the already-reviewing check above
+  # matches a pane that is looking at a different repository. Every path this
+  # wrapper interpolates into the `sh -c` string goes through `%q` first, so one
+  # holding a quote or a space cannot break out of the command it belongs to.
+  local quoted_dir quoted_fifo
+  printf -v quoted_dir '%q' "$target_dir"
+  printf -v quoted_fifo '%q' "$fifo"
+
+  # The FIFO carries tuicr's exit status, not just the fact that it exited: the
+  # pane is closed by --close-on-exit, so this write is the only place the status
+  # can be read from.
+  zellij_args+=(-- sh -c "cd $quoted_dir && $tuicr_cmd; echo \$? > $quoted_fifo")
 
   "$ZELLIJ_BIN" run\
     "${zellij_args[@]}"
@@ -145,11 +189,22 @@ launch_tuicr_pane() {
   log_info "tuicr is running in a $TUICR_PANE_DIRECTION pane"
   log_info "Waiting for tuicr to exit..."
 
-  # Block until the spawned command writes to the FIFO
-  read -r _ < "$fifo"
-  rm -f "$fifo"
+  # Block until the spawned command writes to the FIFO. A pane that dies without
+  # writing closes the other end, and the read then fails — which under `set -e`
+  # would abort the script here rather than reporting the failure, so the failure
+  # is handled instead of tested afterwards.
+  local status
+  if ! read -r status < "$fifo"; then
+    log_error "The tuicr pane exited without reporting a status"
+    status=1
+  fi
+  [[ "$status" =~ ^[0-9]+$ ]] || status=1
 
-  log_info "tuicr finished"
+  if [[ "$status" -eq 0 ]]; then
+    log_info "tuicr finished"
+  else
+    log_error "tuicr exited with status $status"
+  fi
 
   # Output captured instructions if --stdout was used
   if [[ "$use_stdout" == true ]] && [[ -f "$output_file" ]]; then
@@ -166,6 +221,8 @@ launch_tuicr_pane() {
   else
     log_info "If you exported instructions, they are in your clipboard - paste them here"
   fi
+
+  return "$status"
 }
 
 main() {
@@ -180,9 +237,15 @@ main() {
     exit 1
   fi
 
-  # Determine target directory
+  if ! check_lsof; then
+    exit 1
+  fi
+
+  # Determine target directory. Physical path: lsof reports a process's working
+  # directory with symlinks resolved, so a logical `pwd` through a symlinked
+  # checkout would never compare equal in check_tuicr_running.
   local target_dir="${1:-.}"
-  target_dir=$(cd "$target_dir" && pwd)  # Get absolute path
+  target_dir=$(cd "$target_dir" && pwd -P)
 
   # Verify it's a git or jj repo
   if ! check_repo "$target_dir"; then
@@ -203,14 +266,19 @@ main() {
     exit 1
   fi
 
-  # Check if tuicr is already running
-  if check_tuicr_running; then
-    log_warn "tuicr is already running"
-    log_info "Switch to its pane with Alt-arrow keys (default zellij binding)"
-    exit 0
+  # Check if tuicr is already reviewing this repository
+  if check_tuicr_running "$target_dir"; then
+    log_error "tuicr is already reviewing $target_dir"
+    echo ""
+    echo "Switch to its pane with Alt-arrow keys (default zellij binding), or quit"
+    echo "it there and run /tuicr again. To review a different repository, pass its"
+    echo "directory:"
+    echo ""
+    echo "  $(basename "$0") <directory>"
+    exit 1
   fi
 
-  # Launch tuicr in a split pane
+  # Launch tuicr in a split pane, and exit with what tuicr exited with
   launch_tuicr_pane "$target_dir"
 }
 
