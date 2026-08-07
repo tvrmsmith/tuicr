@@ -249,15 +249,23 @@ fn main() -> anyhow::Result<()> {
     app.commit_order = commit_order;
     app.commit_selection_start = commit_selection;
 
-    if let Err(e) = app.ensure_ephemeral_session_file() {
-        startup_warnings.push(format!("Failed to initialize review session file: {e}"));
+    let mut session_registered = true;
+    match app.ensure_ephemeral_session_file() {
+        Ok(_) => session_registered = app.has_persisted_session_file(),
+        Err(e) => startup_warnings.push(format!("Failed to initialize review session file: {e}")),
     }
 
     // Announce the slug for the active session so agents and wrapper scripts
     // can discover it without parsing the markdown export. This is emitted to
     // stderr before the alt-screen swap so the line stays on the user's
     // scrollback after tuicr exits.
-    if let Some(slug) = app.session_slug() {
+    //
+    // Suppressed when no session file exists yet — bare `tuicr` on the target
+    // selector. The slug is still derivable there, but it is the pre-selection
+    // one and choosing a target changes it, so announcing would hand agents a
+    // slug that never receives a comment. They use `review list` and `active`
+    // instead.
+    if session_registered && let Some(slug) = app.session_slug() {
         eprintln!("tuicr-session: {slug}");
     }
 

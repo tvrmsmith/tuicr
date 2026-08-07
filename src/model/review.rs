@@ -116,6 +116,17 @@ pub struct ReviewSession {
     pub commit_selection_range: Option<(usize, usize)>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+    /// How many times the human has released this session with `:send`.
+    /// Monotonic, and the only unambiguous "the batch is ready" signal a
+    /// polling agent has: `updated_at` moves on every comment keystroke and
+    /// on every idempotent `:w`, so it cannot punctuate a review. `0` means
+    /// nothing has been released yet. Old session JSON rehydrates as `0`.
+    #[serde(default)]
+    pub release_count: u32,
+    /// When the most recent `:send` happened, or `None` if the session has
+    /// never been released.
+    #[serde(default)]
+    pub released_at: Option<DateTime<Utc>>,
     #[serde(default)]
     pub review_comments: Vec<Comment>,
     pub files: HashMap<PathBuf, FileReview>,
@@ -143,6 +154,8 @@ impl ReviewSession {
             commit_selection_range: None,
             created_at: now,
             updated_at: now,
+            release_count: 0,
+            released_at: None,
             review_comments: Vec::new(),
             files: HashMap::new(),
             session_notes: None,
@@ -196,6 +209,57 @@ impl ReviewSession {
 
     pub fn get_file_mut(&mut self, path: &PathBuf) -> Option<&mut FileReview> {
         self.files.get_mut(path)
+    }
+
+    /// Every comment in the session, review-level and per-file, in no
+    /// particular order.
+    pub fn comments_mut(&mut self) -> impl Iterator<Item = &mut Comment> {
+        self.review_comments
+            .iter_mut()
+            .chain(self.files.values_mut().flat_map(|file| {
+                file.file_comments
+                    .iter_mut()
+                    .chain(file.line_comments.values_mut().flatten())
+            }))
+    }
+
+    /// Every comment in the session, review-level and per-file, in no
+    /// particular order.
+    pub fn comments(&self) -> impl Iterator<Item = &Comment> {
+        self.review_comments
+            .iter()
+            .chain(self.files.values().flat_map(|file| {
+                file.file_comments
+                    .iter()
+                    .chain(file.line_comments.values().flatten())
+            }))
+    }
+
+    /// Comments written since the last release.
+    pub fn unreleased_count(&self) -> usize {
+        self.comments().filter(|c| !c.is_released()).count()
+    }
+
+    /// Publish the current batch: bump `release_count`, stamp every
+    /// unreleased comment with the new batch number, and record the time.
+    /// Returns how many comments the bump admitted.
+    ///
+    /// The counter moves even when nothing is unreleased. `:send` means "look
+    /// now", and "I am done, no further notes" is a message the human needs to
+    /// be able to send after answering an agent's replies — that was the
+    /// go-idle-waiting-on-a-human failure the loop experiment recorded.
+    pub fn release(&mut self) -> usize {
+        self.release_count += 1;
+        let batch = self.release_count;
+        self.released_at = Some(Utc::now());
+        let mut released = 0;
+        for comment in self.comments_mut() {
+            if comment.released_in.is_none() {
+                comment.released_in = Some(batch);
+                released += 1;
+            }
+        }
+        released
     }
 
     pub fn has_comments(&self) -> bool {
@@ -508,6 +572,93 @@ mod tests {
         "files": {},
         "session_notes": null
     }"##;
+
+    mod release_boundary {
+        use super::*;
+
+        /// A session with one review-level comment and one line comment, so a
+        /// release has to reach both storage locations.
+        fn session_with_two_comments() -> ReviewSession {
+            let mut session = test_session();
+            let path = PathBuf::from("src/main.rs");
+            session.add_file(path.clone(), FileStatus::Modified, 1);
+            session.review_comments.push(Comment::new(
+                "overall".to_string(),
+                CommentType::None,
+                None,
+            ));
+            session.get_file_mut(&path).unwrap().add_line_comment(
+                42,
+                Comment::new("here".to_string(), CommentType::None, None),
+            );
+            session
+        }
+
+        #[test]
+        fn should_stamp_every_unreleased_comment_with_the_new_batch_number() {
+            // given
+            let mut session = session_with_two_comments();
+            assert_eq!(session.unreleased_count(), 2);
+            // when
+            let released = session.release();
+            // then
+            assert_eq!(released, 2);
+            assert_eq!(session.release_count, 1);
+            assert!(session.released_at.is_some());
+            assert!(session.comments().all(|c| c.released_in == Some(1)));
+            assert_eq!(session.unreleased_count(), 0);
+        }
+
+        #[test]
+        fn should_leave_earlier_batches_alone_on_a_second_release() {
+            // given a released session that gains one more comment
+            let mut session = session_with_two_comments();
+            session.release();
+            session
+                .review_comments
+                .push(Comment::new("late".to_string(), CommentType::None, None));
+            // when
+            let released = session.release();
+            // then only the new comment joins batch 2
+            assert_eq!(released, 1);
+            assert_eq!(session.release_count, 2);
+            assert_eq!(
+                session
+                    .comments()
+                    .filter(|c| c.released_in == Some(1))
+                    .count(),
+                2
+            );
+            assert_eq!(
+                session
+                    .comments()
+                    .filter(|c| c.released_in == Some(2))
+                    .count(),
+                1
+            );
+        }
+
+        #[test]
+        fn should_bump_the_counter_even_when_nothing_is_unreleased() {
+            // given a session with nothing new to say
+            let mut session = session_with_two_comments();
+            session.release();
+            // when the human sends anyway — "that is all, no further notes"
+            let released = session.release();
+            // then the poller still sees the counter move
+            assert_eq!(released, 0);
+            assert_eq!(session.release_count, 2);
+        }
+
+        #[test]
+        fn should_default_release_state_for_legacy_session_json() {
+            // given a session JSON predating the release boundary
+            let session: ReviewSession = serde_json::from_str(LEGACY_SESSION_JSON).unwrap();
+            // then it reads as never released
+            assert_eq!(session.release_count, 0);
+            assert_eq!(session.released_at, None);
+        }
+    }
 
     #[test]
     fn should_deserialize_pre_pr3_session_without_breakage() {

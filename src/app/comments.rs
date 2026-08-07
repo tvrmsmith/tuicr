@@ -726,8 +726,7 @@ impl App {
                 .iter_mut()
                 .find(|c| &c.id == editing_id)
             {
-                comment.content = content.clone();
-                comment.comment_type = self.comment_type.clone();
+                comment.apply_edit(content.clone(), self.comment_type.clone());
                 message = "Review comment updated".to_string();
             } else if let Some(path) = self.current_file_path().cloned()
                 && let Some(review) = self.session.get_file_mut(&path)
@@ -737,8 +736,7 @@ impl App {
                     .iter_mut()
                     .find(|c| &c.id == editing_id)
                 {
-                    comment.content = content.clone();
-                    comment.comment_type = self.comment_type.clone();
+                    comment.apply_edit(content.clone(), self.comment_type.clone());
                     message = "Comment updated".to_string();
                 } else {
                     // If not found in file comments, search in line comments
@@ -751,8 +749,7 @@ impl App {
                     }
 
                     if let Some(comment) = found_comment {
-                        comment.content = content.clone();
-                        comment.comment_type = self.comment_type.clone();
+                        comment.apply_edit(content.clone(), self.comment_type.clone());
                         message = if let Some((line, _)) = self.comment_line {
                             format!("Comment on line {line} updated")
                         } else {

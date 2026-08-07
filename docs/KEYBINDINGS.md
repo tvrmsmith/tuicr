@@ -163,6 +163,7 @@ In command mode,
 | `:{N}` | Jump to new-side line N in current file |
 | `:o{N}` | Jump to old-side line N in current file (matches deletions) |
 | `:w` | Save session |
+| `:send` (`:release`) | Release this batch of comments to a polling agent |
 | `:e` (`:reload`) | Reload diff files |
 | `:edit` | Open focused file in `$EDITOR` |
 | `:clip` (`:export`) | Copy review to clipboard |

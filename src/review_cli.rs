@@ -577,6 +577,10 @@ struct SessionSummaryOutput {
     comment_count: usize,
     reviewed_count: usize,
     file_count: usize,
+    unreleased_count: usize,
+    release_count: u32,
+    released_at: Option<String>,
+    superseded_by: Option<String>,
     anchor: String,
     active: bool,
 }
@@ -591,6 +595,10 @@ impl From<SessionSummary> for SessionSummaryOutput {
             comment_count: summary.comment_count,
             reviewed_count: summary.reviewed_count,
             file_count: summary.file_count,
+            unreleased_count: summary.unreleased_count,
+            release_count: summary.release_count,
+            released_at: summary.released_at.map(|at| at.to_rfc3339()),
+            superseded_by: summary.superseded_by,
             anchor: summary.anchor,
             active: summary.active,
         }
@@ -607,6 +615,7 @@ struct CommentOutput {
     side: Option<&'static str>,
     author: String,
     in_reply_to: Option<String>,
+    released_in: Option<u32>,
     comment_type: String,
     lifecycle_state: &'static str,
     created_at: String,
@@ -658,6 +667,7 @@ impl CommentOutput {
             side: side_id(side),
             author: comment.author.clone(),
             in_reply_to: comment.in_reply_to.clone(),
+            released_in: comment.released_in,
             comment_type: comment.comment_type.id().to_string(),
             lifecycle_state: lifecycle_id(comment.lifecycle_state),
             created_at: comment.created_at.to_rfc3339(),
@@ -1085,5 +1095,100 @@ mod tests {
         .unwrap_err();
 
         assert!(matches!(err, TuicrError::InvalidInput(_)));
+    }
+
+    /// The single session in `store` for `repo`, serialized exactly as
+    /// `review list` emits it.
+    fn listed_json(store: &ReviewStore, repo: &Path) -> serde_json::Value {
+        let summaries = store.list_sessions_for_repo(repo).unwrap();
+        assert_eq!(summaries.len(), 1);
+        serde_json::to_value(SessionSummaryOutput::from(
+            summaries.into_iter().next().unwrap(),
+        ))
+        .unwrap()
+    }
+
+    #[test]
+    fn should_emit_release_state_on_list_and_comments() {
+        let temp = tempdir().unwrap();
+        let (store, session_ref, _parent) = session_with_human_comment(&temp);
+        let repo = temp.path().join("repo");
+        let session_arg = session_ref.path().display().to_string();
+
+        // Before :send the comment is present but unreleased, so an agent
+        // that respects the boundary knows not to act on it yet.
+        let mut out = Vec::new();
+        show_comments(&session_arg, &repo, &mut out).unwrap();
+        let comments: serde_json::Value = serde_json::from_slice(&out).unwrap();
+        assert_eq!(comments[0]["released_in"], serde_json::Value::Null);
+
+        // `list_sessions` reads the platform reviews dir, so the listing shape
+        // is checked through the output type the command serializes.
+        let listed = listed_json(&store, &repo);
+        assert_eq!(listed["release_count"], 0);
+        assert_eq!(listed["unreleased_count"], 1);
+        assert_eq!(listed["released_at"], serde_json::Value::Null);
+        assert_eq!(listed["superseded_by"], serde_json::Value::Null);
+
+        // After :send the batch number is on the comment and the counter has
+        // moved on the listing.
+        let mut session = store.get_review(&session_ref).unwrap();
+        session.release();
+        store.save_review(&session).unwrap();
+
+        let mut out = Vec::new();
+        show_comments(&session_arg, &repo, &mut out).unwrap();
+        let comments: serde_json::Value = serde_json::from_slice(&out).unwrap();
+        assert_eq!(comments[0]["released_in"], 1);
+        // The release filter composes with the author/reply fields rather
+        // than replacing them.
+        assert_eq!(comments[0]["author"], "user");
+        assert_eq!(comments[0]["in_reply_to"], serde_json::Value::Null);
+
+        let listed = listed_json(&store, &repo);
+        assert_eq!(listed["release_count"], 1);
+        assert_eq!(listed["unreleased_count"], 0);
+        assert!(listed["released_at"].is_string());
+    }
+
+    #[test]
+    fn should_return_unreleased_comments_alongside_released_ones() {
+        let temp = tempdir().unwrap();
+        let (store, session_ref, _parent) = session_with_human_comment(&temp);
+        let repo = temp.path().join("repo");
+
+        let mut session = store.get_review(&session_ref).unwrap();
+        session.release();
+        store.save_review(&session).unwrap();
+        store
+            .add_comment(
+                &session_ref,
+                AddCommentRequest {
+                    target: CommentTarget::File {
+                        path: PathBuf::from("src/main.rs"),
+                    },
+                    content: "still thinking".to_string(),
+                    comment_type: CommentType::None,
+                    author: comment::DEFAULT_AUTHOR.to_string(),
+                    in_reply_to: None,
+                    commit_id: None,
+                },
+            )
+            .unwrap();
+
+        // No default filtering: the CLI hands back the whole session and the
+        // caller decides what the release state means.
+        let mut out = Vec::new();
+        show_comments(&session_ref.path().display().to_string(), &repo, &mut out).unwrap();
+        let comments: serde_json::Value = serde_json::from_slice(&out).unwrap();
+        assert_eq!(comments.as_array().unwrap().len(), 2);
+        let states: Vec<_> = comments
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|c| c["released_in"].clone())
+            .collect();
+        assert!(states.contains(&serde_json::json!(1)));
+        assert!(states.contains(&serde_json::Value::Null));
     }
 }

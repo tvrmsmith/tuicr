@@ -157,6 +157,7 @@ Repository-managed agent integrations:
 
 - Persisted review state with `files: HashMap<PathBuf, FileReview>`
 - Each `FileReview` has: `reviewed: bool`, `reviewed_hunks: BTreeSet<String>`, `file_comments: Vec<Comment>`, `line_comments: HashMap<u32, Vec<Comment>>`
+- Release boundary: `release_count` (monotonic, bumped by `:send`), `released_at`, and per-comment `released_in: Option<u32>`. `ReviewSession::release()` stamps every unreleased comment with the new batch. `Comment::apply_edit()` clears `released_in` so an edited comment republishes. All three fields are `#[serde(default)]` for old session JSON.
 
 **ReviewStore** (`src/review_store.rs`):
 
@@ -176,13 +177,20 @@ Repository-managed agent integrations:
 3. **Input**: `crossterm` events → `map_key_to_action` → match on Action in main loop
 4. **Comments**: `App::save_comment()` builds an `AddCommentRequest` and calls `add_comment_to_session()` so TUI and library callers share insertion behavior. The TUI creates a persisted session file as soon as a review session becomes active, so `tuicr review add` can target it immediately. Successful comment submits autosave the session using a locked, atomic write that merges externally added comments first.
 5. **Review CLI**: `tuicr review list|add|comments` exits before TUI startup, uses `ReviewStore`, and always emits JSON; `review list` includes `active: true` for currently open TUI sessions and a `kind` (`local`/`pr`) per session, and `review add --input` accepts JSON literal, `@file`, or stdin payloads.
+   `review list` also carries the release state — `release_count`,
+   `released_at`, `unreleased_count`, denormalized into the manifest's
+   `DisplayMetadata` so listing never opens a session file — plus
+   `superseded_by`, derived per listing (never stored) by pointing an idle
+   local session at the live session on the same canonical checkout. `review
+   comments` carries `released_in` per comment and never filters on it, so
+   release composes with the `author`/`in_reply_to` join client-side.
    Every emitted comment carries `author` (from `--username`, config
    `username`, or the `user` default) and `in_reply_to`; `review add
    --reply-to <comment-id>` writes a reply anchored at its parent's
    file/line/side, which is how a polling agent tells human feedback from its
    own answers. Replies are local threading only — not a lifecycle state, and
    ignored by forge submit. `--repo` is a _selector_: a checkout path (matches its local sessions + PR sessions for its `origin` repo) or a forge coordinate like `owner/repo` / a repo URL (matches local + PR sessions by owner/repo, parsed from each session's slug). PR sessions thus surface by naming the repo; `review list --all` dumps everything. Resolve a PR session with its emitted slug (`gh:owner/repo/pr/N`), which is self-contained and needs no `--repo`.
-6. **Persistence**: active TUI sessions, comment submit, and `:w` save the session JSON to `~/.local/share/tuicr/reviews/`; library callers use `ReviewStore`. Open TUI sessions are also recorded in `active_sessions.json` beside `index.json` with pid, slug, path, and last-seen timestamp. TUI-created empty session files are deleted on normal exit if they still contain no comments and no reviewed files.
+6. **Persistence**: active TUI sessions, comment submit, and `:w` save the session JSON to `~/.local/share/tuicr/reviews/`; library callers use `ReviewStore`. `:w` is idempotent and never releases; `:send` (alias `:release`) publishes the batch via `App::release_comments()` and saves. Open TUI sessions are also recorded in `active_sessions.json` beside `index.json` with pid, slug, path, and last-seen timestamp; `active` is proven by `process_is_running(pid)`, so a killed TUI stops listing as attachable. A session is not registered — and no `tuicr-session:` slug is announced — until it has files, so the bare target selector never publishes an empty attach target. TUI-created empty session files are deleted on normal exit if they still contain no comments and no reviewed files.
 7. **Reload diff/session**: `:e` reloads persisted comments/review state, then re-runs VCS diff loading and reapplies `.tuicrignore` filtering to refresh displayed files
 8. **Export**: `:clip` (alias `:export`) calls `export_to_clipboard()`, generating markdown and copying it to the clipboard (or stdout with `--stdout` flag)
 
