@@ -179,6 +179,14 @@ pub struct Comment {
     /// comments at the parent's anchor.
     #[serde(default)]
     pub in_reply_to: Option<String>,
+    /// The release batch this comment was published in, or `None` while it is
+    /// still unreleased. Set by `:send` (see `ReviewSession::release`), which
+    /// stamps every unreleased comment with the session's new
+    /// `release_count`. Editing a released comment clears this, so the next
+    /// `:send` re-publishes it — see [`Comment::apply_edit`]. Old session JSON
+    /// predates this field and rehydrates as `None`.
+    #[serde(default)]
+    pub released_in: Option<u32>,
     /// Where this comment sits in its remote forge lifecycle. Old session
     /// JSON predates this field and rehydrates as `LocalDraft`.
     #[serde(default)]
@@ -214,6 +222,7 @@ impl Comment {
             line_range: None,
             author: default_author(),
             in_reply_to: None,
+            released_in: None,
             lifecycle_state: CommentLifecycleState::default(),
             remote_review_id: None,
             remote_comment_id: None,
@@ -238,6 +247,7 @@ impl Comment {
             line_range: Some(line_range),
             author: default_author(),
             in_reply_to: None,
+            released_in: None,
             lifecycle_state: CommentLifecycleState::default(),
             remote_review_id: None,
             remote_comment_id: None,
@@ -268,6 +278,22 @@ impl Comment {
     pub fn with_commit_id(mut self, commit_id: impl Into<String>) -> Self {
         self.commit_id = Some(commit_id.into());
         self
+    }
+
+    /// Apply an in-place edit from the comment editor. Rewriting the text
+    /// un-releases the comment: a poller that already read the old wording
+    /// would otherwise never be told it changed, so the edited comment
+    /// rejoins the unreleased set and the next `:send` republishes it.
+    pub fn apply_edit(&mut self, content: String, comment_type: CommentType) {
+        self.content = content;
+        self.comment_type = comment_type;
+        self.released_in = None;
+    }
+
+    /// True once this comment has been published to a polling agent by
+    /// `:send`.
+    pub fn is_released(&self) -> bool {
+        self.released_in.is_some()
     }
 
     /// True if this comment has been pushed/submitted to the forge and is
@@ -551,6 +577,37 @@ mod tests {
             // and the rest of the comment survived
             assert_eq!(comment.id, "legacy");
             assert_eq!(comment.content, "pre-pr5");
+        }
+
+        #[test]
+        fn should_default_released_in_to_none_for_legacy_comment_json() {
+            // given — JSON saved before the release boundary existed.
+            let json = r#"{
+                "id": "legacy",
+                "content": "pre-release-boundary",
+                "comment_type": "note",
+                "created_at": "2024-01-01T00:00:00Z",
+                "line_context": null
+            }"#;
+            // when
+            let comment: Comment = serde_json::from_str(json).unwrap();
+            // then it reads as unreleased, so the next :send publishes it.
+            assert_eq!(comment.released_in, None);
+            assert!(!comment.is_released());
+        }
+
+        #[test]
+        fn should_unrelease_a_comment_when_its_text_is_edited() {
+            // given a comment already published in batch 1
+            let mut comment = Comment::new("old".to_string(), CommentType::None, None);
+            comment.released_in = Some(1);
+            // when the human rewrites it
+            comment.apply_edit("new wording".to_string(), CommentType::from_id("issue"));
+            // then it rejoins the unreleased set — a poller that read the old
+            // wording is told again by the next :send.
+            assert_eq!(comment.content, "new wording");
+            assert_eq!(comment.comment_type, CommentType::from_id("issue"));
+            assert_eq!(comment.released_in, None);
         }
     }
 }

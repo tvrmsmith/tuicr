@@ -62,6 +62,16 @@ pub struct DisplayMetadata {
     pub comment_count: usize,
     pub reviewed_count: usize,
     pub file_count: usize,
+    /// How many comments have not been released with `:send` yet.
+    #[serde(default)]
+    pub unreleased_count: usize,
+    /// Mirrors `ReviewSession::release_count`, cached so `review list` can
+    /// report the release boundary without opening every session file.
+    #[serde(default)]
+    pub release_count: u32,
+    /// Mirrors `ReviewSession::released_at`.
+    #[serde(default)]
+    pub released_at: Option<DateTime<Utc>>,
     /// Slug anchor segment as it appears in the slug (branch name or short
     /// SHA). Cached so listings don't need to re-parse the slug.
     pub anchor: String,
@@ -204,6 +214,9 @@ pub fn entry_from_session(
             comment_count,
             reviewed_count,
             file_count,
+            unreleased_count: session.unreleased_count(),
+            release_count: session.release_count,
+            released_at: session.released_at,
             anchor,
         },
     }
@@ -288,6 +301,7 @@ mod tests {
                 reviewed_count: 1,
                 file_count: 4,
                 anchor: anchor.to_string(),
+                ..DisplayMetadata::default()
             },
         }
     }
@@ -302,10 +316,8 @@ mod tests {
             updated_at,
             canonical_repo_path: None,
             display: DisplayMetadata {
-                comment_count: 0,
-                reviewed_count: 0,
-                file_count: 0,
                 anchor: format!("pr/{number}"),
+                ..DisplayMetadata::default()
             },
         }
     }
