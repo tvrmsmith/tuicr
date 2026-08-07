@@ -6,12 +6,12 @@ use crate::forge::traits::{
 use crate::model::FileStatus;
 use crate::vcs::traits::{VcsChangeStatus, VcsType};
 
-struct TestReviewsDir {
+pub(super) struct TestReviewsDir {
     _dir: tempfile::TempDir,
 }
 
 impl TestReviewsDir {
-    fn new() -> Self {
+    pub(super) fn new() -> Self {
         let dir = tempfile::tempdir().expect("failed to create test reviews dir");
         crate::persistence::storage::set_test_reviews_dir(Some(dir.path().to_path_buf()));
         Self { _dir: dir }
@@ -252,6 +252,17 @@ fn build_app_full(
         SessionDiffSource::WorkingTree,
     );
 
+    build_app_from_parts(vcs_info, commits, comment_type_configs, session)
+}
+
+/// Build a test `App` around a caller-supplied session, so sibling test
+/// modules can exercise persistence paths that depend on the session's files.
+pub(super) fn build_app_from_parts(
+    vcs_info: VcsInfo,
+    commits: Vec<CommitInfo>,
+    comment_type_configs: Option<Vec<crate::config::CommentTypeConfig>>,
+    session: ReviewSession,
+) -> App {
     App::build(
         Box::new(DummyVcs {
             info: vcs_info.clone(),

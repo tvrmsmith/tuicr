@@ -38,10 +38,7 @@ impl ReviewStore {
         let reviews_dir = self.reviews_dir()?;
         let entries = storage::list_sessions_for_selector_in_dir(&reviews_dir, selector.as_ref())?;
         let active_paths = storage::active_session_paths_in_dir(&reviews_dir)?;
-        Ok(entries
-            .into_iter()
-            .map(|(slug, entry)| summary_from_entry(&reviews_dir, &active_paths, slug, entry))
-            .collect())
+        Ok(summaries_from_entries(&reviews_dir, &active_paths, entries))
     }
 
     /// List every persisted session, local and PR, newest first. Backs
@@ -50,10 +47,7 @@ impl ReviewStore {
         let reviews_dir = self.reviews_dir()?;
         let entries = storage::list_all_sessions_in_dir(&reviews_dir)?;
         let active_paths = storage::active_session_paths_in_dir(&reviews_dir)?;
-        Ok(entries
-            .into_iter()
-            .map(|(slug, entry)| summary_from_entry(&reviews_dir, &active_paths, slug, entry))
-            .collect())
+        Ok(summaries_from_entries(&reviews_dir, &active_paths, entries))
     }
 
     /// Resolve a PR session to its [`SessionRef`] from a PR slug
@@ -104,14 +98,14 @@ fn summary_from_entry(
     active_paths: &std::collections::HashSet<PathBuf>,
     slug: String,
     entry: ManifestEntry,
-) -> SessionSummary {
+) -> (SessionSummary, Option<PathBuf>) {
     let path = reviews_dir.join(entry.path);
     let active = active_paths.contains(&storage::normalize_path_for_comparison(&path));
     let kind = match entry.kind {
         ManifestKind::Local => SessionKind::Local,
         ManifestKind::Pr { .. } => SessionKind::Pr,
     };
-    SessionSummary {
+    let summary = SessionSummary {
         session_ref: SessionRef::from_path(path),
         slug,
         kind,
@@ -119,9 +113,59 @@ fn summary_from_entry(
         comment_count: entry.display.comment_count,
         reviewed_count: entry.display.reviewed_count,
         file_count: entry.display.file_count,
+        unreleased_count: entry.display.unreleased_count,
+        release_count: entry.display.release_count,
+        released_at: entry.display.released_at,
+        superseded_by: None,
         anchor: entry.display.anchor,
         active,
+    };
+    (summary, entry.canonical_repo_path)
+}
+
+/// Point every idle local session at the live session that replaced it.
+///
+/// A relaunch under different flags (`tuicr` then `tuicr -w`) makes a second
+/// session with a different slug on the same checkout, and the first one keeps
+/// listing as a plausible attach target that will never receive another
+/// comment. A session is superseded when it is not active and some *other*
+/// local session on the same canonical checkout path is; the newest such live
+/// session wins. This is derived per listing, never stored, so closing the
+/// newer TUI un-supersedes the older session on the next call.
+fn apply_superseded_by(summaries: &mut [(SessionSummary, Option<PathBuf>)]) {
+    let live: Vec<(PathBuf, String, DateTime<Utc>)> = summaries
+        .iter()
+        .filter(|(summary, _)| summary.active && summary.kind == SessionKind::Local)
+        .filter_map(|(summary, repo)| {
+            repo.clone()
+                .map(|repo| (repo, summary.slug.clone(), summary.updated_at))
+        })
+        .collect();
+
+    for (summary, repo) in summaries.iter_mut() {
+        if summary.active || summary.kind != SessionKind::Local {
+            continue;
+        }
+        let Some(repo) = repo.as_ref() else { continue };
+        summary.superseded_by = live
+            .iter()
+            .filter(|(live_repo, live_slug, _)| live_repo == repo && live_slug != &summary.slug)
+            .max_by_key(|(_, _, updated_at)| *updated_at)
+            .map(|(_, live_slug, _)| live_slug.clone());
     }
+}
+
+fn summaries_from_entries(
+    reviews_dir: &Path,
+    active_paths: &std::collections::HashSet<PathBuf>,
+    entries: Vec<(String, ManifestEntry)>,
+) -> Vec<SessionSummary> {
+    let mut summaries: Vec<_> = entries
+        .into_iter()
+        .map(|(slug, entry)| summary_from_entry(reviews_dir, active_paths, slug, entry))
+        .collect();
+    apply_superseded_by(&mut summaries);
+    summaries.into_iter().map(|(summary, _)| summary).collect()
 }
 
 /// Opaque reference to a persisted review session.
@@ -166,6 +210,18 @@ pub struct SessionSummary {
     pub comment_count: usize,
     pub reviewed_count: usize,
     pub file_count: usize,
+    /// Comments written since the last `:send`.
+    pub unreleased_count: usize,
+    /// How many batches the human has released with `:send`. A poller watches
+    /// this for movement; `updated_at` cannot serve, since it moves on every
+    /// comment add and on every idempotent `:w`.
+    pub release_count: u32,
+    pub released_at: Option<DateTime<Utc>>,
+    /// Slug of the live session that has taken this one's place, when this
+    /// session is not itself active and another local session on the same
+    /// checkout is. Derived per listing rather than stored, so it clears
+    /// itself the moment the newer TUI closes.
+    pub superseded_by: Option<String>,
     pub anchor: String,
     pub active: bool,
 }
@@ -550,5 +606,132 @@ mod tests {
 
         let listed = store.list_sessions_for_repo(&repo).unwrap();
         assert_eq!(listed[0].comment_count, 1);
+    }
+
+    /// Two sessions on one checkout: a working-tree one and a staged one, as
+    /// `tuicr` then `tuicr -w` produces. Returns their refs in that order.
+    fn two_sessions_on_one_checkout(
+        temp: &tempfile::TempDir,
+    ) -> (
+        ReviewStore,
+        PathBuf,
+        ReviewSession,
+        SessionRef,
+        ReviewSession,
+        SessionRef,
+    ) {
+        let repo = temp.path().join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        let store = ReviewStore::with_reviews_dir(temp.path().join("reviews"));
+
+        let first = test_session(repo.clone());
+        let first_ref = store.save_review(&first).unwrap();
+
+        let mut second = ReviewSession::new(
+            repo.clone(),
+            "abc1234".to_string(),
+            Some("main".to_string()),
+            SessionDiffSource::StagedAndUnstaged,
+        );
+        second.add_file(PathBuf::from("src/main.rs"), FileStatus::Modified, 0);
+        let second_ref = store.save_review(&second).unwrap();
+
+        (store, repo, first, first_ref, second, second_ref)
+    }
+
+    #[test]
+    fn should_point_an_idle_session_at_the_live_one_on_the_same_checkout() {
+        let temp = tempfile::tempdir().unwrap();
+        let (store, repo, _first, _first_ref, second, second_ref) =
+            two_sessions_on_one_checkout(&temp);
+
+        crate::persistence::storage::mark_session_active_in_dir(
+            &second,
+            second_ref.path(),
+            &temp.path().join("reviews"),
+        )
+        .unwrap();
+
+        let listed = store.list_sessions_for_repo(&repo).unwrap();
+        let live = listed.iter().find(|s| s.active).unwrap();
+        let idle = listed.iter().find(|s| !s.active).unwrap();
+
+        assert_eq!(idle.superseded_by.as_deref(), Some(live.slug.as_str()));
+        assert_eq!(live.superseded_by, None);
+    }
+
+    #[test]
+    fn should_clear_superseded_by_once_the_live_session_goes_away() {
+        let temp = tempfile::tempdir().unwrap();
+        let (store, repo, _first, _first_ref, second, second_ref) =
+            two_sessions_on_one_checkout(&temp);
+        let reviews_dir = temp.path().join("reviews");
+
+        crate::persistence::storage::mark_session_active_in_dir(
+            &second,
+            second_ref.path(),
+            &reviews_dir,
+        )
+        .unwrap();
+        crate::persistence::storage::clear_active_session_for_pid_in_dir(&reviews_dir).unwrap();
+
+        // Derived per listing, so closing the newer TUI un-supersedes the
+        // older session rather than leaving a stale marker behind.
+        let listed = store.list_sessions_for_repo(&repo).unwrap();
+        assert!(listed.iter().all(|summary| summary.superseded_by.is_none()));
+    }
+
+    #[test]
+    fn should_not_supersede_a_session_on_a_different_checkout() {
+        let temp = tempfile::tempdir().unwrap();
+        let reviews_dir = temp.path().join("reviews");
+        let store = ReviewStore::with_reviews_dir(&reviews_dir);
+
+        let one = temp.path().join("one");
+        let two = temp.path().join("two");
+        std::fs::create_dir_all(&one).unwrap();
+        std::fs::create_dir_all(&two).unwrap();
+        store.save_review(&test_session(one.clone())).unwrap();
+        let live = test_session(two.clone());
+        let live_ref = store.save_review(&live).unwrap();
+        crate::persistence::storage::mark_session_active_in_dir(
+            &live,
+            live_ref.path(),
+            &reviews_dir,
+        )
+        .unwrap();
+
+        let listed = store.list_sessions_for_repo(&one).unwrap();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].superseded_by, None);
+    }
+
+    #[test]
+    fn should_carry_release_state_on_the_session_summary() {
+        let temp = tempfile::tempdir().unwrap();
+        let repo = temp.path().join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        let store = ReviewStore::with_reviews_dir(temp.path().join("reviews"));
+        let mut session = test_session(repo.clone());
+        add(
+            &mut session,
+            CommentTarget::File {
+                path: PathBuf::from("src/main.rs"),
+            },
+        );
+        store.save_review(&session).unwrap();
+
+        let listed = store.list_sessions_for_repo(&repo).unwrap();
+        assert_eq!(listed[0].release_count, 0);
+        assert_eq!(listed[0].unreleased_count, 1);
+        assert_eq!(listed[0].released_at, None);
+
+        session.release();
+        store.save_review(&session).unwrap();
+
+        let listed = store.list_sessions_for_repo(&repo).unwrap();
+        assert_eq!(listed[0].release_count, 1);
+        assert_eq!(listed[0].unreleased_count, 0);
+        assert!(listed[0].released_at.is_some());
     }
 }

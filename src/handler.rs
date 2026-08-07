@@ -25,6 +25,7 @@ const COMMAND_SPECS: &[CommandSpec] = &[
     CommandSpec::new(&["q!", "quit!"], CommandKind::ForceQuit),
     CommandSpec::new(&["w", "write"], CommandKind::Write),
     CommandSpec::new(&["x", "wq"], CommandKind::WriteQuit),
+    CommandSpec::new(&["send", "release"], CommandKind::Release),
     CommandSpec::new(&["e", "reload"], CommandKind::Reload),
     CommandSpec::new(&["edit"], CommandKind::Edit),
     CommandSpec::new(&["clip", "export"], CommandKind::Export),
@@ -118,6 +119,7 @@ enum CommandKind {
     ForceQuit,
     Write,
     WriteQuit,
+    Release,
     Reload,
     Edit,
     Export,
@@ -611,6 +613,33 @@ fn command_spec_for(cmd: &str) -> Option<&'static CommandSpec> {
     COMMAND_SPECS.iter().find(|spec| spec.names.contains(&cmd))
 }
 
+#[cfg(test)]
+mod release_command_tests {
+    use super::{CommandKind, command_spec_for};
+
+    #[test]
+    fn parses_send_and_its_release_alias() {
+        assert_eq!(
+            command_spec_for("send").map(|spec| spec.kind),
+            Some(CommandKind::Release)
+        );
+        assert_eq!(
+            command_spec_for("release").map(|spec| spec.kind),
+            Some(CommandKind::Release)
+        );
+    }
+
+    #[test]
+    fn leaves_write_as_a_plain_save() {
+        // `:w` stays idempotent: it is mid-review muscle memory, and giving it
+        // release semantics would publish batches the human never meant to send.
+        assert_eq!(
+            command_spec_for("w").map(|spec| spec.kind),
+            Some(CommandKind::Write)
+        );
+    }
+}
+
 /// CommandCompleter computes command-buffer replacements without mutating App.
 struct CommandCompleter<'a> {
     /// Registry whose command names are exposed as completion candidates.
@@ -784,6 +813,20 @@ fn dispatch_command(app: &mut App, kind: CommandKind) -> CommandAfterDispatch {
                     app.set_message(format!("Saved to {}", path.display()));
                 }
                 Err(e) => app.set_error(format!("Save failed: {e}")),
+            }
+            CommandAfterDispatch::ExitCommandMode
+        }
+        CommandKind::Release => {
+            match app.release_comments() {
+                Ok(released) => {
+                    let batch = app.session.release_count;
+                    app.set_message(match released {
+                        0 => format!("Released batch {batch} (no new comments)"),
+                        1 => format!("Released batch {batch} (1 comment)"),
+                        n => format!("Released batch {batch} ({n} comments)"),
+                    });
+                }
+                Err(e) => app.set_error(format!("Release failed: {e}")),
             }
             CommandAfterDispatch::ExitCommandMode
         }

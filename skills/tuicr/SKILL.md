@@ -54,6 +54,8 @@ If the user's intent is ambiguous, ask which workflow they want.
      `"active": true`, attach to it.
    - If multiple sessions are active, or the correct session is not clear, ask
      the user which slug to use.
+   - Skip any row with a non-null `superseded_by`: that session is idle and a
+     live TUI is reviewing the same checkout. Poll the slug it names instead.
    - If the user provided a slug or session JSON path, use it directly.
    - For a PR review, pass the PR slug from the listing (e.g.
      `gh:owner/repo/pr/N`) to `--session`; it is self-contained and needs no
@@ -142,6 +144,7 @@ The command emits JSON. Each comment includes fields like:
 - `lifecycle_state`
 - `author`
 - `in_reply_to`
+- `released_in`
 - `content`
 
 `author` tells the user's comments from your own: the user's default to `user`
@@ -164,10 +167,31 @@ Treat these comments as the user's review feedback:
 - `note`: answer or acknowledge
 - `praise`: no action required
 
-If you are waiting during an active review, poll this command about every 30
-seconds and compare comment IDs with the previous result. Read immediately when
-the user says comments are ready. Stop polling once the user says the review is
-done or your tooling would block other work.
+## Wait For The Release
+
+Comments hit the session file the moment the user confirms them, so a poll can
+easily catch a half-written batch. `:send` in the TUI is how the user says "this
+batch is ready": it bumps a monotonic `release_count` on the session and stamps
+every unreleased comment with that batch number.
+
+While waiting, poll `tuicr review list` about every 30 seconds and watch
+`release_count`. Act when it increases — not when `updated_at` moves, which it
+does on every keystroke-level save. `unreleased_count` tells you the user is
+still writing. Then read the batch:
+
+```bash
+tuicr review comments --session <slug> | jq 'map(select(.released_in == <n>))'
+```
+
+A `:send` that releases nothing (`release_count` moves, no new comments) is the
+user saying "I am done, no further notes" — stop polling. An edited comment
+loses its `released_in` and comes back in a later batch, so re-read a comment id
+you have seen before if it reappears.
+
+If the user has not adopted `:send`, fall back to polling `tuicr review
+comments` every 30 seconds and comparing comment IDs with the previous result.
+Read immediately when the user says comments are ready. Stop polling once the
+user says the review is done or your tooling would block other work.
 
 If the result is empty, ask whether the user saved comments in the intended
 session or whether another active session should be selected. If the review may

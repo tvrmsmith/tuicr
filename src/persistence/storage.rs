@@ -1006,6 +1006,46 @@ mod tests {
         assert!(!active.contains(&normalize_path_for_comparison(&path)));
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn should_drop_an_active_session_whose_process_is_gone() {
+        let _g = with_test_reviews_dir();
+        let reviews_dir = get_reviews_dir().unwrap();
+        let repo = make_repo();
+        let session = make_local_session(
+            repo,
+            "abc1234",
+            Some("main"),
+            SessionDiffSource::WorkingTree,
+            None,
+        );
+        let path = save_session(&session).unwrap();
+
+        // A TUI that was killed never clears its marker, so liveness has to be
+        // proven by the pid, not by the entry's existence: otherwise the dead
+        // session keeps listing as an attach target forever.
+        let mut child = std::process::Command::new("true").spawn().unwrap();
+        let dead_pid = child.id();
+        child.wait().unwrap();
+
+        let active = ActiveSessionsFile {
+            sessions: vec![ActiveSessionEntry {
+                pid: dead_pid,
+                slug: "dead".to_string(),
+                path: normalize_active_path(&path),
+                last_seen_at: Utc::now(),
+            }],
+            ..Default::default()
+        };
+        save_active_sessions_unlocked(&reviews_dir, &active).unwrap();
+
+        assert!(
+            active_session_paths_in_dir(&reviews_dir)
+                .unwrap()
+                .is_empty()
+        );
+    }
+
     #[test]
     fn should_recover_stale_reviews_dir_lock() {
         let _g = with_test_reviews_dir();

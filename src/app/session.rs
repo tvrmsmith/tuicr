@@ -42,6 +42,14 @@ impl App {
         self.dirty = false;
     }
 
+    /// True once this session has a file on disk, and is therefore
+    /// discoverable through `tuicr review list`.
+    pub fn has_persisted_session_file(&self) -> bool {
+        self.session_path
+            .as_deref()
+            .is_some_and(|path| path.exists())
+    }
+
     pub fn ensure_ephemeral_session_file(&mut self) -> Result<Option<PathBuf>> {
         let path = match self.session_path.clone() {
             Some(path) => path,
@@ -65,9 +73,28 @@ impl App {
             return Ok(None);
         }
 
+        // No target has been chosen yet — bare `tuicr` sitting on the review
+        // target selector. Registering here writes a `file_count: 0` session
+        // that lists as a live attach target and never receives a comment,
+        // and the slug it registers under is the pre-selection one, which the
+        // real target then changes. Wait for files.
+        if self.session.files.is_empty() {
+            return Ok(None);
+        }
+
         let saved_path = self.save_current_session_merging_external()?;
         self.ephemeral_session_paths.insert(saved_path.clone());
         Ok(Some(saved_path))
+    }
+
+    /// `:send` — publish the current batch of comments to any polling agent
+    /// and persist immediately. Returns how many comments the release
+    /// admitted; the batch number is `self.session.release_count`.
+    pub fn release_comments(&mut self) -> Result<usize> {
+        let released = self.session.release();
+        self.dirty = true;
+        self.save_current_session_merging_external()?;
+        Ok(released)
     }
 
     pub fn cleanup_empty_ephemeral_sessions(&mut self) -> Result<usize> {

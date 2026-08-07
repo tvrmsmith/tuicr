@@ -186,7 +186,15 @@ integrations. See [docs/REVIEW_CLI.md](docs/REVIEW_CLI.md).
 The TUI creates a persisted session file when a review target becomes active,
 so collaborative tools can add comments immediately. Empty auto-created session
 files are removed when the TUI exits. `tuicr review list` marks currently open
-TUI sessions with `"active": true`.
+TUI sessions with `"active": true`, proven by the recorded pid, and points an
+idle session at the live one reviewing the same checkout with `superseded_by`.
+
+Comments reach the session file the moment you confirm them, but `:send` is
+what tells a polling agent the batch is ready: it bumps a monotonic
+`release_count` on the session and stamps each comment with the batch it went
+out in. `tuicr review list` reports `release_count`, `released_at`, and
+`unreleased_count`; `tuicr review comments` reports `released_in` per comment.
+`:w` stays a plain, idempotent save.
 
 Every comment carries the `author` that wrote it, and `tuicr review add
 --reply-to <comment-id>` records an answer to a specific comment, anchored at
@@ -283,6 +291,7 @@ A first-session cheatsheet. Press `?` inside tuicr for the full reference.
 | `:edit` | Open focused file in `$EDITOR` |
 | `:copy-url` | Copy the open PR URL (PR mode) |
 | `:submit` | Push review to GitHub, GitLab, or Bitbucket |
+| `:send` | Release this batch of comments to a polling agent |
 | `Tab` in `:` prompt | Complete or cycle commands |
 | `?` | Toggle full help |
 

@@ -6,14 +6,24 @@ saved review state.
 
 Interactive TUI sessions create a persisted session file as soon as a review
 target becomes active, so agents can resolve the announced slug immediately.
-If that auto-created file still has no comments and no reviewed files when the
-TUI exits, tuicr removes it.
+A TUI still sitting on the review target selector has no target yet, so it
+registers nothing and announces no `tuicr-session:` slug — otherwise every
+launch would publish an empty attach target that never receives a comment. If
+the auto-created file still has no comments and no reviewed files when the TUI
+exits, tuicr removes it.
 
 While a TUI is open, tuicr records the active session in
 `active_sessions.json` beside the storage manifest with the process id, slug,
 session path, and last-seen timestamp. `tuicr review list` also includes an
 `active` boolean so agents can select the live session without guessing from
-timestamps.
+timestamps. `active` is proven by the recorded pid, not by the entry existing,
+so a TUI that was killed stops looking attachable.
+
+Sessions are never swept, so `list` accumulates finished reviews. A local
+session that is idle while a live TUI reviews the same checkout carries
+`superseded_by` pointing at that live session's slug — poll the successor, not
+the corpse. It is derived per listing, so closing the newer TUI un-supersedes
+the older session on the next call.
 
 Session arguments accept any of:
 
@@ -173,7 +183,11 @@ Target types:
     "reviewed_count": 0,
     "file_count": 3,
     "anchor": "main",
-    "active": true
+    "active": true,
+    "release_count": 2,
+    "released_at": "2026-05-22T17:21:00Z",
+    "unreleased_count": 0,
+    "superseded_by": null
   }
 ]
 ```
@@ -192,7 +206,11 @@ PR slug:
     "reviewed_count": 0,
     "file_count": 12,
     "anchor": "pr/1745",
-    "active": false
+    "active": false,
+    "release_count": 0,
+    "released_at": null,
+    "unreleased_count": 0,
+    "superseded_by": null
   }
 ]
 ```
@@ -213,6 +231,7 @@ PR slug:
     "comment_type": "issue",
     "lifecycle_state": "local_draft",
     "created_at": "2026-05-22T17:20:00Z",
+    "released_in": 1,
     "content": "Handle the empty case here."
   }
 ]
@@ -223,6 +242,41 @@ PR slug:
 `author` is the name the comment was written under: `user` for the human by
 default, whatever `--username` was passed for an agent. `in_reply_to` is the id
 of the comment this one answers, or `null` for a top-level comment.
+
+## The Release Boundary
+
+Comments land in the session file the instant they are confirmed in the TUI, so
+delivery is already immediate. What a polling agent cannot see from the file is
+*punctuation*: whether the human is mid-thought or done with this batch.
+`updated_at` moves on every comment and on every `:w` (which is idempotent),
+so it cannot answer that.
+
+`:send` in the TUI (alias `:release`) is the boundary. It bumps a monotonic
+`release_count`, stamps every unreleased comment with the new batch number, and
+saves. `:w` is unchanged and never releases.
+
+- `list.release_count` — how many batches the human has sent. Monotonic; poll it
+  and act when it moves.
+- `list.released_at` — when the last `:send` happened, or `null` if never.
+- `list.unreleased_count` — comments written but not yet sent.
+- `comments[].released_in` — the batch a comment went out in, or `null` while
+  unreleased.
+
+`:send` bumps the counter even when nothing is unreleased: "I am done, no
+further notes" is a message the human needs to be able to send after answering
+an agent's replies. Editing a released comment clears its `released_in`, so the
+next `:send` republishes it under a new batch — a poller that read the old
+wording would otherwise never learn it changed.
+
+`comments` does not filter on release state; it returns everything with
+`released_in` attached, so the release filter composes with the `author` and
+`in_reply_to` join below rather than replacing it. To read only what the human
+has sent:
+
+```bash
+tuicr review comments --session agavra/tuicr@main/worktree \
+  | jq 'map(select(.released_in))'
+```
 
 ## Filtering by Author
 
