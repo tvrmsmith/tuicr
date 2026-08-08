@@ -89,6 +89,25 @@ impl Shape {
     }
 }
 
+/// The corpus arm a recorded run belongs to: the middle segment of
+/// `<shape>-<arm>-<nn>`. Two runs are only comparable when they were recorded
+/// the same way, and the envelope records the model but not the reasoning
+/// effort — `gd-26r.24`'s `opus-low` arm answers as `claude-opus-5` exactly as
+/// the published arm does, so grouping the report by model alone would average
+/// a cheap arm into an expensive one and publish the mean of two experiments.
+/// The file name is the only place the whole recipe is written down, so it is
+/// what the arms are keyed on.
+pub fn arm_from_run_stem(stem: &str) -> Option<&str> {
+    let shape = Shape::from_run_stem(stem)?;
+    let rest = stem.strip_prefix(shape.slug())?.strip_prefix('-')?;
+    let (arm, run) = rest.rsplit_once('-')?;
+    // A trailing segment that is not a run number means the stem is not a
+    // recorded run at all, and returning the whole tail as an arm would file it
+    // as one rather than surfacing the malformed name.
+    run.parse::<u32>().ok()?;
+    (!arm.is_empty()).then_some(arm)
+}
+
 /// The rules the call is held to. A digest of `docs/GROUPING.md` rather than
 /// the file itself: the prose there addresses a human deciding what the engine
 /// should aim at, and the sections on ambiguity annotation and on what is not

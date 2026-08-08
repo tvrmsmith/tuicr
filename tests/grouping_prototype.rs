@@ -637,6 +637,26 @@ const RECORDED_RUNS: usize = 10;
 /// is a second experiment beside this one rather than five more runs of it.
 const PUBLISHED_MODEL: &str = "claude-opus-5";
 
+/// The file-name slug the published corpus is recorded under. `gd-26r.24` added
+/// arms that differ from it only in reasoning effort and so record the same
+/// model name in the envelope; the slug is the only durable label separating
+/// them. See `refine::arm_from_run_stem`.
+const PUBLISHED_ARM: &str = "opus";
+
+/// The arm `gd-26r.24` recommends: `full` at `--effort low`, recorded under its
+/// own slug because the envelope has no field that records effort.
+const LOW_EFFORT_ARM: &str = "opus-low";
+
+/// The recommended arm's fixture-1 row: mean 0.450 across a 0.409-0.486 spread,
+/// all ten single calls over the 0.394 bar. The whole recommendation is that
+/// sentence — the shipped default-effort arm clears it 0 times in 10 — so it is
+/// locked at least as tightly as the row it overturns. A mean that drifted under
+/// the bar and a tenth call that stopped clearing it are the two ways the
+/// recommendation could go stale in silence.
+const LOW_EFFORT_MEAN_F1: f64 = 0.450;
+const LOW_EFFORT_WORST_F1: f64 = 0.409;
+const LOW_EFFORT_BEST_F1: f64 = 0.486;
+
 /// The published fixture-1 `full` triple distribution: 50 of 120 clear the bar,
 /// the spread runs 0.343 to 0.439, and the upper median is 0.369. Each figure is
 /// locked as a band closed on both sides, with a little slack for a re-record.
@@ -1621,6 +1641,30 @@ fn a_recorded_runs_shape_survives_a_hyphenated_model_name() {
     }
 }
 
+/// The arm is what keeps two experiments apart in the report, and `gd-26r.24`'s
+/// effort arms record the same model name as the published one — so a stem read
+/// as the wrong arm averages a cheap arm into an expensive one and publishes the
+/// mean of both. The arm is everything between the shape and the run number,
+/// hyphens and all.
+#[test]
+fn a_recorded_runs_arm_is_everything_between_the_shape_and_the_run_number() {
+    for (stem, arm) in [
+        ("full-opus-01", Some("opus")),
+        ("full-coarse-opus-01", Some("opus")),
+        ("full-opus-low-01", Some("opus-low")),
+        ("full-coarse-opus-low-10", Some("opus-low")),
+        ("merge-only-sonnet-05", Some("sonnet")),
+        ("full-claude-sonnet-4-5-01", Some("claude-sonnet-4-5")),
+        // No run number, so not a recorded run: reading `opus-low` off this
+        // would file a stray file as a run of that arm.
+        ("full-opus-low", None),
+        ("full-01", None),
+        ("notes", None),
+    ] {
+        assert_eq!(refine::arm_from_run_stem(stem), arm, "arm of `{stem}`");
+    }
+}
+
 /// A partition written the way a run's answer reads: group name, then members.
 fn partition_of(groups: &[(&str, &[&str])]) -> Partition {
     Partition::from_assignments(groups.iter().flat_map(|(name, members)| {
@@ -1893,6 +1937,10 @@ fn stability_of_a_single_run_is_not_a_number() {
 struct Run {
     record: RunRecord,
     refined: refine::Refined,
+    /// Which arm of the corpus this run belongs to — the file name's slug
+    /// segment. Not the model: `gd-26r.24` records arms that differ only in
+    /// reasoning effort, and the envelope cannot tell those apart.
+    arm: String,
 }
 
 /// Every unordered triple of `n` run indices. A three-call vote picks one of
@@ -1973,20 +2021,47 @@ fn load_runs(fixture: &str, changeset: &Changeset, shape: Shape) -> Vec<Run> {
                 .unwrap_or_else(|error| panic!("{}: {error}", path.display()));
             let refined = refine::apply(&record.body, changeset, &grouping, shape)
                 .unwrap_or_else(|error| panic!("{}: unusable answer: {error}", path.display()));
-            Run { record, refined }
+            let stem = path
+                .file_stem()
+                .and_then(|name| name.to_str())
+                .expect("a path that reached here parsed as a run file name");
+            let arm = refine::arm_from_run_stem(stem)
+                .unwrap_or_else(|| {
+                    panic!(
+                        "recorded run {} names no arm; it would be reported under none",
+                        path.display()
+                    )
+                })
+                .to_string();
+            Run {
+                record,
+                refined,
+                arm,
+            }
         })
         .collect()
 }
 
 /// The published arm alone. `load_runs` returns every arm on disk and
 /// `refine_report` reports them apart, so a test that locks an N-run figure
-/// filters to the model that figure is about — otherwise recording the second
+/// filters to the arm that figure is about — otherwise recording the second
 /// arm the run script advertises fails the lock with a message blaming the
-/// corpus size.
+/// corpus size. Filtering on the model is not enough: `gd-26r.24`'s effort arms
+/// answer as `claude-opus-5` too, so the arm slug decides and the model is
+/// checked as well, which catches a run filed under the published slug that
+/// some other model answered.
 fn published_arm(fixture: &str, changeset: &Changeset, shape: Shape) -> Vec<Run> {
+    arm(fixture, changeset, shape, PUBLISHED_ARM)
+}
+
+/// One named arm's runs. `gd-26r.24` publishes figures for arms other than the
+/// one `gd-26r.11` shipped, and those figures need locking the same way — the
+/// recommendation to run `full` at low effort rests on its numbers exactly as
+/// the shipped verdict rests on the published arm's.
+fn arm(fixture: &str, changeset: &Changeset, shape: Shape, arm: &str) -> Vec<Run> {
     load_runs(fixture, changeset, shape)
         .into_iter()
-        .filter(|run| run.record.model == PUBLISHED_MODEL)
+        .filter(|run| run.arm == arm && run.record.model == PUBLISHED_MODEL)
         .collect()
 }
 
@@ -2003,7 +2078,7 @@ fn expect_full_corpus(label: &str, runs: &[Run], shape: Shape) {
     }
     let published = runs
         .iter()
-        .filter(|run| run.record.model == PUBLISHED_MODEL)
+        .filter(|run| run.arm == PUBLISHED_ARM && run.record.model == PUBLISHED_MODEL)
         .count();
     assert_eq!(
         published,
@@ -2043,18 +2118,18 @@ fn refine_report() {
                 println!("  none on this machine; see scripts/grouping-refine-runs.sh");
                 continue;
             }
-            // A run is only comparable with runs of the same model, so the
-            // arms are reported apart rather than averaged together.
-            let mut by_model: BTreeMap<String, Vec<&Run>> = BTreeMap::new();
+            // A run is only comparable with runs recorded the same way, so the
+            // arms are reported apart rather than averaged together. Keyed on
+            // the arm slug and not the model: an effort arm records the
+            // published model's name.
+            let mut by_arm: BTreeMap<String, Vec<&Run>> = BTreeMap::new();
             for run in &all {
-                by_model
-                    .entry(run.record.model.clone())
-                    .or_default()
-                    .push(run);
+                by_arm.entry(run.arm.clone()).or_default().push(run);
             }
-            for (model, runs) in by_model {
+            for (arm, runs) in by_arm {
+                let model = &runs[0].record.model;
                 println!(
-                    "\n=== {} · {model} ({} runs recorded) ===",
+                    "\n=== {} · {arm} ({model}, {} runs recorded) ===",
                     shape.slug(),
                     runs.len()
                 );
@@ -2464,6 +2539,73 @@ fn merge_only_clears_the_bar_on_fixture_one() {
         upper_median(&voted) > bar,
         "the upper median merge-only triple scored {:.3}, at or under {bar:.3}",
         upper_median(&voted)
+    );
+}
+
+/// `gd-26r.24`'s recommendation, locked on fixture 1: `full` at low reasoning
+/// effort clears the bar on every single call, which the shipped default-effort
+/// arm does on none. The two together are the finding — that low effort is
+/// better here, not merely cheaper — so the test asserts the recommended arm
+/// against the same bar and the same corpus size as the arm it displaces.
+///
+/// The triple figures are locked as an inversion rather than a band: on this arm
+/// voting scores *below* the average single call, which is what removed the
+/// accuracy argument for paying 3x and left the consensus question to the human
+/// on cost and determinism alone. A re-record where voting started helping again
+/// would put that back, and the document says otherwise.
+#[test]
+fn low_effort_full_clears_the_bar_on_every_fixture_one_call() {
+    let (changeset, expected) = orca();
+    let runs = arm(ORCA_FIXTURE, &changeset, Shape::Full, LOW_EFFORT_ARM);
+    assert_eq!(
+        runs.len(),
+        RECORDED_RUNS,
+        "the {LOW_EFFORT_ARM} arm is published as {RECORDED_RUNS} runs of \
+         {PUBLISHED_MODEL}, and every figure in it is a property of that N"
+    );
+
+    let bar = passes::group(&changeset, GroupingConfig::default())
+        .partition()
+        .score_against(&expected)
+        .f1;
+    let partitions: Vec<_> = runs
+        .iter()
+        .map(|run| run.refined.partition.clone())
+        .collect();
+    let f1s: Vec<f64> = partitions
+        .iter()
+        .map(|partition| partition.score_against(&expected).f1)
+        .collect();
+
+    let singles = f1s.iter().filter(|f1| **f1 > bar).count();
+    assert_eq!(
+        singles, RECORDED_RUNS,
+        "{singles} of {RECORDED_RUNS} low-effort calls clear the {bar:.3} bar, not all \
+         of them, so the recommendation no longer holds on fixture 1"
+    );
+
+    let mean = f1s.iter().sum::<f64>() / f1s.len() as f64;
+    let worst = f1s.iter().copied().fold(f64::INFINITY, f64::min);
+    let best = f1s.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+    for (label, actual, published) in [
+        ("mean", mean, LOW_EFFORT_MEAN_F1),
+        ("worst", worst, LOW_EFFORT_WORST_F1),
+        ("best", best, LOW_EFFORT_BEST_F1),
+    ] {
+        assert!(
+            (actual - published).abs() <= PUBLISHED_F1_SLACK,
+            "the low-effort {label} scored {actual:.3}, off the published \
+             {published:.3} by more than {PUBLISHED_F1_SLACK:.3}"
+        );
+    }
+
+    let voted = triple_f1s(&partitions, &expected);
+    let voted_mean = voted.iter().sum::<f64>() / voted.len() as f64;
+    assert!(
+        voted_mean < mean,
+        "the average low-effort triple scored {voted_mean:.3} against {mean:.3} for the \
+         average single call, so voting is no longer the loss the consensus finding \
+         reports it as"
     );
 }
 

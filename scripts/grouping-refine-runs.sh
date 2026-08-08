@@ -55,6 +55,27 @@ if [[ -n "${TUICR_REFINE_MODEL:-}" && -z "${TUICR_REFINE_MODEL_SLUG:-}" ]] \
 fi
 slug="${TUICR_REFINE_MODEL_SLUG:-opus}"
 
+# Reasoning effort. `gd-26r.24` measured that ~73% of a `full` call's output
+# tokens are model reasoning rather than answer, which makes this the largest
+# lever on both the bill and the wall clock — so it is an arm of the corpus, not
+# a setting. Unset means the CLI default, which is what the published `opus` arm
+# was recorded under. An effort arm is a different experiment from the published
+# one and has to be filed under its own slug, exactly as a second model does,
+# because the harness reports arms apart by that slug.
+effort="${TUICR_REFINE_EFFORT:-}"
+if [[ -n "$effort" && "$slug" == "opus" ]]; then
+  echo "TUICR_REFINE_EFFORT changes what the call costs and how well it scores," >&2
+  echo "so it needs its own TUICR_REFINE_MODEL_SLUG (e.g. opus-low). Filing it" >&2
+  echo "under \`opus\` would mix it into the published arm." >&2
+  exit 1
+fi
+
+# Which shapes to send, space-separated, default all four. An arm recorded to
+# answer one question does not need every shape: `gd-26r.24`'s cost arms are
+# about `full`, the shape `gd-26r.11` shipped, and sending the other three would
+# triple the bill for rows no verdict reads. Named shapes must exist as prompts.
+shapes="${TUICR_REFINE_SHAPES:-}"
+
 if [[ ! -d "$prompts" ]]; then
   echo "no prompts in $prompts — run emit_refine_prompts first" >&2
   exit 1
@@ -70,6 +91,9 @@ fi
 # refine call is a pure text transformation, and letting the agent read the
 # repo it is grouping would measure something the shipped pass cannot do.
 common=(--print --output-format json --setting-sources '' --tools '' --max-turns 1 --model "$model")
+if [[ -n "$effort" ]]; then
+  common+=(--effort "$effort")
+fi
 
 # `slots` is prompt x run, `sent` is calls actually made. Reporting failures
 # against the slot count would understate the failure rate of a re-record that
@@ -89,6 +113,11 @@ for fixture_prompts in "$prompts"/*/; do
 
   for prompt in "$fixture_prompts"*.txt; do
     shape="$(basename "$prompt" .txt)"
+    # A shape the filter excludes is not a slot: counting it would report a
+    # complete arm as a mostly-cached re-record.
+    if [[ -n "$shapes" && " $shapes " != *" $shape "* ]]; then
+      continue
+    fi
     for run in $(seq 1 "$runs"); do
       target="$out/$shape-$slug-$(printf '%02d' "$run").json"
       slots=$((slots + 1))
