@@ -654,6 +654,16 @@ impl RunRecord {
     pub fn parse(envelope: &str) -> Result<RunRecord, String> {
         let value = first_value(envelope)?;
 
+        // Two recorders write into this corpus: the CLI one, whose envelope is
+        // the CLI's own `--output-format json` output, and the Vertex one,
+        // which wraps a raw provider response. They are told apart by an
+        // explicit marker rather than by sniffing for a field, so a CLI
+        // envelope that changed shape fails as a CLI envelope instead of being
+        // silently read as the other thing.
+        if value.get("transport").and_then(Value::as_str) == Some("vertex") {
+            return RunRecord::parse_vertex(&value);
+        }
+
         // The recorder writes a full envelope for any zero-exit CLI call, and
         // an errored one still carries a `result` — the error text. Scoring
         // that as an answer, or dropping it quietly, both shrink N without
@@ -730,6 +740,132 @@ impl RunRecord {
                 .get("duration_ms")
                 .and_then(Value::as_f64)
                 .ok_or_else(|| "CLI envelope has no `duration_ms`".to_string())?,
+        })
+    }
+
+    /// A run recorded straight against Vertex by `grouping-refine-runs-vertex.sh`.
+    ///
+    /// Two things differ from the CLI envelope and both are load-bearing for the
+    /// cost column. Vertex reports what it billed in tokens but never in money,
+    /// so the price is carried in the envelope, written at record time, and the
+    /// cost is derived here rather than read; and the two publishers Vertex
+    /// fronts agree on nothing below the URL, so each one's usage block is read
+    /// on its own terms.
+    fn parse_vertex(value: &Value) -> Result<RunRecord, String> {
+        let field = |name: &str| {
+            value
+                .get(name)
+                .and_then(Value::as_str)
+                .ok_or_else(|| format!("vertex envelope has no `{name}`"))
+        };
+        let model = field("model")?.to_string();
+        let publisher = field("publisher")?;
+        let response = value
+            .get("response")
+            .ok_or_else(|| "vertex envelope has no `response`".to_string())?;
+
+        let price = |name: &str| {
+            value
+                .get("price_usd_per_mtok")
+                .and_then(|prices| prices.get(name))
+                .and_then(Value::as_f64)
+                .ok_or_else(|| format!("vertex envelope has no `price_usd_per_mtok.{name}`"))
+        };
+        let count = |usage: &Value, key: &str| {
+            usage
+                .get(key)
+                .and_then(Value::as_f64)
+                .ok_or_else(|| format!("vertex usage block has no `{key}`"))
+        };
+
+        let (body, input, output, cached) = match publisher {
+            "google" => {
+                let usage = response
+                    .get("usageMetadata")
+                    .ok_or_else(|| "vertex response has no `usageMetadata`".to_string())?;
+                // A cached prompt token is counted in `promptTokenCount` as
+                // well, so charging both would bill the cached part twice — at
+                // the uncached rate, which is the direction that flatters
+                // nothing and inflates the column.
+                let cached = usage
+                    .get("cachedContentTokenCount")
+                    .and_then(Value::as_f64)
+                    .unwrap_or(0.0);
+                // Gemini bills thinking at the output rate and reports it in a
+                // field of its own, which is the split `gd-26r.24` had to
+                // measure by replay on the CLI transport. Both are output.
+                let thoughts = usage
+                    .get("thoughtsTokenCount")
+                    .and_then(Value::as_f64)
+                    .unwrap_or(0.0);
+                let parts = response
+                    .pointer("/candidates/0/content/parts")
+                    .and_then(Value::as_array)
+                    .ok_or_else(|| "vertex response has no candidate parts".to_string())?;
+                // A thought part carries `thought: true` and is the model's
+                // reasoning, not its answer. Concatenating it into the body
+                // would put prose in front of the JSON.
+                let body: String = parts
+                    .iter()
+                    .filter(|part| part.get("thought").and_then(Value::as_bool) != Some(true))
+                    .filter_map(|part| part.get("text").and_then(Value::as_str))
+                    .collect();
+                (
+                    body,
+                    count(usage, "promptTokenCount")? - cached,
+                    count(usage, "candidatesTokenCount")? + thoughts,
+                    cached,
+                )
+            }
+            "anthropic" => {
+                let usage = response
+                    .get("usage")
+                    .ok_or_else(|| "vertex response has no `usage`".to_string())?;
+                let optional = |key: &str| usage.get(key).and_then(Value::as_f64).unwrap_or(0.0);
+                let content = response
+                    .get("content")
+                    .and_then(Value::as_array)
+                    .ok_or_else(|| "vertex response has no `content`".to_string())?;
+                // Same rule as the Gemini branch: the thinking blocks are
+                // billed as output but are not the answer. Here they are told
+                // apart by block type rather than by a flag.
+                let body: String = content
+                    .iter()
+                    .filter(|block| block.get("type").and_then(Value::as_str) == Some("text"))
+                    .filter_map(|block| block.get("text").and_then(Value::as_str))
+                    .collect();
+                (
+                    body,
+                    count(usage, "input_tokens")?,
+                    count(usage, "output_tokens")?,
+                    optional("cache_creation_input_tokens") + optional("cache_read_input_tokens"),
+                )
+            }
+            other => return Err(format!("unknown vertex publisher `{other}`")),
+        };
+
+        // An empty body parses as "no JSON object in response" later, which
+        // blames the model for a recorder that filtered every part away.
+        if body.trim().is_empty() {
+            return Err(format!(
+                "vertex {publisher} response carries no answer text"
+            ));
+        }
+
+        Ok(RunRecord {
+            model,
+            body,
+            input_tokens: input,
+            output_tokens: output,
+            cached_tokens: cached,
+            cost_usd: (input * price("input")?
+                + output * price("output")?
+                + cached * price("cached")?)
+                / 1_000_000.0,
+            wall_clock_ms: value
+                .get("duration_ms")
+                .and_then(Value::as_f64)
+                .ok_or_else(|| "vertex envelope has no `duration_ms`".to_string())?,
         })
     }
 }
