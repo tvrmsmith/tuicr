@@ -1338,9 +1338,18 @@ bar every single call clears.
 
 So the price of determinism is now three calls, $0.78 against $0.26, and a small
 accuracy loss — where under `gd-26r.11`'s default-effort arm it was three calls
-for a real fixture-2 gain (0.763 → 0.847). **That is a decision for the human,
-and this ticket does not take it.** What it removes is the accuracy argument for
-voting: on the recommended arm there isn't one left.
+for a real fixture-2 gain (0.763 → 0.847).
+
+**Decided: no vote, one call.** The human ruled speed first, and a little
+accuracy a fine price for it. Voting loses on both counts. A parallel triple does
+not cost one call's wall clock, it costs the *slowest* of three, so on a fixture
+spanning 85.9-131.1s it lands near the top of that range every time instead of
+the middle — a latency tax even when concurrent, and a worse one if the calls are
+serialised to catch the prompt cache. And on this arm the 3x buys no accuracy to
+weigh against that. What is left is determinism, which `gd-26r.8` already
+supplies by persisting the grouping: the human sees one result and keeps it.
+`gd-26r.11`'s consensus of three is superseded — it was a default-effort finding,
+and at low effort it holds on neither fixture.
 
 ## Recommended shape
 
@@ -1394,6 +1403,13 @@ and not as a bound.
   `gd-26r.11` left them — invisible to this harness. Low effort produces fewer,
   coarser groups, which a reader may like more or less than the default arm's
   finer ones, and no number here can say which.
+- **Whether a cheaper shape is now faster still.** `merge-only` ran 27.9s and
+  56.9s at default effort, about half the recommended arm, and has never been run
+  at low effort. `gd-26r.11` rejected it on accuracy — 0.398 against `full`'s
+  0.763 on fixture 2 — and that rejection stands on default-effort evidence.
+  Low effort moved `full` in a direction nobody predicted, so the low-effort
+  merge-only number is not knowable from here. Twenty calls would settle it, and
+  it is worth spending them only if wall clock turns out to bind.
 - **`gd-26r.11`'s ship verdict is untouched.** This section prices the pass; it
   does not re-open whether to offer it. What it does change is the fixture-1
   half of the accuracy claim, which the human should read before that verdict is
