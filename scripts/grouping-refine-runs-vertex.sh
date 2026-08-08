@@ -41,9 +41,11 @@ model="${TUICR_REFINE_MODEL:-}"
 slug="${TUICR_REFINE_MODEL_SLUG:-}"
 shapes="${TUICR_REFINE_SHAPES:-}"
 # How much the model may think, in the units its own API uses: a `thinkingLevel`
-# for Gemini 3, a `budget_tokens` for Anthropic, and the literal `off` for
-# neither. `gd-26r.24` found reasoning is most of the bill, so this is the arm's
-# defining setting and it goes in the slug exactly as `--effort` does on the CLI.
+# for Gemini 3, an `output_config.effort` for Anthropic — the same word the CLI
+# spells `--effort`, which is what makes the two transports comparable. Unset
+# means the provider default on both. `gd-26r.24` found reasoning is most of the
+# bill, so this is the arm's defining setting and it goes in the slug exactly as
+# `--effort` does on the CLI.
 thinking="${TUICR_REFINE_THINKING:-}"
 
 if [[ -z "$project" || -z "$model" || -z "$slug" ]]; then
@@ -111,10 +113,18 @@ if [[ "$location" != global ]]; then
 fi
 endpoint="$host/v1/projects/$project/locations/$location/publishers/$publisher/models/$model:$verb"
 
-# One token for the whole recording. It outlives a corpus that takes under an
-# hour, and re-minting it per call would put a gcloud round trip inside the wall
-# clock this script exists to measure.
-token="$(gcloud auth print-access-token)"
+# Minted per call, not once for the recording. One token was the first version
+# of this line, on the reasoning that it outlives a corpus taking under an hour —
+# and a ten-run arm against the slowest model then took long enough that the
+# token expired partway and ten calls came back 401. gcloud caches, so this is a
+# local read in the common case, and it sits outside the timed region either way.
+mint_token() {
+  if ! token="$(gcloud auth print-access-token 2>&1)"; then
+    echo "could not mint an access token: $token" >&2
+    echo "run \`gcloud auth login\` and re-run; recorded runs are kept." >&2
+    exit 1
+  fi
+}
 
 # Build the request body for one prompt file. Written by python3 rather than by
 # string-pasting into JSON: the prompts contain quotes, newlines and backslashes,
@@ -143,8 +153,23 @@ else:
         "max_tokens": 32000,
         "messages": [{"role": "user", "content": prompt}],
     }
-    if thinking and thinking != "off":
-        body["thinking"] = {"type": "enabled", "budget_tokens": int(thinking)}
+    # `claude-opus-5` rejects the `{"type": "enabled", "budget_tokens": N}` form
+    # outright: "Use thinking.type.adaptive and output_config.effort to control
+    # thinking behavior." That is the same knob the CLI exposes as `--effort`,
+    # which makes the two transports directly comparable — an unset value is the
+    # provider default on both, and `low` means the same thing on both.
+    if thinking == "off":
+        # There is no off. `claude-opus-5` thinks adaptively, and the API offers
+        # only how much, not whether — so an arm named for thinking-off would be
+        # the default arm wearing a label that says the opposite.
+        raise SystemExit(
+            "`claude-opus-5` cannot be told not to think; leave "
+            "TUICR_REFINE_THINKING unset for the provider default, or set an "
+            "effort level (low/medium/high)."
+        )
+    if thinking:
+        body["thinking"] = {"type": "adaptive"}
+        body["output_config"] = {"effort": thinking}
 
 print(json.dumps(body))
 PY
@@ -183,6 +208,7 @@ for fixture_prompts in "$prompts"/*/; do
       # measured around the request alone — token minting, body building and
       # envelope writing all sit outside it. Milliseconds via python3 because
       # BSD `date` has no %N.
+      mint_token
       started="$(python3 -c 'import time; print(int(time.time() * 1000))')"
       status="$(curl -sS -o "$target.body" -w '%{http_code}' -X POST "$endpoint" \
         -H "Authorization: Bearer $token" \

@@ -1278,6 +1278,108 @@ two sonnet arms actually establish is the general form of the finding — on a
 reasoning-dominated call, the price is set by how many tokens the model thinks
 for, and picking a cheaper per-token model that thinks for more of them loses.
 
+### Haiku loses the same way, harder
+
+Two single probes on fixture 2 rather than arms of ten — enough to close the
+question, not enough to publish an F1 against. `claude-haiku-4-5` costs a fifth
+of opus per token and is the cheapest Claude on offer, so it is the strongest
+form of the cheaper-model argument.
+
+| probe (n=1) | F1 | cost | wall | output tokens | repairs |
+| --- | --- | --- | --- | --- | --- |
+| haiku, default | 0.494 | $0.339 | 355.0s | 61,927 | 5 |
+| haiku, low | 0.378 | $0.170 | 176.2s | 29,196 | **315** |
+| opus, low (arm of 10) | **0.705** | **$0.426** | **102.7s** | 12,089 | 0.0 |
+
+At default effort haiku spends **61,927 output tokens** — 2.9× opus's 21,331 —
+to arrive at 0.494, and takes 355s doing it. One probe against a ten-run mean is
+not a like-for-like comparison, but the gap is not close and neither is the
+direction: the cheapest model per token is 3.5× slower and costs 80% as much,
+for two thirds the score. Low effort halves both and drops it **exactly onto the
+bar**, 0.378, which is the same as failing.
+
+The repair column is the part that would have decided it even had the F1 held.
+The harness repairs an answer that misspells or invents a path rather than
+scoring it as a parse failure; opus and sonnet need this ~0 times a call, and
+low-effort haiku needed it **315 times in one call** — it stopped reproducing
+input paths faithfully and started approximating them. An answer that has to be
+repaired 315 times is not a grouping of this changeset.
+
+This is the third model to lose the same way, which is what makes it a finding
+rather than three results: **on a reasoning-dominated call, per-token price is
+nearly irrelevant, because a weaker model closes the capability gap by thinking
+longer and pays back the discount with interest** — in wall clock first, then in
+money. Ranked by fixture-2 output tokens: opus 21,331, sonnet 40,729, haiku
+61,927. That ordering is the whole result.
+
+## Another vendor: Gemini 3 over Vertex AI
+
+Every arm above answers through the Claude Code CLI, so every arm above shares
+one model family and one transport. Two Gemini 3 models were recorded through
+Vertex AI directly — ten runs per fixture, `full` only, same prompts, same
+scoring — which is the first evidence here that separates *this pass is hard*
+from *this vendor is expensive*.
+
+The mechanism is `scripts/grouping-refine-runs-vertex.sh`, which posts the same
+emitted prompt to `publishers/google/models/<m>:generateContent` and writes an
+envelope carrying the raw response, the measured wall clock, and the prices the
+cost column is derived from. Vertex reports tokens but not money, so the price
+table is in that script with its source and the date it was read; a published
+cost column is only as good as its source. `refine::RunRecord::parse` reads both
+envelope shapes, so these arms score beside the CLI ones with no other change.
+
+Both were run at the `low` thinking level — the floor Gemini 3 offers, matching
+the `--effort low` the Claude arms use.
+
+| arm | fx1 F1 | fx1 over bar | fx1 cost | fx1 wall | fx2 F1 | fx2 over bar | fx2 cost | fx2 wall |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| opus, low (CLI) | 0.450 | 10/10 | $0.261 | 65.8s | **0.705** | 10/10 | $0.426 | 102.7s |
+| gemini-3.1-pro, low | **0.492** | 10/10 | $0.070 | 30.6s | 0.550 | 8/10 | $0.095 | 43.9s |
+| gemini-3-flash, low | 0.452 | 9/10 | **$0.019** | **30.6s** | 0.585 | 10/10 | **$0.022** | **38.2s** |
+
+Output tokens are where the price comes from, and it is the same story the
+sonnet and haiku arms tell, running the other way: 5,172 and 5,553 on fixture 1
+against opus-low's 7,360, and 7,310 and 6,797 on fixture 2 against 12,089.
+**Gemini at its lowest thinking level is not a cheaper model spending more
+tokens; it is a cheaper model spending fewer.** That is what makes flash 13.7×
+cheaper on fixture 1 and 19.4× cheaper on fixture 2, and both models roughly 2×
+faster on wall clock.
+
+What they buy and what they cost:
+
+- **Fixture 1 they win outright.** `gemini-3.1-pro` posts 0.492, the best mean
+  of any arm recorded on this fixture, above opus-low's 0.450 and 1.25× the bar,
+  with 10 of 10 single calls clearing and no repairs. Flash matches opus-low's
+  mean at a fifteenth of the price.
+- **Fixture 2 they give up real accuracy.** 0.550 and 0.585 against opus-low's
+  0.705 — a loss of 0.12–0.16 F1, ~20% of the score. Both still clear a bar of
+  0.378 comfortably; flash clears it on all ten calls, pro on eight.
+- **Pro's tail is the worry, not its mean.** Its fixture-2 spread is 0.353–0.716
+  and two calls land under the bar; the two failures are the same failure, a
+  collapse into a handful of huge groups (precision 0.223, largest group 51.9%
+  of the changeset). Flash's worst call on that fixture is 0.512, comfortably
+  clear. **On this evidence flash is the more dependable of the two despite
+  being the weaker and cheaper model**, and pro's higher fixture-1 mean is not
+  worth its fixture-2 tail.
+- **Flash invents paths occasionally**: 0.5 repairs a call on fixture 1, 0.2 on
+  fixture 2 — a handful of hallucinated filenames the harness drops. Two orders
+  of magnitude below low-effort haiku's 315, and low enough not to bear on the
+  verdict, but not zero the way every Claude arm is.
+
+**Vertex caches implicitly, with no cache-control markers to set.** The
+fixture-2 Gemini runs report 3,259 and 2,852 `cachedContentTokenCount` against
+~6,200 total input — roughly half the prompt read from cache, at a tenth the
+input rate, without the harness asking. Fixture 1's prompt is smaller and cached
+nothing. This is a difference in kind from the CLI transport, where caching is
+prefix-based and the harness defeated it (next section).
+
+**Verdict: a real option, and the only lever that moves cost by an order of
+magnitude rather than a factor of two.** It is not free — fixture 2 costs 0.12
+F1 — but the ticket's brief was speed first with a little accuracy an acceptable
+price, and 2× the speed for a fifteenth of the money is the largest such trade
+on the table. See the recommendation below for how it is scoped, and the closing
+section for what two fixtures cannot say about a third vendor.
+
 ## Prompt caching: real, and defeated by the harness, not by the CLI
 
 `cacheReadInputTokens` is zero in all forty committed fixture-1 envelopes, and
@@ -1311,6 +1413,66 @@ instead of one.
 one actionable part is that the shipped pass should call from a stable directory
 rather than reproduce the harness's scratch-directory isolation.
 
+## The transport itself: the agent CLI is half the bill
+
+Every Claude arm above was recorded through the Claude Code CLI, and the Gemini
+arms through Vertex, so vendor and transport moved together and neither result
+could be attributed. `claude-opus-5` answers on both, so recording the same
+model, the same prompt and the same effort level both ways separates them. Ten
+runs per fixture per arm, `full` only.
+
+| | fx1 F1 | fx1 out tok | fx1 cost | fx1 wall | fx2 F1 | fx2 out tok | fx2 cost | fx2 wall |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| CLI, default effort | 0.353 | 15,793 | $0.472 | 141.8s | 0.763 | 21,331 | $0.657 | 190.6s |
+| Vertex, default effort | 0.421 | 11,994 | $0.324 | 107.0s | **0.785** | 16,948 | $0.469 | 147.2s |
+| CLI, low effort | **0.450** | 7,360 | $0.261 | 65.8s | 0.705 | 12,089 | $0.426 | 102.7s |
+| **Vertex, low effort** | 0.427 | **4,271** | **$0.131** | **36.6s** | 0.711 | **7,697** | **$0.237** | **60.0s** |
+
+**Same model, same effort, same prompt: the CLI costs 2.0× and 1.8× as much and
+takes 1.8× and 1.7× as long, and buys nothing that shows above run-to-run
+noise.** Across all four pairings the
+transport is worth roughly a factor of two on both money and wall clock — a
+larger, more reliable saving than the effort lever, and the only lever here whose
+accuracy cost is smaller than the arm's own run-to-run spread.
+
+Two things drive it, and only one is the obvious one.
+
+**Input.** The CLI sends 5,408 input plus 8,099 cache-write tokens on fixture 1;
+Vertex sends 4,864 and nothing else. The ~8.6K difference is the CLI's system
+preamble — tool descriptions, environment, harness instructions — which `--tools
+''` and `--setting-sources ''` reduce but do not remove, because the preamble is
+the CLI's, not the project's.
+
+**Output, which is the surprise.** The same model at the same effort emits
+**4,271 output tokens on Vertex against the CLI's 7,360** — 42% fewer — and
+7,697 against 12,089 on fixture 2. Output is reasoning-dominated (71.7%, first
+section), so this is the model *thinking substantially less for the same
+question*. The prompt is byte-identical; the only difference is the preamble
+wrapped around it. Carrying an agent harness's framing into a pure
+text-transformation call apparently invites the model to deliberate like an
+agent. That is a hypothesis, not a measurement — what is measured is the token
+count, and it is not close.
+
+The accuracy column is the part that makes this a free lever rather than a
+trade. At default effort Vertex is **better on both fixtures** (0.421 against
+0.353, 0.785 against 0.763) — and 0.785 is the highest fixture-2 mean of any arm
+recorded. At low effort it is a wash: 0.427 against 0.450 on fixture 1, 0.711
+against 0.705 on fixture 2, with 10 of 10 single calls over the bar on both
+fixtures either way. The fixture-1 gap of 0.023 runs the CLI's way and is real
+but small — a fifth of what a single CLI call varies by across its own ten runs
+(0.409–0.486), and reversed in sign on fixture 2. Nothing here says the CLI's
+extra tokens buy anything that survives the noise.
+
+**Verdict: on this evidence the shipped pass should call the provider directly,
+not shell out to an agent CLI.** That is `gd-26r.13`'s question, not this
+ticket's — `gd-26r.13` is open and unclaimed, and it is where "shelling out to
+an agent CLI from Rust" gets decided. This section is the input it was missing:
+the transport is not a free implementation detail, it is a 2× tax on both
+figures this ticket exists to cut. It also carries costs this harness cannot
+price — auth (the CLI carries a subscription, Vertex needs a GCP project and
+credentials), and the loss of whatever the CLI provides for free. Those belong
+to `gd-26r.13`.
+
 ## Consensus of three: the evidence, not the decision
 
 `gd-26r.11` bought three calls for determinism rather than accuracy. `gd-26r.8`
@@ -1340,6 +1502,11 @@ So the price of determinism is now three calls, $0.78 against $0.26, and a small
 accuracy loss — where under `gd-26r.11`'s default-effort arm it was three calls
 for a real fixture-2 gain (0.763 → 0.847).
 
+It is not an artefact of the CLI transport either. The same model at the same
+effort over Vertex says the same thing: fixture-1 triples average 0.422 against
+0.427 for single calls, with 111 of 120 clearing a bar all ten singles clear;
+fixture-2 triples average 0.717 against 0.711, a gain of 0.006 for 3× the money.
+
 **Decided: no vote, one call.** The human ruled speed first, and a little
 accuracy a fine price for it. Voting loses on both counts. A parallel triple does
 not cost one call's wall clock, it costs the *slowest* of three, so on a fixture
@@ -1353,41 +1520,65 @@ and at low effort it holds on neither fixture.
 
 ## Recommended shape
 
-**`full` at `--effort low`, one call, no vote.**
+**`full`, `claude-opus-5` at low effort, called directly rather than through the
+agent CLI, one call, no vote.**
 
 | | fixture 1 | fixture 2 |
 | --- | --- | --- |
 | bar | 0.394 | 0.378 |
-| F1 mean of 10 | **0.450** | **0.705** |
-| F1 worst of 10 | 0.409 | 0.574 |
+| F1 mean of 10 | **0.427** | **0.711** |
+| F1 worst of 10 | 0.411 | 0.627 |
 | single calls over bar | 10 of 10 | 10 of 10 |
-| cost per call | **$0.261** | **$0.426** |
-| wall clock | **65.8s** | **102.7s** |
+| cost per call | **$0.131** | **$0.237** |
+| wall clock | **36.6s** | **60.0s** |
+| repairs per call | 0.0 | 0.0 |
 
-Against what `gd-26r.11` shipped — three default-effort calls, ~$1.42 and ~$1.97
-a run — this is **5.4× and 4.6× cheaper**, and 2.2× and 1.9× faster than the
-single call the voted triple's wall clock is bounded by. It clears both bars on
-every one of twenty recorded calls, which the shipped shape does not do on
-fixture 1 in ten.
+Three changes from what `gd-26r.11` shipped, each measured separately above:
+drop the vote, drop the effort to `low`, and drop the agent CLI. Against three
+default-effort CLI calls at ~$1.42 and ~$1.97 a run, this is **10.8× and 8.3×
+cheaper**, and **3.9× and 3.2× faster** than the single call a voted triple's
+wall clock is bounded by. It clears both bars on all twenty recorded calls, needs
+no repairs, and it is the tightest arm in the document: 31.0–44.6s on fixture 1
+and 58.4–69.1s on fixture 2, twenty calls, no outlier.
+
+Only the third change is not free. Dropping the vote costs a little fixture-1
+accuracy and dropping to low effort costs a little on fixture 2 — both ruled
+acceptable, speed first. Dropping the CLI costs 0.023 F1 on fixture 1 — inside
+that arm's own run-to-run spread, and reversed on fixture 2 — and pays 2× on both
+figures, but it is `gd-26r.13`'s decision, not this document's, and it
+carries auth and dependency consequences this harness cannot price. **If the CLI
+stays, the shape is the same minus that change** — `full`, `--effort low`, one
+call — at $0.261/65.8s and $0.426/102.7s, F1 0.450 and 0.705, still 5.4× and 4.6×
+cheaper than shipped.
+
+### If cost matters more than accuracy on fixture 2
+
+`gemini-3-flash` at low thinking, same transport, is **$0.019 and $0.022 a call
+at 30.6s and 38.2s** — another 7–11× cheaper and modestly faster again — for
+0.452 and 0.585 F1. It beats the recommendation on fixture 1 and gives up 0.126
+on fixture 2, clears both bars, and occasionally invents a path the harness has
+to repair. That is a genuine option and not the recommendation: the remaining
+saving is fractions of a cent against a 0.126 F1 loss and a second vendor to
+depend on. Adding one is the human's call, not a number's.
 
 ### The wall-clock number, and how firm it is
 
-**66s on fixture 1 and 103s on fixture 2**, and the figure `gd-26r.14` should
-plan against is **roughly 60–130 seconds for a ~160-file changeset**.
+**37s on fixture 1 and 60s on fixture 2**, and the figure `gd-26r.14` should plan
+against is **roughly 30–70 seconds for a ~160-file changeset** — or **60–130s if
+`gd-26r.13` keeps the agent CLI**, which is the conservative number to design
+against while that stays open.
 
-Firm parts: ten serial calls per fixture, standard service tier, taken the same
-way and on the same machine as every other number here. It is the *tightest* arm
-recorded — standard deviation 6.4s on fixture 1 and 12.1s on fixture 2 against
-the sonnet arm's 35.1s and 77.7s — and the twenty calls span 56.7s to 131.1s with
-no outlier.
+Firm parts: ten serial calls per fixture, standard tier, `global` location, taken
+the same way and on the same machine as every other number here. The spread is
+the tightest recorded, 31.0–69.1s across all twenty calls with no outlier.
 
 Soft parts, stated plainly. This is two changesets of ~160 files each, one model,
-one week, one network. Wall clock tracks output volume at a near-constant
-generation rate, so a changeset that needs a bigger answer takes proportionally
-longer, and nothing here measures what 400 files does. The sonnet arm is the
-warning: a 27-minute call happened, on the same harness, inside a corpus whose
-mean was 5 minutes. Treat 60–130s as the shape of the interruption to design for
-and not as a bound.
+one week, one network, one region. Wall clock tracks output volume at a
+near-constant generation rate, so a changeset needing a bigger answer takes
+proportionally longer, and nothing here measures what 400 files does. The sonnet
+arm is the warning: a 27-minute call happened, on the same harness, inside a
+corpus whose mean was 5 minutes. Treat 30–70s as the shape of the interruption to
+design for and not as a bound.
 
 ## What this does not answer
 
@@ -1398,14 +1589,30 @@ and not as a bound.
 - **Whether the effort knob is stable to depend on.** `--effort` is a CLI flag,
   not part of any contract this repo owns, and its levels are not specified
   anywhere the harness can pin. A future CLI that reinterprets `low` moves every
-  number in this section, and nothing here would fail.
+  number in this section, and nothing here would fail. The direct-transport arms
+  use the same knob under another name — `output_config.effort` alongside
+  `thinking: {type: adaptive}`, which is what `claude-opus-5` accepts in place of
+  a token budget — so switching transport does not escape this.
+- **Why the CLI makes the model think 1.7× longer.** Measured on four arms and
+  consistent across both fixtures and both effort levels, but the *cause* is
+  inferred from one difference (the system preamble) between two otherwise
+  identical calls. The number is solid; the story about agent framing inviting
+  agent-shaped deliberation is a guess, and a CLI release that trims its preamble
+  would change the number without warning.
+- **What a second vendor costs outside the F1 column.** The Gemini arms are
+  priced from a table read on one day, run in one location, on preview model ids
+  (`gemini-3-flash-preview`, `gemini-3.1-pro-preview`) that carry no stability
+  promise at all. Nothing here measures rate limits, quota, or what happens when
+  a preview id is withdrawn.
 - **Naming quality, reading order, and hunk-reading** remain exactly as
   `gd-26r.11` left them — invisible to this harness. Low effort produces fewer,
   coarser groups, which a reader may like more or less than the default arm's
   finer ones, and no number here can say which.
 - **Whether a cheaper shape is now faster still.** `merge-only` ran 27.9s and
-  56.9s at default effort, about half the recommended arm, and has never been run
-  at low effort. `gd-26r.11` rejected it on accuracy — 0.398 against `full`'s
+  56.9s through the CLI at default effort, and has never been run at low effort
+  or over the direct transport — both of which roughly halve wall clock, so the
+  recommended `full` arm has now overtaken it on fixture 2 and drawn level on
+  fixture 1. `gd-26r.11` rejected it on accuracy — 0.398 against `full`'s
   0.763 on fixture 2 — and that rejection stands on default-effort evidence.
   Low effort moved `full` in a direction nobody predicted, so the low-effort
   merge-only number is not knowable from here. Twenty calls would settle it, and
