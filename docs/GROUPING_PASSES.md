@@ -1126,3 +1126,277 @@ strength of one fixture, not two.**
 `gd-26r.8` should assume group membership is not stable across re-runs: 3–12% of
 files keep identical group-mates across ten runs, and held state keyed on group
 identity will not survive a refresh.
+
+# Cutting the price (`gd-26r.24`)
+
+`gd-26r.11` shipped `full` refine at $0.47–0.66 and 141.8–190.6s per call, and
+three voted calls at roughly $1.40–2.00. This ticket asks what that price is
+actually buying and which levers move it. Every arm below is `full`, ten runs
+per fixture, scored by the same harness against the same bars — 0.394 on fixture
+1, 0.378 on fixture 2 — so the numbers sit beside `gd-26r.11`'s unchanged.
+
+Arms are now reported and locked by the **file-name slug**, not by the model.
+Two of the arms here answer as `claude-opus-5` exactly as the published one does
+and differ only in reasoning effort, which no envelope field records, so the
+model alone can no longer tell two experiments apart (`refine::arm_from_run_stem`,
+and `a_recorded_runs_arm_is_everything_between_the_shape_and_the_run_number`).
+`scripts/grouping-refine-runs.sh` grew `TUICR_REFINE_EFFORT` and
+`TUICR_REFINE_SHAPES` to record them, and refuses an effort arm filed under the
+published `opus` slug.
+
+## First: the output is mostly reasoning, not answer
+
+This was the gate on everything else, because the delta protocol — return only
+the files that moved — is worth building only if the 15,793 output tokens are
+mostly answer.
+
+The CLI reports one `outputTokens` figure covering both. The answer is in the
+envelope's `result`; the thinking blocks come back **encrypted** — an instrumented
+`--output-format stream-json` run records a `thinking` block whose `thinking`
+text is empty beside a 39,128-character `signature` — so the split cannot be read
+off a stream. It was measured instead by sending each recorded answer back as
+*input* behind a fixed carrier and taking the token delta, which counts it under
+the model's own tokeniser. The delta appears in both `inputTokens` and
+`cacheCreationInputTokens` and the two agree to within three tokens, which is
+what makes the method trustworthy rather than a chars-per-token guess. Measured
+directly for six answers, then applied as a per-fixture ratio (2.28 characters
+per token on fixture 1, 1.99 on fixture 2) to all forty committed runs:
+
+| fixture | shape | output | answer | reasoning | reasoning share |
+| --- | --- | --- | --- | --- | --- |
+| 1 | full | 15,793 | 4,476 | 11,317 | **71.7%** |
+| 1 | full-coarse | 15,725 | 4,342 | 11,382 | 72.4% |
+| 1 | merge-only | 2,373 | 339 | 2,034 | 85.7% |
+| 1 | naming-only | 1,927 | 525 | 1,402 | 72.7% |
+| 2 | full | 21,331 | 8,205 | 13,126 | **61.5%** |
+| 2 | full-coarse | 19,597 | 8,239 | 11,358 | 58.0% |
+| 2 | merge-only | 4,313 | 724 | 3,589 | 83.2% |
+| 2 | naming-only | 3,726 | 1,127 | 2,599 | 69.8% |
+
+**The bill is not the answer, it is the thinking about the answer.** The
+supporting arithmetic on `gd-26r.24` read `full` as spending ~98 output tokens
+per file against a path costing 15–25. The measured figure is **27.8 answer
+tokens per file** on fixture 1 — a path, its quotes, its comma and its share of
+the group scaffolding. The response format is already close to the floor a
+paths-naming answer can reach.
+
+### So the delta protocol is not worth building
+
+Its ceiling is the whole answer: 4,476 tokens of 15,793 on fixture 1 (28.3%) and
+8,205 of 21,331 on fixture 2 (38.5%). That is a delta protocol that returns
+*nothing at all*, which is not a protocol. A realistic one — most files stay put,
+so emit the movers — might halve the answer, for **~14% of output on fixture 1**.
+Against that: it changes the agent-CLI response contract across a process
+boundary and so needs `contract-approval` and `gd-26r.10`; it gives the model a
+lossier thing to reason over, which `gd-26r.21` showed this engine is sensitive
+to; and there is no reason to expect the *reasoning* — the other 72% — to shrink
+at all, since the model still has to decide the whole partition before it can
+say which parts of it moved.
+
+**Verdict: measured and dropped.** No contract approval was sought, because
+nothing here proposes to change the contract. The lever the split points at
+instead costs one flag.
+
+## The lever: reasoning effort
+
+If reasoning is 72% of the bill, the knob that sets how much of it happens is the
+lever. `MAX_THINKING_TOKENS` does nothing on this CLI — one run at `1024` and one
+at `0` returned 16,013 and 18,264 output tokens, both inside the published
+arm's ordinary spread. `claude --effort low` is the knob that works.
+
+Recorded as the `opus-low` arm, ten runs per fixture, same prompt, same model:
+
+| | fixture 1 default | fixture 1 **low** | fixture 2 default | fixture 2 **low** |
+| --- | --- | --- | --- | --- |
+| F1 mean | 0.353 | **0.450** | 0.763 | 0.705 |
+| worst / best | 0.321 / 0.373 | 0.409 / 0.486 | 0.673 / 0.844 | 0.574 / 0.805 |
+| single calls over bar | 0 of 10 | **10 of 10** | 10 of 10 | 10 of 10 |
+| triples over bar | 50 of 120 | **93 of 120** | 120 of 120 | 120 of 120 |
+| output tokens | 15,793 | 7,360 | 21,331 | 12,089 |
+| of which reasoning | 11,317 (71.7%) | **3,400 (46.2%)** | 13,126 (61.5%) | 4,157 (34.4%) |
+| cost | $0.472 | **$0.261** | $0.657 | **$0.426** |
+| wall clock | 141.8s | **65.8s** | 190.6s | **102.7s** |
+
+Reasoning falls 70% on fixture 1 and 68% on fixture 2 while the answer barely
+moves (4,476 → 3,960 tokens; 8,205 → 7,932). The lever pulls exactly the term the
+split identified, which is the strongest evidence that the split was measured
+right.
+
+**And on fixture 1 it does not cost accuracy — it buys it.** `gd-26r.11`'s
+sharpest negative finding was that no single `full` call cleared fixture 1's bar
+in ten attempts. At low effort **all ten clear it**, mean 0.450 against a 0.394
+bar, worst run 0.409. The per-group table says why, and it is the same two groups
+that were the whole loss:
+
+| expected group | files | heuristic | default, mean of 10 | low, mean of 10 |
+| --- | --- | --- | --- | --- |
+| project-view | 28 | 0.75 | 0.33 | **0.66** |
+| pr-actions | 29 | 0.45 | 0.28 | **0.44** |
+| enterprise-host-routing | 18 | 0.20 | 0.26 | **0.49** |
+| work-items | 8 | 0.39 | 0.43 | **0.75** |
+| settings-repo-icon | 5 | 0.20 | 1.00 | 0.96 |
+| github-client-plumbing | 38 | 0.05 | 0.15 | 0.18 |
+
+Default effort returns 15–20 groups against 13 expected; low effort returns
+10–14. **The fixture-1 loss was over-splitting, and thinking longer is what
+caused it** — more reasoning means more second-guessing of a concern boundary the
+heuristics and the human both drew coarser. That is a fixture-1 statement, and
+fixture 2 pays 0.058 for the same coarsening; but fixture 2 sits at 1.9× its bar
+either way, so the trade is one-sided.
+
+Effort `medium` was probed once rather than recorded as an arm, because no
+decision turns on it: on fixture 1 it returned 10,107 output tokens in 91.6s for
+$0.330, between the two arms on every axis. `low` is the floor the CLI offers.
+
+## The cheaper model: refuted, at both efforts
+
+`gd-26r.11` left this untested — "sonnet resolves on this deployment and was not
+run". It was run, twice, ten runs per fixture per arm.
+
+| arm | fx1 F1 | fx1 cost | fx1 wall | fx2 F1 | fx2 cost | fx2 wall | output tokens (fx1/fx2) |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| opus, default | 0.353 | $0.472 | 141.8s | 0.763 | $0.657 | 190.6s | 15,793 / 21,331 |
+| **opus, low** | **0.450** | **$0.261** | **65.8s** | **0.705** | **$0.426** | **102.7s** | 7,360 / 12,089 |
+| sonnet, default | 0.419 | $0.525 | 241.9s | 0.577 | $0.699 | 331.5s | 30,544 / 40,729 |
+| sonnet, low | 0.431 | $0.205 | 66.9s | 0.528 | $0.393 | 138.5s | 9,227 / 19,911 |
+
+**Sonnet at default effort is dearer and slower than opus at default effort**, on
+both fixtures — $0.525 against $0.472 and 241.9s against 141.8s on fixture 1,
+$0.699 against $0.657 and 331.5s against 190.6s on fixture 2 — while scoring
+0.577 against 0.763 on fixture 2. It is cheaper per token and spends 1.9× as many
+of them: 40,729 output tokens on fixture 2. The ~5× saving the ticket hoped for
+is not merely absent, the sign is wrong. Its tail is worse than its mean, too:
+one fixture-2 call was abandoned after 27 minutes and re-recorded, and the arm's
+wall-clock spread is 239.6–551.0s against opus-low's 85.9–131.1s.
+
+**Sonnet at low effort is dominated by opus at low effort.** It saves $0.056 and
+$0.033 a call and gives up 0.019 F1 on fixture 1 and 0.177 on fixture 2, and on
+fixture 2 it is also 36s *slower*. There is no axis on which it is the better buy.
+
+**Verdict: the cheaper model is not a lever here; the effort knob is.** What the
+two sonnet arms actually establish is the general form of the finding — on a
+reasoning-dominated call, the price is set by how many tokens the model thinks
+for, and picking a cheaper per-token model that thinks for more of them loses.
+
+## Prompt caching: real, and defeated by the harness, not by the CLI
+
+`cacheReadInputTokens` is zero in all forty committed fixture-1 envelopes, and
+zero again in all ten `opus-low` fixture-2 runs, which send a byte-identical
+prompt one after another. That reads as caching being off.
+
+It is not. Three identical calls issued from **one stable working directory**:
+
+| call | input | cache write | cache read | cost |
+| --- | --- | --- | --- | --- |
+| 1 | 5,408 | 8,099 | 0 | $0.0853 |
+| 2 | 5,408 | 0 | **8,099** | $0.0387 |
+| 3 | 5,408 | 0 | **8,099** | $0.0396 |
+
+The recorder runs every call from a fresh `mktemp -d` — deliberately, so the
+agent cannot read the repo it is grouping — and the working directory is part of
+the CLI's system preamble, so every call presents a different prefix and writes
+the cache afresh. **The zero is an artefact of the measurement harness, not a
+property of the shipped pass**, which will run from a stable directory.
+
+The gain is small and awkwardly shaped. Priced from the table above, a warm
+prefix turns 8,069 cache-write tokens into cache reads and saves **$0.046 a
+call** — 17.8% of `opus-low`'s $0.261 on fixture 1, and nothing at all on the
+first call, which is the only call a single-call refine makes. It pays only
+across repeats of the same prefix, and for a voted triple it pays only if the
+second and third calls are issued *after* the first has written — which is
+exactly the serialisation that makes a triple cost three calls' wall clock
+instead of one.
+
+**Verdict: real, free, and worth taking where it falls out; not a lever.** The
+one actionable part is that the shipped pass should call from a stable directory
+rather than reproduce the harness's scratch-directory isolation.
+
+## Consensus of three: the evidence, not the decision
+
+`gd-26r.11` bought three calls for determinism rather than accuracy. `gd-26r.8`
+then made grouping a persisted artefact, so the human sees one refine result and
+keeps it, which is the assumption that argument rested on. This document does not
+settle whether that is still worth 3×; it records what voting is now worth.
+
+On the recommended `opus-low` arm, voting does not help accuracy on either
+fixture, and on fixture 1 it **hurts**:
+
+| | fixture 1 | fixture 2 |
+| --- | --- | --- |
+| single call, mean of 10 | **0.450** | **0.705** |
+| every triple, mean of 120 | 0.417 | 0.708 |
+| every triple, upper median | 0.422 | 0.722 |
+| first triple (`consensus of 3`) | 0.411 | 0.604 |
+| single calls over bar | 10 of 10 | 10 of 10 |
+| triples over bar | 93 of 120 | 120 of 120 |
+
+The mechanism is the mirror of the effort finding: consensus keeps only pairs a
+majority of runs agree on, so it coarsens where runs disagree and re-introduces
+some of the fragmentation low effort removed. On fixture 1 the average triple
+scores 0.033 *below* the average single call, and 27 of 120 triples fall under a
+bar every single call clears.
+
+So the price of determinism is now three calls, $0.78 against $0.26, and a small
+accuracy loss — where under `gd-26r.11`'s default-effort arm it was three calls
+for a real fixture-2 gain (0.763 → 0.847). **That is a decision for the human,
+and this ticket does not take it.** What it removes is the accuracy argument for
+voting: on the recommended arm there isn't one left.
+
+## Recommended shape
+
+**`full` at `--effort low`, one call, no vote.**
+
+| | fixture 1 | fixture 2 |
+| --- | --- | --- |
+| bar | 0.394 | 0.378 |
+| F1 mean of 10 | **0.450** | **0.705** |
+| F1 worst of 10 | 0.409 | 0.574 |
+| single calls over bar | 10 of 10 | 10 of 10 |
+| cost per call | **$0.261** | **$0.426** |
+| wall clock | **65.8s** | **102.7s** |
+
+Against what `gd-26r.11` shipped — three default-effort calls, ~$1.42 and ~$1.97
+a run — this is **5.4× and 4.6× cheaper**, and 2.2× and 1.9× faster than the
+single call the voted triple's wall clock is bounded by. It clears both bars on
+every one of twenty recorded calls, which the shipped shape does not do on
+fixture 1 in ten.
+
+### The wall-clock number, and how firm it is
+
+**66s on fixture 1 and 103s on fixture 2**, and the figure `gd-26r.14` should
+plan against is **roughly 60–130 seconds for a ~160-file changeset**.
+
+Firm parts: ten serial calls per fixture, standard service tier, taken the same
+way and on the same machine as every other number here. It is the *tightest* arm
+recorded — standard deviation 6.4s on fixture 1 and 12.1s on fixture 2 against
+the sonnet arm's 35.1s and 77.7s — and the twenty calls span 56.7s to 131.1s with
+no outlier.
+
+Soft parts, stated plainly. This is two changesets of ~160 files each, one model,
+one week, one network. Wall clock tracks output volume at a near-constant
+generation rate, so a changeset that needs a bigger answer takes proportionally
+longer, and nothing here measures what 400 files does. The sonnet arm is the
+warning: a 27-minute call happened, on the same harness, inside a corpus whose
+mean was 5 minutes. Treat 60–130s as the shape of the interruption to design for
+and not as a bound.
+
+## What this does not answer
+
+- **Whether low effort transfers.** Two fixtures again. Low effort wins fixture 1
+  by removing over-splitting and loses 0.058 on fixture 2 for the same reason; a
+  third changeset whose true grouping is *finer* than the heuristics' would be
+  where this trade goes the other way, and neither fixture is that.
+- **Whether the effort knob is stable to depend on.** `--effort` is a CLI flag,
+  not part of any contract this repo owns, and its levels are not specified
+  anywhere the harness can pin. A future CLI that reinterprets `low` moves every
+  number in this section, and nothing here would fail.
+- **Naming quality, reading order, and hunk-reading** remain exactly as
+  `gd-26r.11` left them — invisible to this harness. Low effort produces fewer,
+  coarser groups, which a reader may like more or less than the default arm's
+  finer ones, and no number here can say which.
+- **`gd-26r.11`'s ship verdict is untouched.** This section prices the pass; it
+  does not re-open whether to offer it. What it does change is the fixture-1
+  half of the accuracy claim, which the human should read before that verdict is
+  next relied on: "on fixture 1 refine is slightly worse than doing nothing" is a
+  default-effort statement, and at low effort refine beats the heuristics on
+  fixture 1 too.
