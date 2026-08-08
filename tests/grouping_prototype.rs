@@ -657,6 +657,33 @@ const LOW_EFFORT_MEAN_F1: f64 = 0.450;
 const LOW_EFFORT_WORST_F1: f64 = 0.409;
 const LOW_EFFORT_BEST_F1: f64 = 0.486;
 
+/// The same model at the same effort, called at the provider instead of through
+/// the agent CLI. `gd-26r.24` recommends this arm, and the reason is the pairing
+/// rather than the row: the CLI arm above and this one differ in transport and
+/// nothing else, and this one is half the price and 1.8x the speed for a score
+/// inside the noise. `gd-26r.13` decides whether to take it.
+const DIRECT_ARM: &str = "vertex-opus-low";
+
+/// How much of the bill the agent CLI accounts for on fixture 1, as a ratio of
+/// the direct arm. Locked as floors rather than point values: the claim in
+/// `docs/GROUPING_PASSES.md` is "roughly a factor of two on both money and wall
+/// clock", and a re-record that widened the gap leaves that claim true while one
+/// that closed it does not. The output-token floor is the mechanism — the same
+/// model thinks measurably longer behind the CLI's preamble — and it is locked
+/// too, because a transport finding that survived only in the cost column would
+/// be a pricing artefact rather than the effect this document describes.
+const CLI_COST_MULTIPLE: f64 = 1.8;
+const CLI_WALL_CLOCK_MULTIPLE: f64 = 1.6;
+const CLI_OUTPUT_TOKEN_MULTIPLE: f64 = 1.5;
+
+/// How far the two transports' fixture-1 means may sit apart before the claim
+/// that transport costs no accuracy stops holding. Wider than
+/// `PUBLISHED_F1_SLACK`, which brackets one arm against its own re-record; this
+/// brackets two ten-run arms against each other, and the recorded gap of 0.023
+/// is a fifth of what a single CLI call varies by (0.409-0.486). Tight enough
+/// that a transport which started costing a visible slice of F1 fails.
+const TRANSPORT_F1_SLACK: f64 = 0.04;
+
 /// The published fixture-1 `full` triple distribution: 50 of 120 clear the bar,
 /// the spread runs 0.343 to 0.439, and the upper median is 0.369. Each figure is
 /// locked as a band closed on both sides, with a little slack for a re-record.
@@ -2606,6 +2633,89 @@ fn low_effort_full_clears_the_bar_on_every_fixture_one_call() {
         "the average low-effort triple scored {voted_mean:.3} against {mean:.3} for the \
          average single call, so voting is no longer the loss the consensus finding \
          reports it as"
+    );
+}
+
+/// The transport finding, locked as a comparison rather than as a row: the same
+/// model, the same prompt and the same reasoning effort, recorded once through
+/// the agent CLI and once against the provider directly. Everything the
+/// recommendation rests on is a ratio between those two arms, so the assertions
+/// are ratios — a re-record that moved both arms together should not fail, and
+/// one that closed the gap must.
+///
+/// The accuracy half is asserted as a band around the CLI arm rather than as a
+/// win. `docs/GROUPING_PASSES.md` claims the direct call costs *nothing* in F1,
+/// and a direct arm that drifted either way would make that the wrong sentence.
+#[test]
+fn calling_the_provider_directly_halves_the_bill_for_the_same_answer() {
+    let (changeset, expected) = orca();
+    let direct = arm(ORCA_FIXTURE, &changeset, Shape::Full, DIRECT_ARM);
+    let cli = arm(ORCA_FIXTURE, &changeset, Shape::Full, LOW_EFFORT_ARM);
+    assert_eq!(
+        direct.len(),
+        RECORDED_RUNS,
+        "the {DIRECT_ARM} arm is published as {RECORDED_RUNS} runs, and the transport \
+         comparison is only as good as the corpus sizes either side of it"
+    );
+
+    let mean = |runs: &[Run], field: fn(&Run) -> f64| -> f64 {
+        runs.iter().map(field).sum::<f64>() / runs.len() as f64
+    };
+    for (label, cli_side, direct_side, floor) in [
+        (
+            "cost",
+            mean(&cli, |run| run.record.cost_usd),
+            mean(&direct, |run| run.record.cost_usd),
+            CLI_COST_MULTIPLE,
+        ),
+        (
+            "wall clock",
+            mean(&cli, |run| run.record.wall_clock_ms),
+            mean(&direct, |run| run.record.wall_clock_ms),
+            CLI_WALL_CLOCK_MULTIPLE,
+        ),
+        (
+            "output tokens",
+            mean(&cli, |run| run.record.output_tokens),
+            mean(&direct, |run| run.record.output_tokens),
+            CLI_OUTPUT_TOKEN_MULTIPLE,
+        ),
+    ] {
+        let multiple = cli_side / direct_side;
+        assert!(
+            multiple >= floor,
+            "the CLI spends {multiple:.2}x the direct call's {label} ({cli_side:.3} against \
+             {direct_side:.3}), under the published {floor:.1}x, so the transport is no \
+             longer worth what this document says it is"
+        );
+    }
+
+    let bar = passes::group(&changeset, GroupingConfig::default())
+        .partition()
+        .score_against(&expected)
+        .f1;
+    let f1 = |runs: &[Run]| -> Vec<f64> {
+        runs.iter()
+            .map(|run| run.refined.partition.score_against(&expected).f1)
+            .collect()
+    };
+    let direct_f1s = f1(&direct);
+
+    let singles = direct_f1s.iter().filter(|f1| **f1 > bar).count();
+    assert_eq!(
+        singles, RECORDED_RUNS,
+        "{singles} of {RECORDED_RUNS} direct calls clear the {bar:.3} bar, not all of them, \
+         so the recommended arm no longer holds on fixture 1"
+    );
+
+    let direct_mean = direct_f1s.iter().sum::<f64>() / direct_f1s.len() as f64;
+    let cli_f1s = f1(&cli);
+    let cli_mean = cli_f1s.iter().sum::<f64>() / cli_f1s.len() as f64;
+    assert!(
+        (direct_mean - cli_mean).abs() <= TRANSPORT_F1_SLACK,
+        "the direct arm averaged {direct_mean:.3} against the CLI arm's {cli_mean:.3}, a gap \
+         wider than {TRANSPORT_F1_SLACK:.3} — the transport is published as costing nothing \
+         beyond run-to-run noise, and at that distance it costs something"
     );
 }
 
