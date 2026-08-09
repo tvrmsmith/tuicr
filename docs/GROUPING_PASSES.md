@@ -1656,6 +1656,25 @@ both run through the same recorder and the same envelope. Keeping the agent CLI
 instead is a further step back again: `full`, `--effort low`, one call, at
 $0.261/65.8s and $0.426/102.7s for F1 0.450 and 0.705.
 
+### What actually ships: the runner-up, and no effort knob
+
+The recommendation above stands as written — it is what the numbers say under the
+stated priority. **The shipped default is the runner-up**: `claude-opus-5` at low
+effort over Vertex. That is a human call made after the measurements, weighing the
+0.126 fixture-2 gap, the invented paths and the preview model id against 20
+seconds, and it is recorded here rather than folded into the recommendation so the
+evidence and the ruling stay separable.
+
+**The model is configurable; reasoning effort is not.** The model is a config knob
+defaulting to `claude-opus-5`, so switching to flash — or to whatever is cheapest
+in six months — is a config change and not a code change. Effort is pinned at low
+with no knob. Low is not universally better, and the exposed-knob case would rest
+on that: default effort buys **+0.074 on fixture 2** (0.785 against 0.711). It
+loses fixture 1 outright — **0.421 against 0.427 with 8 of 10 over the bar against
+10 of 10** — at **2.5× the cost and 2.9× the wall clock**. A knob whose other
+setting is slower, dearer, and better on one fixture of two is a knob nobody can
+be told how to set, so there is one setting and the document says why.
+
 ### The wall-clock number, and how firm it is
 
 **31s on fixture 1 and 38s on fixture 2**, and the figure `gd-26r.14` should plan
