@@ -698,6 +698,22 @@ const RECOMMENDED_SINGLES_OVER_BAR: usize = 9;
 /// not reproduce a ratio to two decimal places.
 const RECOMMENDED_SPEEDUP: f64 = 1.10;
 
+/// The `cold` control's fixture-1 row on the recommended arm: one call in ten
+/// clears the bar, against nine in ten for the same arm shown the heuristic
+/// grouping. Locked as an equality for the same reason
+/// [`RECOMMENDED_SINGLES_OVER_BAR`] is — the document's claim is that the
+/// recommended arm run cold is a call not worth making, and a corpus that
+/// drifted either way makes that sentence wrong.
+const COLD_SINGLES_OVER_BAR: usize = 1;
+
+/// How much F1 the heuristic seed is worth on fixture 1's recommended arm:
+/// 0.452 warm against 0.371 cold, so 0.081 recorded. The floor is set well
+/// under it because the claim the document rests on is that the seed is worth
+/// *more than the choice of model* — the widest model-to-model gap this
+/// document records on fixture 1 is 0.065 — and a margin that fell under that
+/// would leave the claim unsupported even if the sign still held.
+const COLD_F1_COST: f64 = 0.050;
+
 /// How much of the bill the agent CLI accounts for on fixture 1, as a ratio of
 /// the direct arm. Locked as floors rather than point values: the claim in
 /// `docs/GROUPING_PASSES.md` is "roughly a factor of two on both money and wall
@@ -927,6 +943,48 @@ fn the_emitted_prompt_carries_the_contract() {
         let prompt = refine::prompt(&changeset, &grouping, shape);
         let slug = shape.slug();
 
+        // The control's whole point is that it is *not* shown the heuristic
+        // answer, so what is locked for it is the absence: no group blocks, and
+        // every path present exactly once as a flat listing. A refactor that
+        // leaked the grouping back into this prompt would otherwise turn the
+        // control silently into a fifth refine shape.
+        if shape == Shape::Cold {
+            assert!(
+                parse_prompt_groups(&prompt).is_empty(),
+                "cold: the prompt must show no heuristic groups"
+            );
+            assert!(
+                !prompt.contains("heuristic"),
+                "cold: the prompt must not mention a heuristic grouping at all"
+            );
+            let listed: Vec<&str> = prompt
+                .lines()
+                .filter_map(|line| line.strip_prefix("  "))
+                .filter_map(|rest| rest.split_once(' '))
+                .filter(|(status, _)| matches!(*status, "A" | "M" | "D" | "R"))
+                .map(|(_, path)| path)
+                .collect();
+            let expected: Vec<&str> = changeset
+                .files
+                .iter()
+                .map(|file| file.path.as_str())
+                .collect();
+            assert_eq!(
+                listed, expected,
+                "cold: the prompt must list every changeset file once, in changeset order"
+            );
+            assert!(
+                prompt.contains("\"files\": [\"path\", ...]")
+                    && prompt.contains("There is no starting grouping; produce one."),
+                "cold: the prompt must ask for a grouping from scratch in the `full` schema"
+            );
+            assert!(
+                prompt.contains(&format!("of the {} input paths", changeset.len())),
+                "cold: the prompt must state the file count it demands back"
+            );
+            continue;
+        }
+
         let blocks = parse_prompt_groups(&prompt);
         let shown: BTreeMap<&str, Vec<&str>> = blocks
             .iter()
@@ -988,6 +1046,7 @@ fn the_emitted_prompt_carries_the_contract() {
                 "Do NOT change which files are in which group",
                 &["\"merge\"", "Prefer fewer, larger groups"],
             ),
+            Shape::Cold => unreachable!("checked above; it shows no groups to assert over"),
         };
         assert!(
             prompt.contains(schema),
@@ -1013,6 +1072,7 @@ fn the_emitted_prompt_carries_the_contract() {
                 prompt.contains(&format!("of the {group_count} input group")),
                 "{slug}: the prompt must state the group count it demands back"
             ),
+            Shape::Cold => unreachable!("checked above"),
         }
     }
 }
@@ -2310,7 +2370,7 @@ fn refine_report() {
                     runs[0].refined.order.join(", ")
                 );
 
-                if matches!(shape, Shape::Full | Shape::FullCoarse) {
+                if matches!(shape, Shape::Full | Shape::FullCoarse | Shape::Cold) {
                     println!(
                         "  where it wins and loses, per expected group \
                          (heuristic -> run 0 / mean of {} runs, then every run):",
@@ -2415,7 +2475,7 @@ fn every_recorded_naming_only_run_applied_to_the_heuristic_partition() {
 #[test]
 fn no_committed_run_needed_a_repair() {
     let (changeset, _) = orca();
-    for shape in Shape::ALL {
+    for shape in Shape::REVISIONS {
         let runs = published_arm(ORCA_FIXTURE, &changeset, shape);
         expect_full_corpus(ORCA_FIXTURE, &runs, shape);
         for (index, run) in runs.iter().enumerate() {
@@ -2860,6 +2920,93 @@ fn the_recommended_arm_buys_speed_and_pays_for_it_on_fixture_one() {
         "the recommended arm needed {repairs} repairs across {RECORDED_RUNS} calls, over the \
          {ceiling} this document treats as tolerable — at that rate it is approximating the \
          changeset's filenames rather than grouping them"
+    );
+}
+
+/// The heuristic grouping in the prompt is doing real work, not decorating a
+/// call the model would have made just as well from a bare file list.
+///
+/// Every other figure in this file scores the *pair* — heuristics plus model —
+/// because every shape but `cold` is handed the heuristic answer to revise. So
+/// nothing here could distinguish a seed that helps from a seed that is merely
+/// present, and `gd-26r.11`'s decision to seed the pass went unexamined for two
+/// tickets. `cold` is the control, and this is its verdict on the arm the
+/// document recommends: shown nothing, the recommendation stops clearing the
+/// bar.
+///
+/// Fixture 1 only, like every locked figure here — fixture 2 is private and
+/// unavailable to CI — which understates the finding. Fixture 2 loses 0.165 on
+/// this arm and 0.283 on the runner-up, and it is where both cold arms collapse
+/// into lumping half the changeset into one group.
+#[test]
+fn the_heuristic_seed_is_load_bearing() {
+    let (changeset, expected) = orca();
+    let warm = arm_of(
+        ORCA_FIXTURE,
+        &changeset,
+        Shape::Full,
+        RECOMMENDED_ARM,
+        RECOMMENDED_MODEL,
+    );
+    let cold = arm_of(
+        ORCA_FIXTURE,
+        &changeset,
+        Shape::Cold,
+        RECOMMENDED_ARM,
+        RECOMMENDED_MODEL,
+    );
+    assert_eq!(
+        cold.len(),
+        RECORDED_RUNS,
+        "the cold control is published as {RECORDED_RUNS} runs, and it is only a control at \
+         the same N as the arm it is controlling for"
+    );
+
+    let bar = passes::group(&changeset, GroupingConfig::default())
+        .partition()
+        .score_against(&expected)
+        .f1;
+    let mean = |runs: &[Run]| -> f64 {
+        runs.iter()
+            .map(|run| run.refined.partition.score_against(&expected).f1)
+            .sum::<f64>()
+            / runs.len() as f64
+    };
+    let (warm_mean, cold_mean) = (mean(&warm), mean(&cold));
+    assert!(
+        warm_mean - cold_mean >= COLD_F1_COST,
+        "the seed is worth {:.3} F1 on this arm, under the {COLD_F1_COST:.3} floor — the \
+         document argues the seed matters more than the choice of model, and under that \
+         margin it does not",
+        warm_mean - cold_mean
+    );
+
+    let singles = cold
+        .iter()
+        .filter(|run| run.refined.partition.score_against(&expected).f1 > bar)
+        .count();
+    assert_eq!(
+        singles, COLD_SINGLES_OVER_BAR,
+        "{singles} of {RECORDED_RUNS} cold calls clear the {bar:.3} bar, not the published \
+         {COLD_SINGLES_OVER_BAR} — the document's sentence is that the recommended arm run \
+         cold is a call not worth making, and that is a claim about this count"
+    );
+
+    // The seed is free, which is half of why it stays. A shorter prompt buys
+    // nothing back: the cold answer has to write out every group from nothing,
+    // so the output grows by more than the input shrank. Bounded rather than
+    // pinned — these are network-recorded costs — and it is a *floor* on the
+    // cold price, because the finding at risk is cold turning out to be the
+    // cheap option after all.
+    let cost = |runs: &[Run]| -> f64 {
+        runs.iter().map(|run| run.record.cost_usd).sum::<f64>() / runs.len() as f64
+    };
+    let (warm_cost, cold_cost) = (cost(&warm), cost(&cold));
+    assert!(
+        cold_cost >= warm_cost * 0.9,
+        "dropping the seed cut the bill from ${warm_cost:.3} to ${cold_cost:.3} a call, more \
+         than the rounding the document reports — at a real discount the trade stops being \
+         one-sided and the finding needs rewriting rather than re-running"
     );
 }
 
