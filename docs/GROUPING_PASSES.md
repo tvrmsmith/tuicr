@@ -757,6 +757,13 @@ Nothing here constrains `gd-26r.13`'s answer.
 | **merge-only** | merge whole heuristic groups; never split one |
 | **naming-only** | rename groups and order them; the partition is fixed |
 
+All four are *revisions*: each is handed the heuristic grouping and asked to
+improve on it. `gd-26r.24` later added a fifth, **cold** — no starting grouping
+at all — which is not a shape to choose between but the control that says what
+the other four owe to their seed. It is measured in [The heuristics are
+load-bearing](#the-heuristics-are-load-bearing-the-cold-control) and is not part
+of the eighty runs below.
+
 `apply` enforces the strict partition `docs/GROUPING.md` assumes before its
 numbered rules — every file in exactly one group — on the way back in, and
 counts repairs. **Repairs were 0.0 in every one of the eighty recorded runs**,
@@ -1526,6 +1533,71 @@ weigh against that. What is left is determinism, which `gd-26r.8` already
 supplies by persisting the grouping: the human sees one result and keeps it.
 `gd-26r.11`'s consensus of three is superseded — it was a default-effort finding,
 and at low effort it holds on neither fixture.
+
+## The heuristics are load-bearing: the cold control
+
+Every shape above hands the model the heuristic grouping and asks it to improve
+on it, so every number above measures the *pair*. None of them can say whether
+the heuristics are helping the call or merely anchoring it — a model that would
+have done as well from a bare file list is being credited for work it did not
+need. `cold` is the control that separates them: same rules, same paths, same
+change statuses, no starting grouping, "produce one".
+
+Ten runs, both fixtures, on the recommended arm and on its runner-up. `full` is
+the same arm with the heuristic grouping restored to the prompt.
+
+| | fixture 1 `cold` | fixture 1 `full` | fixture 2 `cold` | fixture 2 `full` |
+| --- | --- | --- | --- | --- |
+| bar | 0.394 | 0.394 | 0.378 | 0.378 |
+| `gemini-3-flash` F1 mean | 0.371 | **0.452** | 0.420 | **0.585** |
+| `gemini-3-flash` over bar | **1 of 10** | 9 of 10 | 7 of 10 | 10 of 10 |
+| `opus-low` F1 mean | 0.445 | 0.427 | 0.428 | **0.711** |
+| `opus-low` over bar | 8 of 10 | 10 of 10 | 10 of 10 | 10 of 10 |
+
+**The seed is worth more than the model.** Three of the four pairings lose
+without it, and the fixture-2 losses are not close: flash drops 0.165 and
+opus-low drops 0.283, which is larger than any gap this document has measured
+between two models, two efforts or two transports. Flash on fixture 1 falls from
+nine calls over the bar to one — the recommended arm, run cold, is a call not
+worth making.
+
+The one cell that improves is `opus-low` on fixture 1, 0.427 to 0.445, and it
+buys that mean by widening: the cold spread is 0.314-0.550 against a warm arm
+where every call cleared the bar, so two of ten cold calls now land under it. A
+higher mean that clears the bar less often is the trade this document has
+refused everywhere else, and refuses here.
+
+**The failure mode is the one already on file.** On fixture 2 both cold arms
+collapse into lumping — precision 0.16-0.31 against recall 0.80-0.91, largest
+group 41-64% of the changeset, against 13-20% for the same arms warm. That is
+exactly the attractor `gemini-3.1-pro` fell into on two of its ten *warm* runs:
+grouping by directory subtree instead of by concern, rule 1's named failure.
+Cold, both models fall into it on nearly every run. The heuristic grouping's
+real contribution is not the answer it supplies but the shape it forbids — shown
+thirteen concern-sized groups, a model revises them; shown a bare list, it
+reaches for the file tree.
+
+`opus-low` cold on fixture 2 is the clearest picture of it: run-to-run agreement
+0.956, F1 pinned in a 0.420-0.443 band, the same lumped answer ten times. It is
+the most *stable* arm in this document and one of the least accurate. Stability
+here is a model converging on the wrong structure, which is worth remembering
+before reading any agreement figure as quality.
+
+There is no compensating saving. The cold prompt is ~5% shorter, but the answer
+is longer — nothing is inherited, so every group is written out from nothing —
+and the two roughly cancel: flash fixture 1 is $0.021 cold against $0.019 warm,
+`opus-low` fixture 2 $0.230 against $0.237, wall clock within a few seconds
+either way on all four. The seed is free.
+
+**So the heuristics stay in the prompt.** The refine pass is a revision pass by
+evidence and not just by design, and `gd-26r.11`'s decision to seed it was doing
+real work that nothing recorded before this control could see.
+
+Two caveats on the control itself. `apply` still restores a dropped path to its
+heuristic group, so the heuristics are a safety net even here — the repair
+counts say how much that mattered, and at 0.0-0.3 per call it did not. And the
+prompt was written once, not tuned; a cold prompt built to be a cold prompt
+might close some of the gap. It would have to close a lot of it.
 
 ## Recommended shape
 
