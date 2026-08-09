@@ -643,26 +643,60 @@ const PUBLISHED_MODEL: &str = "claude-opus-5";
 /// them. See `refine::arm_from_run_stem`.
 const PUBLISHED_ARM: &str = "opus";
 
-/// The arm `gd-26r.24` recommends: `full` at `--effort low`, recorded under its
-/// own slug because the envelope has no field that records effort.
+/// `full` at `--effort low` through the agent CLI. `gd-26r.24`'s first
+/// recommendation, and still the fallback if `gd-26r.13` keeps the CLI. Recorded
+/// under its own slug because the envelope has no field that records effort.
 const LOW_EFFORT_ARM: &str = "opus-low";
 
-/// The recommended arm's fixture-1 row: mean 0.450 across a 0.409-0.486 spread,
-/// all ten single calls over the 0.394 bar. The whole recommendation is that
-/// sentence — the shipped default-effort arm clears it 0 times in 10 — so it is
-/// locked at least as tightly as the row it overturns. A mean that drifted under
-/// the bar and a tenth call that stopped clearing it are the two ways the
-/// recommendation could go stale in silence.
+/// The low-effort CLI arm's fixture-1 row: mean 0.450 across a 0.409-0.486
+/// spread, all ten single calls over the 0.394 bar. That sentence is what
+/// overturned the shipped default-effort arm, which clears the bar 0 times in
+/// 10, so it is locked at least as tightly as the row it displaced. A mean that
+/// drifted under the bar and a tenth call that stopped clearing it are the two
+/// ways it could go stale in silence.
 const LOW_EFFORT_MEAN_F1: f64 = 0.450;
 const LOW_EFFORT_WORST_F1: f64 = 0.409;
 const LOW_EFFORT_BEST_F1: f64 = 0.486;
 
 /// The same model at the same effort, called at the provider instead of through
-/// the agent CLI. `gd-26r.24` recommends this arm, and the reason is the pairing
-/// rather than the row: the CLI arm above and this one differ in transport and
-/// nothing else, and this one is half the price and 1.8x the speed for a score
-/// inside the noise. `gd-26r.13` decides whether to take it.
+/// the agent CLI. What this arm establishes is the pairing rather than the row:
+/// the CLI arm above and this one differ in transport and nothing else, and this
+/// one is half the price and 1.8x the speed for a score inside the noise.
+/// `gd-26r.13` decides whether to take it.
+///
+/// It is also the runner-up to the recommendation below, and the arm to fall
+/// back to if the recommended one's fixture-2 gap or its repair rate shows up in
+/// use — so it is locked on both counts.
 const DIRECT_ARM: &str = "vertex-opus-low";
+
+/// The arm `gd-26r.24` recommends: `full` on `gemini-3-flash` at its floor
+/// thinking level, over the direct transport. Chosen on a stated priority rather
+/// than on the numbers alone — the human ruled speed critical and some grouping
+/// inaccuracy acceptable — so what the tests lock is the thing that ruling bought
+/// (it is the fastest arm recorded, on both fixtures) and the thing it cost.
+const RECOMMENDED_ARM: &str = "gemini-3-flash-low";
+const RECOMMENDED_MODEL: &str = "gemini-3-flash-preview";
+
+/// The recommended arm's fixture-1 row: mean 0.452, and **9** of 10 single calls
+/// over the 0.394 bar rather than 10. That shortfall is not a defect to be fixed
+/// out of the corpus, it is the price the recommendation was accepted at, so it
+/// is asserted exactly — a corpus where it silently became 10 of 10 would make
+/// the document overstate the cost, and one where it fell to 8 would understate
+/// it, and either way the sentence in `docs/GROUPING_PASSES.md` is wrong.
+const RECOMMENDED_MEAN_F1: f64 = 0.452;
+const RECOMMENDED_SINGLES_OVER_BAR: usize = 9;
+
+/// How much faster the recommendation is than the runner-up it was chosen over.
+/// Speed is the *whole* reason this arm is preferred to one scoring 0.126 higher
+/// on fixture 2, so a corpus in which it stopped being faster would leave the
+/// recommendation resting on nothing.
+///
+/// Locked on fixture 1, which is where the gap is *narrowest* — 1.20x recorded
+/// there against 1.57x on fixture 2 — because fixture 1 is the committed one and
+/// this assertion has to run without the private fixture. The floor sits under
+/// even that: both arms are network-bound, and a re-record on another day will
+/// not reproduce a ratio to two decimal places.
+const RECOMMENDED_SPEEDUP: f64 = 1.10;
 
 /// How much of the bill the agent CLI accounts for on fixture 1, as a ratio of
 /// the direct arm. Locked as floors rather than point values: the claim in
@@ -2086,9 +2120,20 @@ fn published_arm(fixture: &str, changeset: &Changeset, shape: Shape) -> Vec<Run>
 /// recommendation to run `full` at low effort rests on its numbers exactly as
 /// the shipped verdict rests on the published arm's.
 fn arm(fixture: &str, changeset: &Changeset, shape: Shape, arm: &str) -> Vec<Run> {
+    arm_of(fixture, changeset, shape, arm, PUBLISHED_MODEL)
+}
+
+/// One named arm answered by a named model. The Claude arms all share
+/// `PUBLISHED_MODEL` and are told apart by slug alone, but `gd-26r.24`'s
+/// recommendation is a Google model, so the model has to be a parameter rather
+/// than a constant. It stays checked rather than dropped: the slug is a file
+/// name and the model is what the envelope says answered, and a mismatch between
+/// them is exactly the mislabelled corpus both recorders go out of their way to
+/// prevent.
+fn arm_of(fixture: &str, changeset: &Changeset, shape: Shape, arm: &str, model: &str) -> Vec<Run> {
     load_runs(fixture, changeset, shape)
         .into_iter()
-        .filter(|run| run.arm == arm && run.record.model == PUBLISHED_MODEL)
+        .filter(|run| run.arm == arm && run.record.model == model)
         .collect()
 }
 
@@ -2357,7 +2402,16 @@ fn every_recorded_naming_only_run_applied_to_the_heuristic_partition() {
 /// "Repairs were 0.0 in every recorded run" is a load-bearing claim in
 /// docs/GROUPING_PASSES.md: it is why the strict partition costs nothing. The
 /// report that prints it is a printer, so the claim is locked here instead —
-/// against every committed run of every shape.
+/// against every committed run of every shape *of the published Claude arm*,
+/// which is the scope of the claim.
+///
+/// It is no longer the scope of the corpus. `gd-26r.24`'s recommended
+/// `gemini-3-flash` arm needs ~0.5 repairs a call, and low-effort haiku needed
+/// 315 in one answer. Widening this test to every arm would fail on exactly the
+/// runs whose repair rate the document reports as a *finding*, so the recommended
+/// arm's rate is bounded in
+/// `the_recommended_arm_buys_speed_and_pays_for_it_on_fixture_one` instead, and
+/// this test keeps the claim it was written for.
 #[test]
 fn no_committed_run_needed_a_repair() {
     let (changeset, _) = orca();
@@ -2716,6 +2770,96 @@ fn calling_the_provider_directly_halves_the_bill_for_the_same_answer() {
         "the direct arm averaged {direct_mean:.3} against the CLI arm's {cli_mean:.3}, a gap \
          wider than {TRANSPORT_F1_SLACK:.3} — the transport is published as costing nothing \
          beyond run-to-run noise, and at that distance it costs something"
+    );
+}
+
+/// `gd-26r.24`'s recommendation, locked as the trade it actually is rather than
+/// as a win. `gemini-3-flash` is recommended over `vertex-opus-low` on a stated
+/// human priority — speed critical, some grouping inaccuracy acceptable — so the
+/// assertions are the two halves of that sentence:
+///
+/// - it is faster than the arm it was chosen over, which is the only reason it
+///   was chosen; and
+/// - it clears the bar 9 times in 10, not 10, which is what that cost.
+///
+/// The second is asserted as an equality on purpose. Every other single-call
+/// count in this file is a floor, because more is better; here a corpus that
+/// quietly became 10 of 10 would make `docs/GROUPING_PASSES.md` overstate the
+/// price of the recommendation, and the document is wrong either way it moves.
+#[test]
+fn the_recommended_arm_buys_speed_and_pays_for_it_on_fixture_one() {
+    let (changeset, expected) = orca();
+    let recommended = arm_of(
+        ORCA_FIXTURE,
+        &changeset,
+        Shape::Full,
+        RECOMMENDED_ARM,
+        RECOMMENDED_MODEL,
+    );
+    let runner_up = arm(ORCA_FIXTURE, &changeset, Shape::Full, DIRECT_ARM);
+    assert_eq!(
+        recommended.len(),
+        RECORDED_RUNS,
+        "the recommended arm is published as {RECORDED_RUNS} runs of {RECOMMENDED_MODEL}, \
+         and every figure in the recommendation is a property of that N"
+    );
+
+    let wall_clock = |runs: &[Run]| -> f64 {
+        runs.iter().map(|run| run.record.wall_clock_ms).sum::<f64>() / runs.len() as f64
+    };
+    let speedup = wall_clock(&runner_up) / wall_clock(&recommended);
+    assert!(
+        speedup >= RECOMMENDED_SPEEDUP,
+        "the recommended arm is {speedup:.2}x the runner-up's speed, under the published \
+         {RECOMMENDED_SPEEDUP:.2}x — speed is the whole reason it is recommended over an arm \
+         that scores higher on fixture 2, so at this ratio the recommendation has no basis"
+    );
+
+    let bar = passes::group(&changeset, GroupingConfig::default())
+        .partition()
+        .score_against(&expected)
+        .f1;
+    let f1s: Vec<f64> = recommended
+        .iter()
+        .map(|run| run.refined.partition.score_against(&expected).f1)
+        .collect();
+
+    let singles = f1s.iter().filter(|f1| **f1 > bar).count();
+    assert_eq!(
+        singles, RECOMMENDED_SINGLES_OVER_BAR,
+        "{singles} of {RECORDED_RUNS} recommended-arm calls clear the {bar:.3} bar, not the \
+         published {RECOMMENDED_SINGLES_OVER_BAR} — that count is the accepted price of the \
+         recommendation, so the document is wrong whichever way it moved"
+    );
+
+    let mean = f1s.iter().sum::<f64>() / f1s.len() as f64;
+    assert!(
+        (mean - RECOMMENDED_MEAN_F1).abs() <= PUBLISHED_F1_SLACK,
+        "the recommended arm averaged {mean:.3}, off the published {RECOMMENDED_MEAN_F1:.3} \
+         by more than {PUBLISHED_F1_SLACK:.3}"
+    );
+    assert!(
+        mean > bar,
+        "the recommended arm averaged {mean:.3}, at or under the {bar:.3} heuristic bar, so \
+         the pass it recommends is no longer worth running on fixture 1"
+    );
+
+    // The other accepted cost, and the one with teeth: flash occasionally emits
+    // a path that is not in the changeset, and a repaired path is a file that
+    // lands in no group. The document publishes 0.5 a call and calls that
+    // tolerable; low-effort haiku's 315 in a single answer is what intolerable
+    // looks like. Bounded rather than forbidden, well below that, so the
+    // difference in kind is what fails.
+    let repairs: usize = recommended
+        .iter()
+        .map(|run| run.refined.repairs.len())
+        .sum();
+    let ceiling = RECORDED_RUNS * 2;
+    assert!(
+        repairs <= ceiling,
+        "the recommended arm needed {repairs} repairs across {RECORDED_RUNS} calls, over the \
+         {ceiling} this document treats as tolerable — at that rate it is approximating the \
+         changeset's filenames rather than grouping them"
     );
 }
 

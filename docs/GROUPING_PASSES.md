@@ -1373,12 +1373,18 @@ input rate, without the harness asking. Fixture 1's prompt is smaller and cached
 nothing. This is a difference in kind from the CLI transport, where caching is
 prefix-based and the harness defeated it (next section).
 
-**Verdict: a real option, and the only lever that moves cost by an order of
-magnitude rather than a factor of two.** It is not free — fixture 2 costs 0.12
-F1 — but the ticket's brief was speed first with a little accuracy an acceptable
-price, and 2× the speed for a fifteenth of the money is the largest such trade
-on the table. See the recommendation below for how it is scoped, and the closing
-section for what two fixtures cannot say about a third vendor.
+**Verdict: `gemini-3-flash` is the recommended shape**, on the human's ruling
+that speed is critical and some grouping inaccuracy acceptable. It is the fastest
+arm recorded on both fixtures and the only lever that moves cost by an order of
+magnitude rather than a factor of two. It is not free — 0.126 F1 on fixture 2,
+one fixture-1 call in ten under the bar, and a repair rate no Claude arm has —
+and those costs are set out where the recommendation is made below, together with
+the runner-up to fall back to if they show up in use.
+
+`gemini-3.1-pro` is not recommended despite the better fixture-1 mean: it is
+slower than flash on fixture 2, 4× the price, and its two sub-bar calls are the
+collapse failure above. On this evidence the weaker, cheaper model is the more
+dependable one.
 
 ## Prompt caching: real, and defeated by the harness, not by the CLI
 
@@ -1464,7 +1470,10 @@ but small — a fifth of what a single CLI call varies by across its own ten run
 extra tokens buy anything that survives the noise.
 
 **Verdict: on this evidence the shipped pass should call the provider directly,
-not shell out to an agent CLI.** That is `gd-26r.13`'s question, not this
+not shell out to an agent CLI.** The recommended shape is a Google model, so it
+requires this anyway; what this section adds is that the transport pays for
+itself even if the vendor decision is reversed. That is `gd-26r.13`'s question,
+not this
 ticket's — `gd-26r.13` is open and unclaimed, and it is where "shelling out to
 an agent CLI from Rust" gets decided. This section is the input it was missing:
 the transport is not a free implementation detail, it is a 2× tax on both
@@ -1520,57 +1529,78 @@ and at low effort it holds on neither fixture.
 
 ## Recommended shape
 
-**`full`, `claude-opus-5` at low effort, called directly rather than through the
-agent CLI, one call, no vote.**
+**`full`, `gemini-3-flash` at low thinking, called at Vertex directly, one call,
+no vote.**
 
 | | fixture 1 | fixture 2 |
 | --- | --- | --- |
 | bar | 0.394 | 0.378 |
-| F1 mean of 10 | **0.427** | **0.711** |
-| F1 worst of 10 | 0.411 | 0.627 |
-| single calls over bar | 10 of 10 | 10 of 10 |
-| cost per call | **$0.131** | **$0.237** |
-| wall clock | **36.6s** | **60.0s** |
-| repairs per call | 0.0 | 0.0 |
+| F1 mean of 10 | 0.452 | 0.585 |
+| F1 worst of 10 | 0.345 | 0.512 |
+| single calls over bar | 9 of 10 | 10 of 10 |
+| cost per call | **$0.019** | **$0.022** |
+| wall clock | **30.6s** | **38.2s** |
+| repairs per call | 0.5 | 0.2 |
 
-Three changes from what `gd-26r.11` shipped, each measured separately above:
-drop the vote, drop the effort to `low`, and drop the agent CLI. Against three
-default-effort CLI calls at ~$1.42 and ~$1.97 a run, this is **10.8× and 8.3×
-cheaper**, and **3.9× and 3.2× faster** than the single call a voted triple's
-wall clock is bounded by. It clears both bars on all twenty recorded calls, needs
-no repairs, and it is the tightest arm in the document: 31.0–44.6s on fixture 1
-and 58.4–69.1s on fixture 2, twenty calls, no outlier.
+Four changes from what `gd-26r.11` shipped, each measured separately above: drop
+the vote, drop the effort to the floor, drop the agent CLI, and change vendor.
+Against three default-effort CLI calls at ~$1.42 and ~$1.97 a run, this is **75×
+and 90× cheaper** and **4.6× and 5.0× faster** than the single call a voted
+triple's wall clock is bounded by.
 
-Only the third change is not free. Dropping the vote costs a little fixture-1
-accuracy and dropping to low effort costs a little on fixture 2 — both ruled
-acceptable, speed first. Dropping the CLI costs 0.023 F1 on fixture 1 — inside
-that arm's own run-to-run spread, and reversed on fixture 2 — and pays 2× on both
-figures, but it is `gd-26r.13`'s decision, not this document's, and it
-carries auth and dependency consequences this harness cannot price. **If the CLI
-stays, the shape is the same minus that change** — `full`, `--effort low`, one
-call — at $0.261/65.8s and $0.426/102.7s, F1 0.450 and 0.705, still 5.4× and 4.6×
-cheaper than shipped.
+**This shape was chosen on a stated priority, not on the numbers alone.** The
+human ruled speed critical and some grouping inaccuracy acceptable, twice, with
+the fixture-2 cost on the table. What that buys over the runner-up is 6.0s on
+fixture 1 and 21.8s on fixture 2 — a third off the slower fixture — plus a
+tenfold cost drop that is not what the ruling was about.
 
-### If cost matters more than accuracy on fixture 2
+What it gives up, stated where the recommendation is made rather than in a
+footnote:
 
-`gemini-3-flash` at low thinking, same transport, is **$0.019 and $0.022 a call
-at 30.6s and 38.2s** — another 7–11× cheaper and modestly faster again — for
-0.452 and 0.585 F1. It beats the recommendation on fixture 1 and gives up 0.126
-on fixture 2, clears both bars, and occasionally invents a path the harness has
-to repair. That is a genuine option and not the recommendation: the remaining
-saving is fractions of a cent against a 0.126 F1 loss and a second vendor to
-depend on. Adding one is the human's call, not a number's.
+- **0.126 F1 on fixture 2** against the runner-up, ~18% of the score. It clears
+  the 0.378 bar on all ten calls and beats every heuristic-only baseline, so the
+  pass is still worth running; it is further from the ceiling than it needs to be.
+- **One call in ten under the bar on fixture 1** (0.345 against 0.394). No other
+  recommended-tier arm does that. The failure is over-splitting — 20 groups
+  against 13 expected — so the bad case is a reader seeing a changeset cut too
+  finely, not a scrambled one.
+- **Invented paths.** 0.5 repairs a call on fixture 1, 0.2 on fixture 2: flash
+  occasionally emits a filename that is not in the changeset and the harness
+  drops it. Every Claude arm is flat zero. Two orders of magnitude below
+  low-effort haiku's 315, and nowhere near the "this is not a grouping of this
+  changeset" threshold, but the shipped pass needs the same repair step this
+  harness has, and a file dropped by repair is a file that lands in no group.
+- **A second vendor, on a preview model id.** `gemini-3-flash-preview` carries no
+  stability promise; the price was read on one day; nothing here measures quota
+  or rate limits.
+
+**The runner-up, and when to take it instead.** `claude-opus-5` at low effort on
+the same transport: F1 **0.427 and 0.711**, $0.131 and $0.237, **36.6s and
+60.0s**, 10 of 10 over both bars, zero repairs, and the tightest spread in the
+document (31.0–44.6s and 58.4–69.1s). It is the accuracy-per-second pick and it
+is barely slower. **If the fixture-2 gap or the repair behaviour shows up in real
+use, switch to it and lose ~20s** — nothing else about the shape changes, since
+both run through the same recorder and the same envelope. Keeping the agent CLI
+instead is a further step back again: `full`, `--effort low`, one call, at
+$0.261/65.8s and $0.426/102.7s for F1 0.450 and 0.705.
 
 ### The wall-clock number, and how firm it is
 
-**37s on fixture 1 and 60s on fixture 2**, and the figure `gd-26r.14` should plan
-against is **roughly 30–70 seconds for a ~160-file changeset** — or **60–130s if
-`gd-26r.13` keeps the agent CLI**, which is the conservative number to design
-against while that stays open.
+**31s on fixture 1 and 38s on fixture 2**, and the figure `gd-26r.14` should plan
+against is **roughly 30–70 seconds for a ~160-file changeset**. That range covers
+the recommended arm and the runner-up together, deliberately: it does not move if
+the vendor decision is revisited. **If `gd-26r.13` keeps the agent CLI it becomes
+60–130s**, which is the conservative number to design against while that is open.
 
 Firm parts: ten serial calls per fixture, standard tier, `global` location, taken
-the same way and on the same machine as every other number here. The spread is
-the tightest recorded, 31.0–69.1s across all twenty calls with no outlier.
+the same way and on the same machine as every other number here.
+
+The recommended arm is *not* the tightest arm, and that matters more than its
+mean here. Flash spans **21.5–41.8s on fixture 1 and 31.5–65.8s on fixture 2** —
+a slowest call roughly 2× its mean — where the runner-up spans 31.0–69.1s across
+both fixtures with no outlier. Buying the mean-case 20s costs some of the
+predictability, and 30–70s holds for the recommendation only as a typical case,
+not a bound.
 
 Soft parts, stated plainly. This is two changesets of ~160 files each, one model,
 one week, one network, one region. Wall clock tracks output volume at a
@@ -1599,20 +1629,27 @@ design for and not as a bound.
   identical calls. The number is solid; the story about agent framing inviting
   agent-shaped deliberation is a guess, and a CLI release that trims its preamble
   would change the number without warning.
-- **What a second vendor costs outside the F1 column.** The Gemini arms are
-  priced from a table read on one day, run in one location, on preview model ids
-  (`gemini-3-flash-preview`, `gemini-3.1-pro-preview`) that carry no stability
-  promise at all. Nothing here measures rate limits, quota, or what happens when
-  a preview id is withdrawn.
+- **What the recommended vendor costs outside the F1 column.** The Gemini arms
+  are priced from a table read on one day, run in one location, on preview model
+  ids (`gemini-3-flash-preview`, `gemini-3.1-pro-preview`) that carry no
+  stability promise at all. Nothing here measures rate limits, quota, or what
+  happens when a preview id is withdrawn — and the recommendation now rests on
+  one of those ids. The runner-up exists partly for that reason.
+- **Whether flash's fixture-2 gap is the kind a reader notices.** 0.585 against
+  0.711 is 0.126 of pairwise co-membership F1, and no number here converts that
+  into "how much worse the groups feel". The recommendation was made on a stated
+  preference for speed over exactly this, so it is the assumption most worth
+  revisiting once someone has used the pass in anger.
 - **Naming quality, reading order, and hunk-reading** remain exactly as
   `gd-26r.11` left them — invisible to this harness. Low effort produces fewer,
   coarser groups, which a reader may like more or less than the default arm's
   finer ones, and no number here can say which.
 - **Whether a cheaper shape is now faster still.** `merge-only` ran 27.9s and
   56.9s through the CLI at default effort, and has never been run at low effort
-  or over the direct transport — both of which roughly halve wall clock, so the
-  recommended `full` arm has now overtaken it on fixture 2 and drawn level on
-  fixture 1. `gd-26r.11` rejected it on accuracy — 0.398 against `full`'s
+  or over the direct transport or on a Google model — each of which roughly
+  halves wall clock, so the recommended `full` arm has now overtaken it on both
+  fixtures. It stays untested because `gd-26r.24` was told not to retreat to it,
+  and `gd-26r.11` rejected it on accuracy — 0.398 against `full`'s
   0.763 on fixture 2 — and that rejection stands on default-effort evidence.
   Low effort moved `full` in a direction nobody predicted, so the low-effort
   merge-only number is not knowable from here. Twenty calls would settle it, and
