@@ -53,10 +53,36 @@ pub enum Shape {
     /// Names and order only. The partition is untouched **by construction**,
     /// which the scorer — which ignores names — therefore cannot grade.
     NamingOnly,
+    /// No heuristic grouping at all: the flat file list, the rules, and group
+    /// it. The other four shapes all hand the model an answer and ask it to
+    /// improve on it, which makes every one of them a measurement of the pair
+    /// rather than of the model — so nothing recorded so far can say whether
+    /// the heuristics are helping the call or anchoring it. This is the control
+    /// that separates them.
+    ///
+    /// The heuristic grouping has not entirely left the picture: `apply`'s
+    /// repair path still restores a dropped path to its heuristic group,
+    /// because a strict partition has to come out either way. That is a safety
+    /// net rather than an input — the model never sees it — so a cold run with
+    /// a high repair count is leaning on the heuristics after all, and the
+    /// repair column is what says so.
+    Cold,
 }
 
 impl Shape {
-    pub const ALL: [Shape; 4] = [
+    pub const ALL: [Shape; 5] = [
+        Shape::Full,
+        Shape::FullCoarse,
+        Shape::MergeOnly,
+        Shape::NamingOnly,
+        Shape::Cold,
+    ];
+
+    /// The four shapes that revise a heuristic grouping, which is what the
+    /// published `gd-26r.11` corpus is made of. [`Shape::Cold`] is not among
+    /// them: it is given no grouping to revise, so a test that expects ten
+    /// published runs of every shape does not expect them of it.
+    pub const REVISIONS: [Shape; 4] = [
         Shape::Full,
         Shape::FullCoarse,
         Shape::MergeOnly,
@@ -69,6 +95,7 @@ impl Shape {
             Shape::FullCoarse => "full-coarse",
             Shape::MergeOnly => "merge-only",
             Shape::NamingOnly => "naming-only",
+            Shape::Cold => "cold",
         }
     }
 
@@ -171,11 +198,43 @@ fn render_groups(changeset: &Changeset, grouping: &Grouping) -> String {
     out
 }
 
+/// The changeset as a flat list, for [`Shape::Cold`]. Changeset order — what
+/// `git diff --name-status` hands over, path-sorted — and deliberately nothing
+/// else. Any reordering here (by size, by directory, by heuristic group) would
+/// smuggle a grouping back into the prompt, and a control that hints is not a
+/// control.
+fn render_files(changeset: &Changeset) -> String {
+    let mut out = String::new();
+    for file in &changeset.files {
+        out.push_str(&format!("  {} {}\n", status(file.kind), file.path));
+    }
+    out
+}
+
 /// Exactly what is sent to the agent CLI. Paths and change status only: the
 /// fixtures carry no diff bodies, so neither does this.
 pub fn prompt(changeset: &Changeset, grouping: &Grouping, shape: Shape) -> String {
-    let groups = render_groups(changeset, grouping);
     let count = changeset.len();
+    if shape == Shape::Cold {
+        let files = render_files(changeset);
+        return format!(
+            "You are grouping the files of one changeset for code review, from \
+             scratch. There is no starting grouping; produce one.\n\n\
+             You have file paths and change status (A added, M modified, D deleted, R renamed) \
+             and nothing else. You cannot read the diff. Do not guess at content you cannot \
+             see.\n\n\
+             The rules a good grouping follows:\n\n{RULES}\n\n\
+             The {count} files of this changeset:\n\n\
+             {files}\n\
+             Group them. Output JSON and nothing else:\n\
+             {{\"groups\": [{{\"name\": \"kebab-case-name\", \"files\": [\"path\", ...]}}, ...]}}\n\n\
+             List the groups in the order a reviewer should read them (rule 2). Every one \
+             of the {count} input paths must appear in exactly one group. Do not invent, \
+             omit or duplicate a path.\n"
+        );
+    }
+
+    let groups = render_groups(changeset, grouping);
     let group_count = grouping.partition().groups.len();
 
     let coarseness = match shape {
@@ -216,6 +275,10 @@ pub fn prompt(changeset: &Changeset, grouping: &Grouping, shape: Shape) -> Strin
              List the groups in the order a reviewer should read them (rule 2). Each of the \
              {group_count} input group names must appear exactly once as a `was`."
         ),
+        // Returned above: it is the one shape whose prompt shows no grouping,
+        // so it shares neither the framing nor the group count this format
+        // string is built around.
+        Shape::Cold => unreachable!("the cold prompt is built before this match"),
     };
 
     format!(
@@ -269,7 +332,10 @@ pub fn apply(
     let mut used: BTreeSet<String> = BTreeSet::new();
 
     match shape {
-        Shape::Full | Shape::FullCoarse => {
+        // `Cold` answers in the same schema as `Full` — a list of named groups
+        // each carrying its own paths — and is read the same way. The two
+        // differ in what was asked, not in what comes back.
+        Shape::Full | Shape::FullCoarse | Shape::Cold => {
             for (index, group) in groups.iter().enumerate() {
                 let name = group_name(group, index, &mut used, &mut repairs);
                 order.push(name.clone());
