@@ -981,6 +981,10 @@ mod selector_render_snapshot_tests {
             comment_count: comments,
             reviewed_count: 1,
             file_count: 3,
+            unreleased_count: 0,
+            release_count: 0,
+            released_at: None,
+            superseded_by: None,
             anchor: "main".to_string(),
             active,
         }
