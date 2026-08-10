@@ -73,7 +73,7 @@ impl App {
                 Some(FileTreeItem::File { file_idx, .. }) => {
                     self.queue_editor_for_file_idx(file_idx, None)
                 }
-                Some(FileTreeItem::Directory { .. }) => {
+                Some(FileTreeItem::Directory { .. } | FileTreeItem::Group { .. }) => {
                     self.set_warning("Select a file to open in editor");
                 }
                 None => self.set_warning("No file selected"),

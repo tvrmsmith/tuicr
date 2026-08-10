@@ -320,6 +320,7 @@ fn handle_left_click(app: &mut App, pos: Position) {
         if let Some(item) = app.build_visible_items().get(idx).cloned() {
             match item {
                 FileTreeItem::Directory { path, .. } => app.toggle_directory(&path),
+                FileTreeItem::Group { id, .. } => app.toggle_directory(&id),
                 FileTreeItem::File { file_idx, .. } => {
                     app.jump_to_file(file_idx);
                     app.focused_panel = FocusedPanel::Diff;
@@ -1408,6 +1409,7 @@ pub fn handle_file_list_action(app: &mut App, action: Action) {
             if let Some(item) = app.get_selected_tree_item() {
                 match item {
                     FileTreeItem::Directory { path, .. } => app.toggle_directory(&path),
+                    FileTreeItem::Group { id, .. } => app.toggle_directory(&id),
                     FileTreeItem::File { file_idx, .. } => {
                         app.jump_to_file(file_idx);
                         app.focused_panel = FocusedPanel::Diff;

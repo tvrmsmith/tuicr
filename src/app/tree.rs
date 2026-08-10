@@ -233,9 +233,14 @@ impl App {
         self.rebuild_annotations();
     }
 
+    /// Re-establishes `diff_files` order. **The one place it is established**,
+    /// which is why every reorder path calls it and why grouping hooks in here
+    /// rather than at each of the seventeen call sites.
+    ///
+    /// Grouped, the order is the grouping's: the commit-message pseudo-file,
+    /// then groups in reading order, then each group's files in the engine's
+    /// within-group order. Ungrouped, it is today's directory sort, unchanged.
     pub(in crate::app) fn sort_files_by_directory(&mut self, reset_position: bool) {
-        use std::collections::BTreeMap;
-
         // Both the line-count cache and the gap maps are keyed by `file_idx`,
         // a position in `diff_files`, so reordering invalidates all of them.
         self.clear_expanded_gaps();
@@ -245,6 +250,32 @@ impl App {
         } else {
             None
         };
+
+        if self.grouping_enabled {
+            self.order_files_by_group();
+        } else {
+            self.order_files_by_directory();
+        }
+
+        if let Some(path) = current_path
+            && let Some(idx) = self
+                .diff_files
+                .iter()
+                .position(|f| f.display_path() == &path)
+        {
+            self.jump_to_file(idx);
+            return;
+        }
+
+        // Start at the overview position (review comments header)
+        // so the diff title shows total stats on launch.
+        self.diff_state.cursor_line = 0;
+        self.diff_state.scroll_offset = 0;
+        self.diff_state.current_file_idx = 0;
+    }
+
+    pub(in crate::app) fn order_files_by_directory(&mut self) {
+        use std::collections::BTreeMap;
 
         let mut dir_map: BTreeMap<Vec<String>, Vec<DiffFile>> = BTreeMap::new();
         let mut commit_msg_files: Vec<DiffFile> = Vec::new();
@@ -280,32 +311,33 @@ impl App {
         for (_dir, files) in dir_map {
             self.diff_files.extend(files);
         }
-
-        if let Some(path) = current_path
-            && let Some(idx) = self
-                .diff_files
-                .iter()
-                .position(|f| f.display_path() == &path)
-        {
-            self.jump_to_file(idx);
-            return;
-        }
-
-        // Start at the overview position (review comments header)
-        // so the diff title shows total stats on launch.
-        self.diff_state.cursor_line = 0;
-        self.diff_state.scroll_offset = 0;
-        self.diff_state.current_file_idx = 0;
     }
 
     pub fn expand_all_dirs(&mut self) {
         let layout = self.tree_layout();
-        self.expanded_dirs = self
-            .diff_files
-            .iter()
-            .flat_map(|file| layout.dir_rows(file.display_path()))
-            .map(|row| row.path)
-            .collect();
+        self.expanded_dirs = match self.grouping.as_ref() {
+            // Directory keys are group-scoped, so they have to be seeded per
+            // group — and the group rows themselves have to be seeded too, or
+            // every file starts hidden behind a collapsed group.
+            Some(grouping) => grouping
+                .groups()
+                .iter()
+                .flat_map(|group| {
+                    let dirs: Vec<String> = grouping
+                        .files_in(&group.id)
+                        .flat_map(|path| layout.dir_rows(path))
+                        .map(|row| Self::dir_row_key(Some(group.id.as_str()), &row.path))
+                        .collect();
+                    std::iter::once(Self::group_row_key(group)).chain(dirs)
+                })
+                .collect(),
+            None => self
+                .diff_files
+                .iter()
+                .flat_map(|file| layout.dir_rows(file.display_path()))
+                .map(|row| row.path)
+                .collect(),
+        };
         self.ensure_valid_tree_selection();
     }
 
@@ -322,6 +354,7 @@ impl App {
                 .iter()
                 .position(|item| match item {
                     FileTreeItem::Directory { path, .. } => path == dir_path,
+                    FileTreeItem::Group { id, .. } => id == dir_path,
                     FileTreeItem::File { .. } => false,
                 })
             {
@@ -354,11 +387,26 @@ impl App {
             if let Some(file) = self.diff_files.get(current_file_idx) {
                 // Fall back to the innermost directory row still on screen,
                 // which is the collapsed ancestor that hid the file.
+                let group = self.group_of_file(file.display_path());
+                let group_id = group.map(|group| group.id.as_str());
                 let dir_rows = self.tree_layout().dir_rows(file.display_path());
                 for row in dir_rows.iter().rev() {
+                    let key = Self::dir_row_key(group_id, &row.path);
                     for (tree_idx, item) in visible_items.iter().enumerate() {
                         if let FileTreeItem::Directory { path, .. } = item
-                            && *path == row.path
+                            && *path == key
+                        {
+                            self.file_list_state.select(tree_idx);
+                            return;
+                        }
+                    }
+                }
+                // Under grouping the collapsed ancestor may be the group
+                // itself, which is above every directory row the file has.
+                if let Some(group) = group {
+                    for (tree_idx, item) in visible_items.iter().enumerate() {
+                        if let FileTreeItem::Group { id, .. } = item
+                            && id == group.id.as_str()
                         {
                             self.file_list_state.select(tree_idx);
                             return;
@@ -371,6 +419,152 @@ impl App {
     }
 
     pub fn build_visible_items(&self) -> Vec<FileTreeItem> {
+        match self.grouping.as_ref() {
+            Some(grouping) => self.build_grouped_items(grouping),
+            None => self.build_directory_items(),
+        }
+    }
+
+    /// The grouped sidebar: the commit-message pseudo-file pinned above
+    /// everything, then a collapsible row per group with its directory subtree
+    /// scoped inside it (`docs/SIDEBAR_MODEL.md`).
+    fn build_grouped_items(&self, grouping: &crate::grouping::Grouping) -> Vec<FileTreeItem> {
+        let layout = self.tree_layout();
+        let mut items = Vec::new();
+
+        // Outside the partition, so it is emitted before the group loop and
+        // is never hidden by a collapsed group (`docs/TOTAL_COVERAGE.md`).
+        for (file_idx, file) in self.diff_files.iter().enumerate() {
+            if file.is_commit_message && self.file_passes_filter(file) {
+                items.push(FileTreeItem::File {
+                    file_idx,
+                    label: self.file_tree_mode.file_label(file.display_path()),
+                    depth: 0,
+                });
+            }
+        }
+
+        let by_path = self.file_indices_by_path();
+        debug_assert!(
+            self.group_runs_are_contiguous(grouping),
+            "diff_files must be contiguous by group: the sidebar reads each \
+             group as one run and a split group loses rows"
+        );
+
+        for group in grouping.groups() {
+            let members: Vec<usize> = grouping
+                .files_in(&group.id)
+                .filter_map(|path| by_path.get(path).copied())
+                .filter(|file_idx| self.file_passes_filter(&self.diff_files[*file_idx]))
+                .collect();
+            // A group whose every file the filter hides disappears with them,
+            // exactly as a directory does.
+            if members.is_empty() {
+                continue;
+            }
+
+            let group_key = Self::group_row_key(group);
+            let expanded = self.expanded_dirs.contains(&group_key);
+            items.push(FileTreeItem::Group {
+                id: group_key,
+                label: group.name.clone(),
+                reviewed: members
+                    .iter()
+                    .filter(|file_idx| {
+                        self.session
+                            .is_file_reviewed(self.diff_files[**file_idx].display_path())
+                    })
+                    .count(),
+                total: members.len(),
+                expanded,
+            });
+            if !expanded {
+                continue;
+            }
+
+            // Directory rows are emitted per **run**, not once per group. The
+            // within-group sort bands a group's files by central file, then
+            // mechanical and broad-test tails (`gd-26r.27`), so one directory
+            // can legitimately appear in two non-adjacent runs inside a single
+            // group. `docs/SIDEBAR_MODEL.md` assumed one run per group and
+            // reset `seen_dirs` only at group boundaries; that reset alone
+            // would drop the second run's files whenever the directory is
+            // collapsed, which is the very bug the record set out to fix. The
+            // handback is `gd-26r.31`.
+            let mut open_chain: Vec<String> = Vec::new();
+            for file_idx in members {
+                let path = self.diff_files[file_idx].display_path();
+                let dir_rows = layout.dir_rows(path);
+
+                let mut visible = true;
+                for (depth, row) in dir_rows.iter().enumerate() {
+                    let key = Self::dir_row_key(Some(group.id.as_str()), &row.path);
+                    if open_chain.get(depth) != Some(&row.path) {
+                        open_chain.truncate(depth);
+                        open_chain.push(row.path.clone());
+                        if visible {
+                            items.push(FileTreeItem::Directory {
+                                path: key.clone(),
+                                label: row.label.clone(),
+                                depth: depth + 1,
+                                expanded: self.expanded_dirs.contains(&key),
+                            });
+                        }
+                    }
+                    if !self.expanded_dirs.contains(&key) {
+                        visible = false;
+                    }
+                }
+                open_chain.truncate(dir_rows.len());
+
+                if visible {
+                    items.push(FileTreeItem::File {
+                        file_idx,
+                        label: self.file_tree_mode.file_label(path),
+                        depth: dir_rows.len() + 1,
+                    });
+                }
+            }
+        }
+
+        items
+    }
+
+    fn file_indices_by_path(&self) -> HashMap<&Path, usize> {
+        self.diff_files
+            .iter()
+            .enumerate()
+            .map(|(file_idx, file)| (file.display_path().as_path(), file_idx))
+            .collect()
+    }
+
+    /// Whether every group occupies one unbroken run of `diff_files`, starting
+    /// after the commit-message rows the hoist keeps at the front.
+    fn group_runs_are_contiguous(&self, grouping: &crate::grouping::Grouping) -> bool {
+        let mut seen: HashSet<&str> = HashSet::new();
+        let mut current: Option<&str> = None;
+        for file in &self.diff_files {
+            if file.is_commit_message {
+                continue;
+            }
+            let Some(id) = grouping.group_of(file.display_path()) else {
+                continue;
+            };
+            if current == Some(id.as_str()) {
+                continue;
+            }
+            if !seen.insert(id.as_str()) {
+                return false;
+            }
+            current = Some(id.as_str());
+        }
+        true
+    }
+
+    /// The plain directory tree, unchanged: one global `seen_dirs`, which is
+    /// sound because `order_files_by_directory` leaves `diff_files` contiguous
+    /// by directory.
+    fn build_directory_items(&self) -> Vec<FileTreeItem> {
         let layout = self.tree_layout();
         let mut items = Vec::new();
         let mut seen_dirs: HashSet<String> = HashSet::new();

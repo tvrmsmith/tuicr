@@ -167,6 +167,21 @@ pub enum FileTreeItem {
         label: String,
         depth: usize,
     },
+    /// A group, always at depth 0. Directory rows live *inside* one
+    /// (`docs/SIDEBAR_MODEL.md`); collapsed, the group rows alone are the
+    /// overview of the whole changeset.
+    Group {
+        /// Stable opaque group id, which doubles as the row's `expanded_dirs`
+        /// key so a rename does not lose the row's expansion state.
+        id: String,
+        /// The derived group name, rendered **verbatim** — no prettification,
+        /// no title-casing. A generic name next to a large count is the
+        /// cheapest signal that the grouping is weak there.
+        label: String,
+        reviewed: usize,
+        total: usize,
+        expanded: bool,
+    },
 }
 
 /// Identifies a gap between hunks in a file (for context expansion)
@@ -1288,6 +1303,13 @@ pub struct App {
     /// Directory layout of the file list. Read from config at startup and
     /// fixed for the session.
     pub file_tree_mode: FileTreeMode,
+    /// Whether the sidebar is grouped. Off in [`App::build`] — the binary
+    /// turns it on with [`App::enable_grouping`] once config is read — so
+    /// every other mode and every test keeps the plain directory tree.
+    pub grouping_enabled: bool,
+    /// The session's grouping, when there is one. `None` with grouping off,
+    /// and on a changeset with no real files to group.
+    pub grouping: Option<crate::grouping::Grouping>,
     /// Stores lines expanded downward from the upper boundary of each gap
     pub expanded_top: HashMap<GapId, Vec<DiffLine>>,
     /// Stores lines expanded upward from the lower boundary of each gap (in ascending line order)
@@ -1623,6 +1645,7 @@ mod commits;
 mod diff_load;
 mod file_filter;
 mod gaps;
+mod grouping;
 mod init;
 mod modes;
 mod navigation;
