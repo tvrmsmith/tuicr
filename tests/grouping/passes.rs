@@ -89,25 +89,6 @@ impl Grouping {
     }
 }
 
-/// Lockfiles, vendored trees and generated output: skimmed, not read.
-const MECHANICAL_NAMES: &[&str] = &[
-    "package-lock.json",
-    "yarn.lock",
-    "pnpm-lock.yaml",
-    "Cargo.lock",
-    "go.sum",
-    "poetry.lock",
-];
-const MECHANICAL_DIRS: &[&str] = &[
-    "vendor/",
-    "node_modules/",
-    "dist/",
-    "build/",
-    "generated/",
-    "__generated__/",
-];
-const MECHANICAL_SUFFIXES: &[&str] = &[".generated.ts", ".gen.go", "_pb2.py", ".snap"];
-
 /// CI wiring, which reads as one concern however it is scattered. Deliberately
 /// *only* directories: the filename list this pass used to carry (`package.json`,
 /// `Cargo.toml`, …) was guarded to the repo root, so it was dead in the monorepo
@@ -158,13 +139,7 @@ fn claim<'a>(
 
 fn mechanical_pass<'a>(files: &[&'a ChangedFile], assigned: &mut BTreeMap<&'a str, Assignment>) {
     for file in files {
-        let name = file.file_name();
-        let is_mechanical = MECHANICAL_NAMES.contains(&name)
-            || MECHANICAL_DIRS.iter().any(|dir| file.path.contains(dir))
-            || MECHANICAL_SUFFIXES
-                .iter()
-                .any(|suffix| name.ends_with(suffix));
-        if is_mechanical {
+        if file.is_mechanical() {
             claim(assigned, file, "mechanical", "mechanical");
         }
     }
