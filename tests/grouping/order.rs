@@ -90,6 +90,24 @@ impl OrderScore {
     }
 }
 
+/// Whether the sort applies rule 13 — the group's central file leads it.
+///
+/// A knob rather than a constant because rule 13 is the one within-group rule
+/// both fixtures' own file order *contradicts* (`tau` −0.25 and −0.29 against
+/// themselves), so the measurement can price it but not settle it: on both
+/// fixtures it is worth nothing and costs nothing. `gd-26r.27` ruled it **on**
+/// anyway, because `GROUPING.md` rule 13 is normative and a sort that
+/// implements the measurable subset of a written spec is a sort nobody can read
+/// the spec to check. See `docs/GROUPING_PASSES.md`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CentralFirst {
+    /// Kept to price rule 13, which is otherwise invisible: both fixtures score
+    /// the same with it and without it.
+    Off,
+    /// What ships.
+    On,
+}
+
 /// A grouping's groups in reading order. Held separately from [`Partition`] so
 /// the pairwise scorer stays order-blind and its published numbers stay
 /// comparable across this change.
@@ -103,15 +121,21 @@ pub struct Ordered {
 }
 
 impl Ordered {
+    /// A grouping presented exactly as given, with **no** within-group sort.
+    ///
+    /// For ground truth and for the metric's own controls, which must not be
+    /// touched, and for reproducing the pre-`gd-26r.27` rows the document
+    /// published. Every *computed* arm goes through [`Self::heuristic`] or
+    /// [`Self::refined`] instead, both of which sort.
     pub fn new(partition: Partition, order: Vec<String>) -> Self {
         Self { partition, order }
     }
 
-    /// `gd-26r.12` Decision 3, which is what the heuristic arm ships: concern
-    /// groups by member count descending, `dir:` fallback groups pinned last as
-    /// a class and size-descending among themselves. Name breaks size ties so
-    /// the order is total and reproducible.
-    pub fn heuristic(partition: Partition) -> Self {
+    /// `gd-26r.12` Decision 3's group order: concern groups by member count
+    /// descending, `dir:` fallback groups pinned last as a class and
+    /// size-descending among themselves. Name breaks size ties so the order is
+    /// total and reproducible.
+    pub fn heuristic_order(partition: &Partition) -> Vec<String> {
         let mut names: Vec<&String> = partition.groups.keys().collect();
         names.sort_by_key(|name| {
             (
@@ -120,8 +144,25 @@ impl Ordered {
                 name.as_str(),
             )
         });
-        let order = names.into_iter().cloned().collect();
-        Self { partition, order }
+        names.into_iter().cloned().collect()
+    }
+
+    /// What the heuristic arm ships: Decision 3's group order, plus the
+    /// within-group sort. Taking the changeset is deliberate — there is no
+    /// constructor for a computed grouping that skips the sort, because
+    /// `gd-26r.27` made the sort part of producing a grouping rather than a
+    /// variant of reporting one.
+    pub fn heuristic(changeset: &Changeset, partition: Partition) -> Self {
+        let order = Self::heuristic_order(&partition);
+        Self::new(partition, order).sorted_within_groups(changeset)
+    }
+
+    /// What the refine arm ships: the model's group order, and the *engine's*
+    /// within-group order. The model is not asked for file order and its answer
+    /// format does not carry one (`gd-26r.22`), so within-group order is the
+    /// engine's job on both arms.
+    pub fn refined(changeset: &Changeset, partition: Partition, order: Vec<String>) -> Self {
+        Self::new(partition, order).sorted_within_groups(changeset)
     }
 
     /// The same groups and the same reading order, with each group's files
@@ -132,32 +173,56 @@ impl Ordered {
     /// the measurement showed both arms breaking rule 4 on every pair — both
     /// build their groups from a path-keyed map, and `x.test.ts` sorts before
     /// `x.ts`, so a plain path sort puts every test ahead of the code it covers.
+    pub fn sorted_within_groups(self, changeset: &Changeset) -> Self {
+        self.sorted_within_groups_with(changeset, CentralFirst::On)
+    }
+
+    /// Key, outermost first:
     ///
-    /// Key, in order: mechanical files last (rule 8 inside a group), then
-    /// directory, then stem — which is what puts a production file and its test
-    /// adjacent, since `stem` strips the test marker — then production before
-    /// test, then unit test before broad test, then path for a total order.
-    pub fn sorted_within_groups(mut self, changeset: &Changeset) -> Self {
+    /// 1. the central file, when rule 13 is on (`GROUPING.md` rule 13);
+    /// 2. mechanical stragglers last (rule 14);
+    /// 3. broad tests after everything narrower (rule 12) — a group-wide band,
+    ///    not a per-file adjustment, because the rule says integration and
+    ///    end-to-end tests follow *the* unit tests, not their own;
+    /// 4. directory, then stem — which is what puts a production file and its
+    ///    test adjacent, since `stem` strips the test marker;
+    /// 5. production before test (rule 4);
+    /// 6. path, for a total and stable order where no rule speaks.
+    pub fn sorted_within_groups_with(
+        mut self,
+        changeset: &Changeset,
+        central_first: CentralFirst,
+    ) -> Self {
         let by_path: BTreeMap<&str, &ChangedFile> = changeset
             .files
             .iter()
             .map(|file| (file.path.as_str(), file))
             .collect();
-        for members in self.partition.groups.values_mut() {
+        for (name, members) in &mut self.partition.groups {
+            let files: Vec<&ChangedFile> = members
+                .iter()
+                .filter_map(|path| by_path.get(path.as_str()).copied())
+                .collect();
+            let central = match central_first {
+                CentralFirst::On => central_file(name, &files).map(|file| file.path.clone()),
+                CentralFirst::Off => None,
+            };
             members.sort_by_key(|path| match by_path.get(path.as_str()) {
                 Some(file) => (
+                    central.as_deref() != Some(path.as_str()),
                     file.is_mechanical(),
+                    file.is_broad_test(),
                     file.dir().to_string(),
                     file.stem(),
                     file.is_test(),
-                    file.is_broad_test(),
                     path.clone(),
                 ),
                 None => (
+                    true,
+                    false,
                     false,
                     String::new(),
                     String::new(),
-                    false,
                     false,
                     path.clone(),
                 ),

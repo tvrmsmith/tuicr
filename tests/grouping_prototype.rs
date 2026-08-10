@@ -245,6 +245,15 @@ fn report() {
     }
 }
 
+/// A computed grouping in Decision 3's group order with its members left in
+/// whatever order the path-keyed map gave — the pre-`gd-26r.27` arm, kept so
+/// every row this document published before the sort stays reproducible beside
+/// the row that replaced it.
+fn unsorted(partition: Partition) -> Ordered {
+    let order = Ordered::heuristic_order(&partition);
+    Ordered::new(partition, order)
+}
+
 /// The order half of the fixture report (`gd-26r.22`). Split out from
 /// [`report_fixture`] because it needs the expected grouping's *reading order*,
 /// which the order-blind `Partition` the rest of the report runs on does not
@@ -255,26 +264,34 @@ fn report_order(changeset: &Changeset, expected: &Ordered) {
 
     let grouping = passes::group(changeset, GroupingConfig::default());
     order_row(
-        "heuristics (Decision 3 order)",
+        "heuristics, no within-group sort (gd-26r.22)",
+        &order::score_order(changeset, &unsorted(grouping.partition()), expected),
+    );
+    order_row(
+        "top-level-directory, no sort (gd-26r.22)",
         &order::score_order(
             changeset,
-            &Ordered::heuristic(grouping.partition()),
+            &unsorted(passes::baseline::top_level_directory(changeset)),
             expected,
         ),
     );
     order_row(
-        "top-level-directory",
+        "heuristics AS SHIPPED (gd-26r.27: rules 4, 12, 13, 14)",
         &order::score_order(
             changeset,
-            &Ordered::heuristic(passes::baseline::top_level_directory(changeset)),
+            &Ordered::heuristic(changeset, grouping.partition()),
             expected,
         ),
     );
+    // Rule 13 priced rather than assumed: it is the one within-group rule both
+    // fixtures' own file order contradicts, so what following it costs is a
+    // number rather than an argument. The number is zero, on both fixtures.
     order_row(
-        "heuristics + within-group sort",
+        "the same, without rule 13 (what rule 13 is worth)",
         &order::score_order(
             changeset,
-            &Ordered::heuristic(grouping.partition()).sorted_within_groups(changeset),
+            &unsorted(grouping.partition())
+                .sorted_within_groups_with(changeset, order::CentralFirst::Off),
             expected,
         ),
     );
@@ -2540,37 +2557,42 @@ fn refine_report() {
 
                 // Group reading order (gd-26r.22). Only `tau_group` is reported
                 // here: `apply` rebuilds the partition from a path-keyed
-                // `BTreeMap`, so a run's *within-group* file order is the
-                // harness's path sort and not the model's, and scoring it would
-                // measure `from_assignments` rather than the arm.
+                // `BTreeMap`, so a run's *within-group* file order was never the
+                // model's, and since `gd-26r.27` it is the engine's sort on both
+                // arms — scoring it here would measure that sort, not this arm.
+                //
+                // The sort still moves `tau_group` a little, because two files
+                // the *expected* grouping separates can share a *computed*
+                // group. Both numbers are printed: the one gd-26r.22 published,
+                // and the one the arm now ships.
                 if let Some(expected_order) = ordered_fixtures().get(&label) {
                     println!("{ORDER_BIAS}");
-                    let taus: Vec<f64> = runs
-                        .iter()
-                        .filter_map(|run| {
-                            order::score_order(
-                                &changeset,
-                                &Ordered::new(
-                                    run.refined.partition.clone(),
-                                    run.refined.order.clone(),
-                                ),
-                                expected_order,
-                            )
-                            .tau_group
-                        })
-                        .collect();
-                    let heuristic_tau = order::score_order(
-                        &changeset,
-                        &Ordered::heuristic(
-                            passes::group(&changeset, GroupingConfig::default()).partition(),
-                        ),
-                        expected_order,
-                    )
-                    .tau_group;
-                    if !taus.is_empty() {
+                    let taus = |sorted: bool| -> Vec<f64> {
+                        runs.iter()
+                            .filter_map(|run| {
+                                let partition = run.refined.partition.clone();
+                                let order = run.refined.order.clone();
+                                let ordered = if sorted {
+                                    Ordered::refined(&changeset, partition, order)
+                                } else {
+                                    Ordered::new(partition, order)
+                                };
+                                order::score_order(&changeset, &ordered, expected_order).tau_group
+                            })
+                            .collect()
+                    };
+                    let heuristic =
+                        passes::group(&changeset, GroupingConfig::default()).partition();
+                    let heuristic_tau =
+                        order::score_order(&changeset, &unsorted(heuristic), expected_order)
+                            .tau_group;
+                    for (label, taus) in [("published", taus(false)), ("as shipped", taus(true))] {
+                        if taus.is_empty() {
+                            continue;
+                        }
                         println!(
-                            "  tau_group mean {:.3}  worst {:.3}  best {:.3}   \
-                             (heuristic arm on this fixture: {})",
+                            "  tau_group {label:<10} mean {:.3}  worst {:.3}  best {:.3}   \
+                             (heuristic arm, unsorted: {})",
                             taus.iter().sum::<f64>() / taus.len() as f64,
                             taus.iter().copied().fold(f64::INFINITY, f64::min),
                             taus.iter().copied().fold(f64::NEG_INFINITY, f64::max),
@@ -3808,7 +3830,7 @@ fn the_heuristic_order_pins_directory_fallback_groups_last() {
         ("f.ts".to_string(), "smaller".to_string()),
     ]);
     assert_eq!(
-        Ordered::heuristic(partition).order,
+        Ordered::heuristic_order(&partition),
         vec!["concern", "smaller", "dir:src"],
         "the three-file fallback group sorts after the one-file concern group"
     );
@@ -3868,17 +3890,16 @@ fn unconstrained_within_group_pairs_are_not_scored() {
     );
 }
 
-/// The measured defect this ticket found, pinned so it cannot come back: both
+/// The measured defect `gd-26r.22` found, pinned so it cannot come back: both
 /// arms build a group from a path-keyed map, and `x.test.ts` sorts before
 /// `x.ts`, so every test precedes the code it covers.
 #[test]
 fn the_within_group_sort_repairs_rule_four_on_fixture_one() {
     let (changeset, _) = orca();
     let expected = orca_ordered();
-    let heuristic =
-        Ordered::heuristic(passes::group(&changeset, GroupingConfig::default()).partition());
+    let partition = passes::group(&changeset, GroupingConfig::default()).partition();
 
-    let before = order::score_order(&changeset, &heuristic, &expected);
+    let before = order::score_order(&changeset, &unsorted(partition.clone()), &expected);
     assert_eq!(
         before.tau_for(order::Rule::TestFollowsProduction),
         Some(-1.0),
@@ -3887,13 +3908,104 @@ fn the_within_group_sort_repairs_rule_four_on_fixture_one() {
 
     let after = order::score_order(
         &changeset,
-        &heuristic.sorted_within_groups(&changeset),
+        &Ordered::heuristic(&changeset, partition),
         &expected,
     );
     assert_eq!(
         after.tau_for(order::Rule::TestFollowsProduction),
         Some(1.0),
         "a pure sort reaches the fixture's own ceiling, with no model call"
+    );
+}
+
+/// `gd-26r.27`: the sort is not a variant of the arm, it *is* the arm. There is
+/// no constructor for a computed grouping that skips it, so a caller cannot
+/// present the heuristic grouping with every test ahead of its production file
+/// by forgetting a step.
+#[test]
+fn a_presented_grouping_is_sorted_by_construction() {
+    let (changeset, _) = orca();
+    let expected = orca_ordered();
+    for arm in [
+        Ordered::heuristic(
+            &changeset,
+            passes::group(&changeset, GroupingConfig::default()).partition(),
+        ),
+        Ordered::refined(
+            &changeset,
+            passes::group(&changeset, GroupingConfig::default()).partition(),
+            vec!["a name no group carries".to_string()],
+        ),
+    ] {
+        assert_eq!(
+            order::score_order(&changeset, &arm, &expected)
+                .tau_for(order::Rule::TestFollowsProduction),
+            Some(1.0),
+            "every constructor for a computed grouping applies the within-group sort"
+        );
+    }
+}
+
+/// Rule 13, which `gd-26r.27` implemented on the spec's authority rather than
+/// the fixtures': the file the group is named for leads it, ahead of a
+/// directory that would otherwise sort first. Neither fixture exhibits the
+/// rule — both contradict it — so this is the only place it is checked.
+#[test]
+fn the_group_s_central_file_leads_it() {
+    let changeset = Changeset::parse(
+        "M\tsrc/api/client.ts\n\
+         M\tsrc/checkout/checkout.ts\n\
+         M\tsrc/checkout/checkout.test.ts\n",
+    );
+    let partition = Partition::from_assignments(
+        changeset
+            .files
+            .iter()
+            .map(|file| (file.path.clone(), "checkout".to_string())),
+    );
+    assert_eq!(
+        Ordered::heuristic(&changeset, partition).sequence(),
+        vec![
+            "src/checkout/checkout.ts",
+            "src/api/client.ts",
+            "src/checkout/checkout.test.ts",
+        ],
+        "the named file leads, and rule 4 still keeps its test behind it"
+    );
+}
+
+/// Rule 12 is a band across the whole group, not a nudge within one stem: the
+/// integration test of `checkout` follows the *unit* test of `payment`, not
+/// just its own. Neither fixture exhibits the rule, so it is under test here or
+/// nowhere.
+#[test]
+fn broad_tests_sort_after_every_unit_test_in_the_group() {
+    let changeset = Changeset::parse(
+        "M\tsrc/checkout/checkout.ts\n\
+         M\tsrc/checkout/checkout.integration.test.ts\n\
+         M\tsrc/payment/payment.ts\n\
+         M\tsrc/payment/payment.test.ts\n\
+         M\tsrc/payment/pnpm-lock.yaml\n",
+    );
+    let partition = Partition::from_assignments(
+        changeset
+            .files
+            .iter()
+            .map(|file| (file.path.clone(), "one".to_string())),
+    );
+    let sorted = Ordered::heuristic(&changeset, partition);
+
+    assert_eq!(
+        sorted.sequence(),
+        vec![
+            "src/checkout/checkout.ts",
+            "src/payment/payment.ts",
+            "src/payment/payment.test.ts",
+            "src/checkout/checkout.integration.test.ts",
+            "src/payment/pnpm-lock.yaml",
+        ],
+        "rule 4 pairs each test to its production file, rule 12 bands the broad \
+         test after both, rule 14 sends the straggling lockfile to the tail"
     );
 }
 
