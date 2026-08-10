@@ -5,7 +5,6 @@ use ratatui::{
     text::{Line, Span},
     widgets::{Block, Borders, List, ListItem},
 };
-use std::path::Path;
 use unicode_width::UnicodeWidthStr;
 
 use crate::app::{App, FileTreeItem, FocusedPanel};
@@ -53,22 +52,8 @@ pub(super) fn render_file_list(frame: &mut Frame, app: &mut App, area: Rect) {
     let max_content_width = visible_items
         .iter()
         .map(|item| match item {
-            FileTreeItem::Directory { path, depth, .. } => {
-                let dir_name = Path::new(path)
-                    .file_name()
-                    .and_then(|n| n.to_str())
-                    .unwrap_or(path);
-                depth * 2 + 2 + dir_name.width() + 1
-            }
-            FileTreeItem::File { file_idx, depth } => {
-                let file = &app.diff_files[*file_idx];
-                let filename = file
-                    .display_path()
-                    .file_name()
-                    .and_then(|n| n.to_str())
-                    .unwrap_or("?");
-                depth * 2 + 4 + filename.width()
-            }
+            FileTreeItem::Directory { label, depth, .. } => depth * 2 + 2 + label.width(),
+            FileTreeItem::File { label, depth, .. } => depth * 2 + 4 + label.width(),
         })
         .max()
         .unwrap_or(0);
@@ -108,9 +93,10 @@ pub(super) fn render_file_list(frame: &mut Frame, app: &mut App, area: Rect) {
         .map(|item| {
             let line = match item {
                 FileTreeItem::Directory {
-                    path,
+                    label,
                     depth,
                     expanded,
+                    ..
                 } => {
                     let indent = "  ".repeat(*depth);
                     let icon = if *expanded {
@@ -118,17 +104,17 @@ pub(super) fn render_file_list(frame: &mut Frame, app: &mut App, area: Rect) {
                     } else {
                         COLLAPSED_GLYPH
                     };
-                    let dir_name = Path::new(path)
-                        .file_name()
-                        .and_then(|n| n.to_str())
-                        .unwrap_or(path);
                     Line::from(vec![
                         Span::raw(indent),
                         Span::styled(format!("{icon} "), styles::dir_icon_style(&app.theme)),
-                        Span::raw(format!("{dir_name}/")),
+                        Span::raw(label.clone()),
                     ])
                 }
-                FileTreeItem::File { file_idx, depth } => {
+                FileTreeItem::File {
+                    file_idx,
+                    label,
+                    depth,
+                } => {
                     let file = &app.diff_files[*file_idx];
                     let path = file.display_path();
                     let is_reviewed = app.session.is_file_reviewed(path);
@@ -148,7 +134,6 @@ pub(super) fn render_file_list(frame: &mut Frame, app: &mut App, area: Rect) {
                             Span::raw(format!("  {}", path.display())),
                         ])
                     } else {
-                        let filename = path.file_name().and_then(|n| n.to_str()).unwrap_or("?");
                         let indent = "  ".repeat(*depth);
                         let mut spans = vec![
                             Span::raw(indent),
@@ -164,7 +149,7 @@ pub(super) fn render_file_list(frame: &mut Frame, app: &mut App, area: Rect) {
                                 styles::file_status_style(&app.theme, status),
                             ));
                         }
-                        spans.push(Span::raw(filename.to_string()));
+                        spans.push(Span::raw(label.clone()));
                         Line::from(spans)
                     }
                 }

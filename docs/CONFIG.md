@@ -27,6 +27,7 @@ theme_light = "gruvbox-light"
 diff_view = "side-by-side"
 ignore_whitespace = false
 show_file_list = true
+file_tree = "nested"
 mouse = true
 leader = ","
 comment_vim = false
@@ -76,6 +77,7 @@ legend = true
 | `initial_commit_selection` | `all`        | Which commits are selected when a multi-commit review first opens: `all`, or `oldest` to start on just the oldest commit and walk forward with `(` / `)`.  |
 | `ignore_whitespace`        | `false`      | Ignore all whitespace in local Git, jj, and hg diffs. PR diffs are unchanged.                                                                              |
 | `show_file_list`           | `true`       | Whether the file list panel is visible on startup. Toggle with `<leader>e`.                                                                                |
+| `file_tree`                | `nested`     | File list layout. `nested` gives every directory its own row; `compact` joins a run of single-child directories into one row (`src/main/github/`); `flat` drops directory rows entirely and labels each file with its full path. Fixed for the session. |
 | `show_commits`             | `true`       | Whether the inline commit selector pane is visible on startup for multi-commit reviews. Toggle with `<leader>s` or `:set commits!`.                        |
 | `mouse`                    | `true`       | Wheel scrolling, clicks, and drag-to-select.                                                                                                               |
 | `leader`                   | `;`          | Single-character prefix for panel focus, sidebar toggles, and review-comment shortcuts. Invalid multi-character values are ignored with a startup warning. |

@@ -104,6 +104,10 @@ pub struct AppConfig {
     pub backend: Option<String>,
     pub comment_types: Option<Vec<CommentTypeConfig>>,
     pub show_file_list: Option<bool>,
+    /// How the file list lays out directories: `"nested"` (a row per path
+    /// ancestor, the default), `"compact"` (single-child chains joined into
+    /// one row) or `"flat"` (no directory rows; files carry their full path).
+    pub file_tree: Option<String>,
     /// Whether the inline commit selector pane is visible on startup for
     /// multi-commit reviews. Defaults to true; toggle at runtime with
     /// `<leader>s` or `:set commits!`.
@@ -174,6 +178,7 @@ const KNOWN_KEYS: &[&str] = &[
     "backend",
     "comment_types",
     "show_file_list",
+    "file_tree",
     "show_commits",
     "diff_view",
     "commit_order",
@@ -394,6 +399,12 @@ fn load_config_from_path(path: &Path) -> Result<ConfigLoadOutcome> {
             .get("comment_types")
             .and_then(|v| parse_comment_types(v, &mut warnings)),
         show_file_list: read_bool(table, "show_file_list", &mut warnings),
+        file_tree: read_enum(
+            table,
+            "file_tree",
+            &["nested", "compact", "flat"],
+            &mut warnings,
+        ),
         show_commits: read_bool(table, "show_commits", &mut warnings),
         diff_view: read_enum(
             table,
@@ -895,6 +906,53 @@ mod tests {
             None
         );
         assert_eq!(outcome.warnings.len(), 1);
+    }
+
+    // file_tree
+
+    #[test]
+    fn should_parse_file_tree_compact() {
+        let outcome = parse_config("file_tree = \"compact\"\n");
+        assert_eq!(
+            outcome
+                .config
+                .as_ref()
+                .and_then(|cfg| cfg.file_tree.as_deref()),
+            Some("compact")
+        );
+        assert!(outcome.warnings.is_empty());
+    }
+
+    #[test]
+    fn should_parse_file_tree_flat() {
+        let outcome = parse_config("file_tree = \"flat\"\n");
+        assert_eq!(
+            outcome
+                .config
+                .as_ref()
+                .and_then(|cfg| cfg.file_tree.as_deref()),
+            Some("flat")
+        );
+        assert!(outcome.warnings.is_empty());
+    }
+
+    #[test]
+    fn should_warn_and_ignore_file_tree_with_invalid_value() {
+        let outcome = parse_config("file_tree = \"squashed\"\n");
+        assert_eq!(
+            outcome
+                .config
+                .as_ref()
+                .and_then(|cfg| cfg.file_tree.as_deref()),
+            None
+        );
+        assert_eq!(outcome.warnings.len(), 1);
+    }
+
+    #[test]
+    fn should_not_warn_about_file_tree_as_an_unknown_key() {
+        let outcome = parse_config("file_tree = \"nested\"\n");
+        assert!(outcome.warnings.is_empty());
     }
 
     // show_commits

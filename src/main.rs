@@ -163,6 +163,15 @@ fn main() -> anyhow::Result<()> {
         Some("ascending") => app::CommitOrder::Ascending,
         _ => app::CommitOrder::Descending,
     };
+    let file_tree_mode = match config_outcome
+        .config
+        .as_ref()
+        .and_then(|cfg| cfg.file_tree.as_deref())
+    {
+        Some("compact") => app::FileTreeMode::Compact,
+        Some("flat") => app::FileTreeMode::Flat,
+        _ => app::FileTreeMode::Nested,
+    };
     let commit_selection = match config_outcome
         .config
         .as_ref()
@@ -248,6 +257,12 @@ fn main() -> anyhow::Result<()> {
     // re-selections during the session (target selector, PR reload) honor it.
     app.commit_order = commit_order;
     app.commit_selection_start = commit_selection;
+
+    // The tree mode decides which directory rows the sidebar emits, so the
+    // startup expansion `App::new` performed under the default mode has to be
+    // re-seeded with the keys the configured mode actually produces.
+    app.file_tree_mode = file_tree_mode;
+    app.expand_all_dirs();
 
     let mut session_registered = true;
     match app.ensure_ephemeral_session_file() {
