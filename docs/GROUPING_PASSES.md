@@ -2225,7 +2225,149 @@ deliberately not redesigned.
   transfer, plus a confirmed premise about the alternative.
 - **Whether the sort helps a repo whose tests `is_test` does not match.** On
   fixture 2 it demonstrably does not, and fixing `is_test` for .NET naming would
-  move published F1, so it is deliberately not attempted here.
+  move published F1, so it is deliberately not attempted here. (**Corrected by
+  `gd-26r.29`, below**: measured, that fix moves no published F1 cell on either
+  fixture — and it still buys zero rule-4 pairs, because `is_test` is one of
+  three gates and not the binding one.)
 - **Whether rule 13 is right.** It ships because the spec says so, and both
   fixtures contradict it. A third fixture authored to the rule would settle it;
   nothing here is evidence either way.
+
+# Guarding the order numbers (`gd-26r.29`)
+
+Every tau figure above this line was **measured, published, and unguarded**.
+`recorded_numbers_hold` locked F1, precision, recall, largest share and group
+count; nothing asserted on order at all. So the numbers in the two sections
+above lived in prose, and a change that regressed rule 4 from +1.000 back
+toward −1.000 on fixture 1 — the exact defect `gd-26r.22` found and `gd-26r.27`
+fixed — would have kept the whole suite green. `gd-26r.27` re-scored all 28
+arm/fixture pairs by hand for that reason; this section makes the part that can
+be automatic automatic.
+
+Fixture 2 is present and scored. `$TUICR_GROUPING_FIXTURES` was unset, so it was
+read from the default `~/.local/share/tuicr-fixtures`; had neither been
+populated this section would say so rather than quietly report one fixture.
+
+## What is barred, and on what axis
+
+| bar | fixture | what it locks | kind |
+| --- | --- | --- | --- |
+| `recorded_order_numbers_hold` | 1 | rule 4 at +1.000 over **42** pairs, `tau_within` at **+0.800** | quality, unbiased |
+| `the_published_heuristic_group_order_still_reproduces` | 1 and 2 | heuristic `tau_group` at **−0.191** / **+0.077** | reproducibility only |
+| `the_second_fixture_still_constrains_no_rule_four_pair` | 2 | fixture 2 constrains **zero** rule-4 pairs | premise of every one-fixture caveat here |
+
+**One fixture, one axis, on the only bar that is a quality claim.** The
+`tau_within` bar is fixture 1 only, and nothing below should be read as order
+coverage beyond it. That is not an oversight to be tidied later; the two
+sections after this one say exactly why it cannot honestly be widened yet.
+
+The `tau_within` bar locks the **pair count** as well as the score, because a
+rule that quietly stopped matching would score `None`, or +1.000 over two pairs,
+and read as green. It also asserts the arm against the fixture's own self-score
+rather than against the constant alone, so +0.800 stays a *ceiling* claim if the
+fixture's expected order is ever re-authored, instead of silently becoming a
+shortfall the constant hides.
+
+## The ruling on `tau_group`: a bar, and it is not a quality bar
+
+`tau_group` **flatters refine by construction** and the harness prints that
+above every order block, so a green bar on it risks reading as a quality
+statement the number cannot support. It gets a bar anyway, narrowed to the one
+shape where the bias does not apply, and the assertion message carries the
+distinction rather than leaving it to this document:
+
+- **The heuristic arm gets a bar, on both fixtures.** The bias is a claim about
+  *comparing* the arms. The heuristic arm's own number compared against nothing
+  is just a published row, and a row that reproduces is worth guarding: it is
+  the only thing standing between "someone wrecked group order" and a green
+  suite.
+- **It is two-sided, and it fails if the order gets **better**.** −0.191 is
+  worse than chance and nobody wants to preserve it. The bar is not there to
+  defend the number; it is there so an improvement gets *re-recorded* rather
+  than quietly falsifying the published row — the same rule
+  `recorded_numbers_hold` already applies to F1, where a one-sided check would
+  pass a pass that improved as readily as one that regressed and leave the
+  document wrong either way.
+- **No refine arm gets a bar.** Two independent reasons, either sufficient: the
+  bias is a between-arm claim and that is exactly what a refine bar would
+  assert, and every refine arm here is a replay of a recorded run, so a bar on
+  one would guard the recording rather than the engine. What the metric itself
+  must do is already pinned by `one_group_moved_scores_far_above_a_reversal`,
+  `a_shuffled_order_sits_near_zero` and the self-score check.
+
+## Step 2 is deferred, and the obstacle is not the one the ticket named
+
+The remaining work — tau bars spanning both fixtures on the within-group axis —
+is **not done**, and the reason is measured rather than asserted.
+
+`gd-26r.27` recorded that fixture 2 contributes zero rule-4 pairs because
+`FooTests.cs` is not what `is_test` matches, and left `is_test` alone on the
+grounds that it feeds the heuristic passes and changing it would move published
+F1. Both halves of that turn out to be wrong, in opposite directions, and both
+were checked by experiment.
+
+**`is_test` is one of three gates, and it is not the binding one.** Rule 4
+requires `is_test`, **stem equality**, and **locality** — same directory, or a
+`__tests__` directory directly beneath it. Fixture 2's .NET pairs fail all
+three: `ScPricerTests.cs` lives in
+`.../rcm/tests/PACF.Rcm.Rules.Tests/` while `ScPricer.cs` lives in
+`.../rcm/src/PACF.Rcm.Rules/`, so the directories differ, and `stem()` strips
+dot-separated markers rather than a camel-case `Tests` suffix. Teaching
+`is_test` the .NET convention and stopping there was measured: it produces
+**zero** rule-4 pairs on fixture 2, exactly as before.
+
+**And it does not move published F1.** The same experiment re-scored every
+recorded arm and fixture pair. Drift, in full:
+
+| what | before | after |
+| --- | --- | --- |
+| fixture 1, every published cell (F1, P, R, groups, largest, every ablation and sweep) | — | **identical** |
+| fixture 2, heuristic default config | 0.378 / P 0.425 / R 0.340 / 29 groups | **identical** |
+| fixture 2, off-default sweep cell `ubiquity >= 0.05` | 0.295, 48 groups | 0.289, 49 groups |
+| `tau_group`, all 28 arm/fixture pairs, means | — | **unchanged** |
+| `tau_group`, three fixture-2 arms, one worst/best endpoint each | 0.052 / 0.522 / 0.415 | 0.051 / 0.521 / 0.414 |
+| fixture 2, rule-4 pairs | 0 | **0** |
+| fixture 2, `tau_within` (and its ceiling) | −0.667 over 18 pairs (ceiling −0.333) | −1.000 over 5 pairs (ceiling −0.200) |
+
+So the surgery is cheap on the partition — the fear that gated it is refuted —
+and buys nothing on order, while **destroying 13 of fixture 2's 18 constrained
+pairs**, because the newly-recognised tests drop out of the `central-first`
+candidate set. It is not attempted, and the correction to `gd-26r.27`'s stated
+reason is recorded here rather than left standing.
+
+**The deeper reason a fixture-2 within-group bar cannot be honest yet.** Even
+with all three gates taught the .NET convention, there would be nothing to grade
+against: `gd-26r.22` established that fixture 2's within-group file order is a
+plain path sort in 14 of 14 groups and is explicitly **not** claimed as ground
+truth, which is why its `tau_within` ceiling is below 1.000. Its only
+constrained pairs today are 17 `central-first` and 1 `mechanical-last`, both
+rules this document refuses to grade an arm on. A bar there would lock in an
+accident of how the fixture was typed and dress it as coverage.
+
+**So the bars stand on one fixture until `gd-26r.19` lands.** That ticket —
+harvested ground truth, cross-repo, ruled on during real reviews — is what
+supplies a second changeset whose within-group order is authored to the rule.
+It does *not* subsume the `is_test` defect, which is engine code and will
+resurface on any .NET repo in the harvest; that defect is real, now priced at
+zero F1 drift, and belongs to whoever next changes the pass set rather than to
+a ticket about guarding numbers.
+
+## What `gd-26r.28` must not break
+
+The guards are written to survive the move of the sort out of test code and into
+`src/`, and the move must keep these four properties:
+
+1. **A constructor for a presented grouping that applies the sort.** Every bar
+   here runs through `Ordered::heuristic`, not through the sort function, so it
+   keeps measuring the arm rather than the helper. Whatever replaces it in
+   `src/` must still be the *only* way to obtain a computed grouping, as
+   `a_presented_grouping_is_sorted_by_construction` requires.
+2. **The scorer stays reachable from the fixture harness.**
+   `order::score_order` and `order::within_group_constraints` are the
+   measurement, and they are independent of where the engine lives.
+3. **The per-rule breakdown, not just the pooled number.** The rule-4 pair count
+   and the fixture-2 absence bar both read `within_by_rule`. A move that reported
+   only pooled `tau_within` would make both unenforceable.
+4. **Rule 4's three gates unchanged in meaning** — `is_test`, stem equality and
+   locality. Changing any of them is a change to what the published +1.000 over
+   42 pairs *claims*, so it re-records the row; it is not a refactor.
