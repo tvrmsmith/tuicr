@@ -7,7 +7,8 @@ because there is no grouping engine in `src/` yet to attach it to.
 
 Assumed, settled elsewhere: grouping is file-level with a **strict partition**
 (`gd-26r.5`); groups are collapsible top-level sidebar nodes with `expanded_dirs`
-keyed on `(group, directory)` (`gd-26r.7`); the engine lives in tuicr with an
+keyed on the group id (`gd-26r.7`, revised by `gd-26r.31`); the engine lives in
+tuicr with an
 optional async refine that shells out to an agent CLI (`gd-26r.4`); refine's
 run-to-run movement is measured in `docs/GROUPING_PASSES.md` (`gd-26r.11`).
 
@@ -181,8 +182,9 @@ unusable on the measured numbers. At 3–12% group-mate stability a single
 
 The 13-row collapsed overview is the feature (`gd-26r.7`) — and it is precisely
 what a human wants to re-read immediately after asking for a new grouping. It is
-also deterministic, needs no remapping logic, and leaves no stale
-`(group, directory)` keys in `expanded_dirs`. Best-effort carry-over is the most
+also deterministic, needs no remapping logic, and leaves no stale group keys in
+`expanded_dirs` (`(group, directory)` keys before `gd-26r.31` removed in-group
+directory rows). Best-effort carry-over is the most
 machinery for the least benefit: under 3–12% stability it would mostly fail
 anyway.
 
