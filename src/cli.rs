@@ -28,6 +28,8 @@ pub struct CliArgs {
     pub file_path: Option<String>,
     /// Whole-repo annotation mode.
     pub all_files: bool,
+    /// Review the plain directory tree instead of the grouped sidebar.
+    pub no_grouping: bool,
     /// Direct PR target from `tuicr pr <target>`.
     pub pr_target: Option<String>,
     /// Override the GitHub repo used for PR operations.
@@ -114,6 +116,10 @@ struct TuiOptions {
         conflicts_with_all = ["path_filter", "revisions", "working_tree", "file_path"],
     )]
     all_files: bool,
+
+    /// Review the plain directory tree instead of grouping the changeset.
+    #[arg(long = "no-grouping", action = ArgAction::SetTrue)]
+    no_grouping: bool,
 
     /// Output to stdout instead of clipboard when exporting.
     #[arg(long = "stdout", action = ArgAction::SetTrue)]
@@ -326,6 +332,7 @@ impl From<Cli> for CliArgs {
             path_filter: options.path_filter,
             file_path: options.file_path,
             all_files: options.all_files,
+            no_grouping: options.no_grouping,
             pr_target,
             repo_url: options.repo_url,
             review_command,
@@ -346,6 +353,7 @@ impl TuiOptions {
             || self.path_filter.is_some()
             || self.file_path.is_some()
             || self.all_files
+            || self.no_grouping
             || self.repo_url.is_some()
     }
 
@@ -360,6 +368,7 @@ impl TuiOptions {
             path_filter: later.path_filter.or(self.path_filter),
             file_path: later.file_path.or(self.file_path),
             all_files: self.all_files || later.all_files,
+            no_grouping: self.no_grouping || later.no_grouping,
             repo_url: later.repo_url.or(self.repo_url),
         }
     }

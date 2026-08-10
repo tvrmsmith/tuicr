@@ -25,6 +25,39 @@ pub struct FileReview {
     pub reviewed_hunks: BTreeSet<String>,
     #[serde(default)]
     pub content_hash: Option<u64>,
+    /// Which group this file was placed in, as a stable opaque id into
+    /// [`ReviewSession::groups`] (`docs/REGROUPING_STATE.md`). `None` on a
+    /// session saved before grouping existed, and on every session reviewed
+    /// with grouping off.
+    ///
+    /// Review state itself is path-keyed and knows nothing about groups, so a
+    /// file that changes group keeps everything it had.
+    #[serde(default)]
+    pub group_id: Option<String>,
+}
+
+/// One row of the session's group table (`docs/REGROUPING_STATE.md`).
+///
+/// The grouping is a persisted artefact of the session, not a derived view:
+/// reopening never regroups, so yesterday's review shows yesterday's groups.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SessionGroup {
+    /// Stable identity. What [`FileReview::group_id`] and the sidebar's
+    /// group-scoped expansion state key on — never the name, which a regroup
+    /// may change while leaving the group intact.
+    pub id: String,
+    /// Display only, rendered verbatim.
+    pub name: String,
+    /// Position in reading order.
+    pub order: usize,
+    /// `heuristics` | `refined` | `incremental` — what produced *this* group. A
+    /// partial refine response leaves untouched groups on their old source, so
+    /// one session can hold a mix.
+    pub source: String,
+    /// Set when the group was opened by incremental assignment rather than by
+    /// a full pass.
+    #[serde(default)]
+    pub new_since_full_pass: bool,
 }
 
 impl FileReview {
@@ -37,6 +70,7 @@ impl FileReview {
             line_comments: HashMap::new(),
             reviewed_hunks: BTreeSet::new(),
             content_hash: Some(content_hash),
+            group_id: None,
         }
     }
 
@@ -130,6 +164,10 @@ pub struct ReviewSession {
     #[serde(default)]
     pub review_comments: Vec<Comment>,
     pub files: HashMap<PathBuf, FileReview>,
+    /// The session's groups, in reading order. Empty on a session saved before
+    /// grouping existed, and on every session reviewed with grouping off.
+    #[serde(default)]
+    pub groups: Vec<SessionGroup>,
     pub session_notes: Option<String>,
 }
 
@@ -158,6 +196,7 @@ impl ReviewSession {
             released_at: None,
             review_comments: Vec::new(),
             files: HashMap::new(),
+            groups: Vec::new(),
             session_notes: None,
         }
     }
@@ -283,6 +322,82 @@ impl ReviewSession {
             }
         }
         (cleared, unreviewed)
+    }
+
+    /// Writes a grouping into the session: the group table in reading order,
+    /// and each file's group id.
+    ///
+    /// Files the grouping does not mention keep whatever they had, so a
+    /// grouping computed over a narrowed changeset does not blank the ids of
+    /// files that are merely out of view.
+    pub fn record_grouping(&mut self, grouping: &crate::grouping::Grouping) {
+        self.groups = grouping
+            .groups()
+            .iter()
+            .enumerate()
+            .map(|(order, group)| SessionGroup {
+                id: group.id.as_str().to_string(),
+                name: group.name.clone(),
+                order,
+                source: group.source.as_str().to_string(),
+                new_since_full_pass: group.new_since_full_pass,
+            })
+            .collect();
+
+        for assignment in grouping.assignments() {
+            if let Some(review) = self.files.get_mut(&assignment.path) {
+                review.group_id = Some(assignment.group_id.as_str().to_string());
+            }
+        }
+    }
+
+    /// The grouping this session was last saved with, rebuilt over `changeset`.
+    ///
+    /// `None` unless the table covers the changeset's paths **exactly**.
+    /// Reopening a session never regroups (`docs/REGROUPING_STATE.md`), so a
+    /// grouping that still describes the working tree is restored verbatim,
+    /// group ids and all; anything else is not a grouping of *this* changeset
+    /// and the caller computes a fresh one. Placing the files that moved is
+    /// incremental assignment, which this slice does not ship.
+    pub fn grouping_for(
+        &self,
+        changeset: &crate::grouping::changeset::Changeset,
+    ) -> Option<crate::grouping::Grouping> {
+        use crate::grouping::{GroupId, GroupSource, Grouping, PresentedGroup};
+
+        if self.groups.is_empty() {
+            return None;
+        }
+
+        let mut members: HashMap<&str, Vec<String>> = HashMap::new();
+        for file in &changeset.files {
+            let review = self.files.get(&PathBuf::from(&file.path))?;
+            let group_id = review.group_id.as_deref()?;
+            members.entry(group_id).or_default().push(file.path.clone());
+        }
+        if members.len() != self.groups.len() {
+            return None;
+        }
+
+        let mut table: Vec<&SessionGroup> = self.groups.iter().collect();
+        table.sort_by_key(|group| group.order);
+
+        let restored = table
+            .into_iter()
+            .map(|group| {
+                members
+                    .remove(group.id.as_str())
+                    .map(|members| PresentedGroup {
+                        id: GroupId::from_persisted(group.id.clone()),
+                        name: group.name.clone(),
+                        source: GroupSource::from_persisted(&group.source),
+                        new_since_full_pass: group.new_since_full_pass,
+                        members,
+                    })
+            })
+            .collect::<Option<Vec<_>>>()?;
+
+        Some(Grouping::restore(changeset, restored))
     }
 
     pub fn is_file_reviewed(&self, path: &PathBuf) -> bool {
@@ -1012,6 +1127,7 @@ mod tests {
                 line_comments: HashMap::new(),
                 reviewed_hunks: BTreeSet::new(),
                 content_hash: None,
+                group_id: None,
             },
         );
 

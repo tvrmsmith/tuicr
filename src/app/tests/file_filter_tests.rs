@@ -120,7 +120,7 @@ fn visible_paths(app: &App) -> Vec<String> {
                     .display()
                     .to_string(),
             ),
-            FileTreeItem::Directory { .. } => None,
+            FileTreeItem::Directory { .. } | FileTreeItem::Group { .. } => None,
         })
         .collect()
 }
@@ -130,7 +130,7 @@ fn visible_dirs(app: &App) -> Vec<String> {
         .into_iter()
         .filter_map(|item| match item {
             FileTreeItem::Directory { path, .. } => Some(path),
-            FileTreeItem::File { .. } => None,
+            FileTreeItem::File { .. } | FileTreeItem::Group { .. } => None,
         })
         .collect()
 }

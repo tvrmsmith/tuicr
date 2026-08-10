@@ -272,6 +272,13 @@ fn main() -> anyhow::Result<()> {
     // startup expansion `App::new` performed under the default mode has to be
     // re-seeded with the keys the configured mode actually produces.
     app.file_tree_mode = file_tree_mode;
+    // Grouping is the binary's decision, not `App::build`'s: it reorders
+    // `diff_files` and rebuilds the sidebar around group nodes, and it has to
+    // run after the tree mode is known because the two decide together which
+    // rows exist and what keys they expand under.
+    if !cli_args.no_grouping {
+        app.enable_grouping();
+    }
     app.expand_all_dirs();
 
     let mut session_registered = true;
