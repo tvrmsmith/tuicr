@@ -8,7 +8,8 @@ grouping engine in `src/` yet to attach it to — the passes live in
 
 Assumed, settled elsewhere: grouping is file-level with a **strict partition**
 (`gd-26r.5`); groups are collapsible top-level sidebar nodes with `expanded_dirs`
-keyed on `(group, directory)` (`gd-26r.7`, `docs/SIDEBAR_MODEL.md`); grouping is
+keyed on the group id (`gd-26r.7`, revised by `gd-26r.31`,
+`docs/SIDEBAR_MODEL.md`); grouping is
 a **persisted session artefact** with a stable opaque `group_id`, reopening never
 regroups and never refines, incremental assignment is heuristics-only and never
 moves an unchanged file, and the auto backstop is heuristics-only so a threshold

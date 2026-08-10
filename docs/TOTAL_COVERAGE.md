@@ -210,8 +210,9 @@ Stated here rather than absorbed. Answering the ticket's own framing directly:
 
 - **`build_visible_items` gains one branch, not a new node type.** The pinned
   commit-message row is a `FileTreeItem::File { file_idx: 0, depth: 0 }` emitted
-  before the group loop, and `seen_dirs` resets at each group boundary as
-  `gd-26r.7` requires. The pseudo-file is not in any group, so it does not
+  before the group loop. (`gd-26r.7` also required `seen_dirs` to reset at each
+  group boundary; `gd-26r.31` removed in-group directory rows altogether, so
+  there is no `seen_dirs` in the grouped branch to reset.) The pseudo-file is not in any group, so it does not
   disturb the re-scoped contiguity invariant — but the invariant's
   `debug_assert` must be written to start *after* it rather than at index 0.
 - **`expand_all_dirs`, `jump_to_file` and `ensure_valid_tree_selection`** need no
