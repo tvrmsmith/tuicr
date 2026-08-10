@@ -26,9 +26,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde_json::Value;
 
-use super::changeset::{ChangeKind, Changeset};
-use super::passes::Grouping;
 use super::score::{Partition, free_name};
+use tuicr::grouping::changeset::{ChangeKind, Changeset};
 
 /// How much freedom the refine call is given. The ticket asks whether a
 /// cheaper shape captures most of the benefit, so the shapes are the
@@ -174,14 +173,13 @@ fn status(kind: ChangeKind) -> &'static str {
 
 /// The heuristic grouping as the prompt renders it, largest group first so the
 /// residual smells rule 6 targets are the first thing read.
-fn render_groups(changeset: &Changeset, grouping: &Grouping) -> String {
+fn render_groups(changeset: &Changeset, heuristic: &Partition) -> String {
     let kinds: BTreeMap<&str, ChangeKind> = changeset
         .files
         .iter()
         .map(|file| (file.path.as_str(), file.kind))
         .collect();
-    let partition = grouping.partition();
-    let mut groups: Vec<_> = partition.groups.iter().collect();
+    let mut groups: Vec<_> = heuristic.groups.iter().collect();
     groups.sort_by_key(|(name, members)| (std::cmp::Reverse(members.len()), name.as_str()));
 
     let mut out = String::new();
@@ -213,7 +211,7 @@ fn render_files(changeset: &Changeset) -> String {
 
 /// Exactly what is sent to the agent CLI. Paths and change status only: the
 /// fixtures carry no diff bodies, so neither does this.
-pub fn prompt(changeset: &Changeset, grouping: &Grouping, shape: Shape) -> String {
+pub fn prompt(changeset: &Changeset, heuristic: &Partition, shape: Shape) -> String {
     let count = changeset.len();
     if shape == Shape::Cold {
         let files = render_files(changeset);
@@ -234,8 +232,8 @@ pub fn prompt(changeset: &Changeset, grouping: &Grouping, shape: Shape) -> Strin
         );
     }
 
-    let groups = render_groups(changeset, grouping);
-    let group_count = grouping.partition().groups.len();
+    let groups = render_groups(changeset, heuristic);
+    let group_count = heuristic.groups.len();
 
     let coarseness = match shape {
         Shape::FullCoarse => {
@@ -310,11 +308,10 @@ pub struct Refined {
 pub fn apply(
     body: &str,
     changeset: &Changeset,
-    grouping: &Grouping,
+    heuristic: &Partition,
     shape: Shape,
 ) -> Result<Refined, String> {
     let value = extract_json(body)?;
-    let heuristic = grouping.partition();
     let heuristic_group = heuristic.group_of();
     let all_paths: BTreeSet<&str> = changeset.files.iter().map(|f| f.path.as_str()).collect();
 

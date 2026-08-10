@@ -1,5 +1,11 @@
-//! The changeset under grouping, and the only signals the paths-only fixture
-//! can carry: path shape, filename tokens, change kind, rename pairs.
+//! The changeset under grouping, and the only signals it carries: path shape,
+//! filename tokens, change kind, rename pairs.
+//!
+//! Deliberately no diff bodies. The scored fixtures carry paths and statuses
+//! only (`docs/GROUPING_PASSES.md`), so an engine that read hunks would be
+//! graded on evidence the fixtures cannot supply.
+
+use crate::model::{DiffFile, FileStatus};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ChangeKind {
@@ -7,6 +13,19 @@ pub enum ChangeKind {
     Modified,
     Deleted,
     Renamed,
+}
+
+impl From<FileStatus> for ChangeKind {
+    fn from(status: FileStatus) -> Self {
+        match status {
+            FileStatus::Added => ChangeKind::Added,
+            FileStatus::Modified => ChangeKind::Modified,
+            FileStatus::Deleted => ChangeKind::Deleted,
+            // A copy is a rename that left its source behind; both reach the
+            // engine as one entry keyed by the new path.
+            FileStatus::Renamed | FileStatus::Copied => ChangeKind::Renamed,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -75,6 +94,26 @@ const MECHANICAL_SUFFIXES: &[&str] = &[".generated.ts", ".gen.go", "_pb2.py", ".
 const BROAD_TEST_MARKERS: &[&str] = &["integration", "e2e", "endtoend", "acceptance", "smoke"];
 
 impl ChangedFile {
+    /// A diff entry as the engine sees it. `display_path` is the same key
+    /// `ReviewSession.files` uses, so an assignment and a review record name
+    /// the same file with no translation.
+    pub fn from_diff_file(file: &DiffFile) -> Self {
+        Self {
+            path: file.display_path().to_string_lossy().to_string(),
+            kind: ChangeKind::from(file.status),
+            // Git reports a rename as one entry keyed by the new path
+            // (`GROUPING.md` rule 11), so the old path is provenance, never a
+            // second file.
+            rename_from: match file.status {
+                FileStatus::Renamed | FileStatus::Copied => file
+                    .old_path
+                    .as_ref()
+                    .map(|path| path.to_string_lossy().to_string()),
+                _ => None,
+            },
+        }
+    }
+
     pub fn dir(&self) -> &str {
         self.path.rsplit_once('/').map(|(d, _)| d).unwrap_or("")
     }
@@ -208,6 +247,20 @@ pub struct Changeset {
 }
 
 impl Changeset {
+    /// The real files of a loaded diff, in `diff_files` order.
+    ///
+    /// The commit-message pseudo-file is skipped: it sits **outside** the
+    /// partition entirely (`docs/TOTAL_COVERAGE.md` Decision 1), so the engine
+    /// is never asked to reason about a pathless entry.
+    pub fn from_diff_files(diff_files: &[DiffFile]) -> Self {
+        let files = diff_files
+            .iter()
+            .filter(|file| !file.is_commit_message)
+            .map(ChangedFile::from_diff_file)
+            .collect();
+        Self { files }
+    }
+
     /// Parses `<status>\t<path>` lines, with `R<score>\t<old>\t<new>` for renames.
     pub fn parse(text: &str) -> Self {
         let files = text
@@ -255,5 +308,12 @@ impl Changeset {
 
     pub fn len(&self) -> usize {
         self.files.len()
+    }
+
+    /// True when the diff held nothing groupable — every entry filtered out, or
+    /// an empty diff. The engine's callers branch on it rather than grouping
+    /// nothing.
+    pub fn is_empty(&self) -> bool {
+        self.files.is_empty()
     }
 }
