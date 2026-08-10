@@ -2,6 +2,11 @@ use crate::app::*;
 use crate::model::{DiffFile, DiffLine, FileStatus};
 use crate::vcs::traits::{VcsBackend, VcsInfo, VcsType};
 
+/// The 161-file changeset the sidebar row costs in `docs/SIDEBAR_MODEL.md`
+/// were measured against. Lines are `<status>\t<path>`.
+const ROW_COST_FIXTURE: &str =
+    include_str!("../../../tests/fixtures/grouping/orca-971b16754.files");
+
 fn make_file(path: &str) -> DiffFile {
     DiffFile {
         old_path: None,
@@ -15,87 +20,68 @@ fn make_file(path: &str) -> DiffFile {
     }
 }
 
+/// Drives the real tree code on a throwaway `App`, so what the tests assert
+/// is what the sidebar ships.
 struct TreeTestHarness {
-    diff_files: Vec<DiffFile>,
-    expanded_dirs: HashSet<String>,
+    app: App,
 }
 
 impl TreeTestHarness {
     fn new(paths: &[&str]) -> Self {
-        Self {
-            diff_files: paths.iter().map(|p| make_file(p)).collect(),
-            expanded_dirs: HashSet::new(),
-        }
+        Self::with_mode(FileTreeMode::Nested, paths)
+    }
+
+    fn with_mode(mode: FileTreeMode, paths: &[&str]) -> Self {
+        Self::from_files(mode, paths.iter().map(|p| make_file(p)).collect())
+    }
+
+    fn from_files(mode: FileTreeMode, files: Vec<DiffFile>) -> Self {
+        let vcs_info = VcsInfo {
+            root_path: PathBuf::from("/tmp"),
+            head_commit: "head".into(),
+            branch_name: Some("main".into()),
+            vcs_type: VcsType::Git,
+        };
+        let session = ReviewSession::new(
+            vcs_info.root_path.clone(),
+            vcs_info.head_commit.clone(),
+            vcs_info.branch_name.clone(),
+            SessionDiffSource::WorkingTree,
+        );
+        let mut app = App::build(
+            Box::new(StubVcs(vcs_info.clone())),
+            vcs_info,
+            crate::theme::Theme::dark(),
+            None,
+            false,
+            files,
+            session,
+            DiffSource::WorkingTree,
+            InputMode::Normal,
+            Vec::new(),
+            None,
+            None,
+        )
+        .expect("build app");
+        app.file_tree_mode = mode;
+        app.expand_all_dirs();
+        Self { app }
     }
 
     fn expand_all(&mut self) {
-        use std::path::Path;
-        for file in &self.diff_files {
-            let path = file.display_path();
-            let mut current = path.parent();
-            while let Some(parent) = current {
-                if parent != Path::new("") {
-                    self.expanded_dirs
-                        .insert(parent.to_string_lossy().to_string());
-                }
-                current = parent.parent();
-            }
-        }
+        self.app.expand_all_dirs();
     }
 
     fn collapse_all(&mut self) {
-        self.expanded_dirs.clear();
+        self.app.collapse_all_dirs();
     }
 
     fn toggle(&mut self, dir: &str) {
-        if self.expanded_dirs.contains(dir) {
-            self.expanded_dirs.remove(dir);
-        } else {
-            self.expanded_dirs.insert(dir.to_string());
-        }
+        self.app.toggle_directory(dir);
     }
 
     fn build_visible_items(&self) -> Vec<FileTreeItem> {
-        use std::path::Path;
-        let mut items = Vec::new();
-        let mut seen_dirs: HashSet<String> = HashSet::new();
-
-        for (file_idx, file) in self.diff_files.iter().enumerate() {
-            let path = file.display_path();
-            let mut ancestors: Vec<String> = Vec::new();
-            let mut current = path.parent();
-            while let Some(parent) = current {
-                if parent != Path::new("") {
-                    ancestors.push(parent.to_string_lossy().to_string());
-                }
-                current = parent.parent();
-            }
-            ancestors.reverse();
-
-            let mut visible = true;
-            for (depth, dir) in ancestors.iter().enumerate() {
-                if !seen_dirs.contains(dir) && visible {
-                    let expanded = self.expanded_dirs.contains(dir);
-                    items.push(FileTreeItem::Directory {
-                        path: dir.clone(),
-                        depth,
-                        expanded,
-                    });
-                    seen_dirs.insert(dir.clone());
-                }
-                if !self.expanded_dirs.contains(dir) {
-                    visible = false;
-                }
-            }
-
-            if visible {
-                items.push(FileTreeItem::File {
-                    file_idx,
-                    depth: ancestors.len(),
-                });
-            }
-        }
-        items
+        self.app.build_visible_items()
     }
 
     fn visible_file_count(&self) -> usize {
@@ -111,6 +97,36 @@ impl TreeTestHarness {
             .filter(|i| matches!(i, FileTreeItem::Directory { .. }))
             .count()
     }
+
+    fn dir_labels(&self) -> Vec<String> {
+        self.build_visible_items()
+            .iter()
+            .filter_map(|item| match item {
+                FileTreeItem::Directory { label, .. } => Some(label.clone()),
+                FileTreeItem::File { .. } => None,
+            })
+            .collect()
+    }
+
+    fn file_labels(&self) -> Vec<String> {
+        self.build_visible_items()
+            .iter()
+            .filter_map(|item| match item {
+                FileTreeItem::File { label, .. } => Some(label.clone()),
+                FileTreeItem::Directory { .. } => None,
+            })
+            .collect()
+    }
+}
+
+fn row_cost_harness(mode: FileTreeMode) -> TreeTestHarness {
+    let files: Vec<DiffFile> = ROW_COST_FIXTURE
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .map(|line| make_file(line.split_once('\t').map_or(line, |(_status, path)| path)))
+        .collect();
+    assert_eq!(files.len(), 161, "fixture changed size");
+    TreeTestHarness::from_files(mode, files)
 }
 
 #[test]
@@ -256,7 +272,9 @@ fn rendered_tree(app: &App) -> Vec<(String, usize)> {
         .iter()
         .map(|item| match item {
             FileTreeItem::Directory { path, depth, .. } => (format!("{path}/"), *depth),
-            FileTreeItem::File { file_idx, depth } => (
+            FileTreeItem::File {
+                file_idx, depth, ..
+            } => (
                 app.diff_files[*file_idx]
                     .display_path()
                     .to_string_lossy()
@@ -293,4 +311,109 @@ fn test_interleaved_paths_stay_under_own_directory() {
             ("ChronoStream.BuildTests/test.cs".to_string(), 1),
         ]
     );
+}
+
+#[test]
+fn nested_is_the_default_mode() {
+    assert_eq!(FileTreeMode::default(), FileTreeMode::Nested);
+}
+
+#[test]
+fn default_mode_emits_one_row_per_ancestor() {
+    let h = TreeTestHarness::new(&["a/b/c/file.rs"]);
+
+    assert_eq!(h.dir_labels(), vec!["a/", "b/", "c/"]);
+    assert_eq!(h.file_labels(), vec!["file.rs"]);
+}
+
+#[test]
+fn compact_joins_a_single_child_chain_into_one_row() {
+    let h = TreeTestHarness::with_mode(FileTreeMode::Compact, &["a/b/c/file.rs"]);
+    let items = h.build_visible_items();
+
+    assert_eq!(h.dir_labels(), vec!["a/b/c/"]);
+    assert!(matches!(
+        &items[0],
+        FileTreeItem::Directory { path, depth: 0, .. } if path == "a/b/c"
+    ));
+    assert!(matches!(&items[1], FileTreeItem::File { depth: 1, .. }));
+}
+
+#[test]
+fn compact_stops_joining_where_the_tree_branches() {
+    let h = TreeTestHarness::with_mode(
+        FileTreeMode::Compact,
+        &["src/main/github/a.rs", "src/renderer/lib/b.rs"],
+    );
+
+    assert_eq!(
+        h.dir_labels(),
+        vec!["src/", "main/github/", "renderer/lib/"]
+    );
+}
+
+#[test]
+fn compact_does_not_join_a_directory_holding_its_own_files() {
+    let h = TreeTestHarness::with_mode(FileTreeMode::Compact, &["a/own.rs", "a/b/nested.rs"]);
+
+    assert_eq!(h.dir_labels(), vec!["a/", "b/"]);
+}
+
+#[test]
+fn compact_chain_toggles_as_one_unit_keyed_by_the_joined_path() {
+    let mut h = TreeTestHarness::with_mode(FileTreeMode::Compact, &["a/b/c/file.rs"]);
+    assert_eq!(h.visible_file_count(), 1);
+
+    h.toggle("a/b/c");
+    assert_eq!(h.visible_file_count(), 0);
+    assert_eq!(h.visible_dir_count(), 1);
+
+    // The joined chain has no per-segment rows, so its intermediate paths are
+    // not toggle keys at all.
+    h.toggle("a/b");
+    assert_eq!(h.visible_file_count(), 0);
+}
+
+#[test]
+fn flat_emits_no_directory_rows_and_labels_files_with_the_full_path() {
+    let h = TreeTestHarness::with_mode(FileTreeMode::Flat, &["a/b/c/file.rs", "README.md"]);
+
+    assert_eq!(h.visible_dir_count(), 0);
+    assert_eq!(h.file_labels(), vec!["README.md", "a/b/c/file.rs"]);
+    assert!(
+        h.build_visible_items()
+            .iter()
+            .all(|item| matches!(item, FileTreeItem::File { depth: 0, .. }))
+    );
+}
+
+#[test]
+fn flat_keeps_every_file_visible_when_everything_is_collapsed() {
+    let mut h = TreeTestHarness::with_mode(FileTreeMode::Flat, &["a/b/c/file.rs", "src/main.rs"]);
+    h.collapse_all();
+
+    assert_eq!(h.visible_file_count(), 2);
+}
+
+// Row costs from the table in `docs/SIDEBAR_MODEL.md`, fully expanded.
+
+#[test]
+fn nested_costs_197_rows_on_the_fixture() {
+    let h = row_cost_harness(FileTreeMode::Nested);
+
+    assert_eq!(h.build_visible_items().len(), 197);
+}
+
+#[test]
+fn compact_costs_191_rows_on_the_fixture() {
+    let h = row_cost_harness(FileTreeMode::Compact);
+
+    assert_eq!(h.build_visible_items().len(), 191);
+}
+
+#[test]
+fn flat_costs_161_rows_on_the_fixture() {
+    let h = row_cost_harness(FileTreeMode::Flat);
+
+    assert_eq!(h.build_visible_items().len(), 161);
 }

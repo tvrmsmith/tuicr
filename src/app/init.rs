@@ -574,6 +574,7 @@ impl App {
             commit_list_inner_area: None,
             diff_row_to_annotation: Vec::new(),
             expanded_dirs: HashSet::new(),
+            file_tree_mode: FileTreeMode::default(),
             expanded_top: HashMap::new(),
             expanded_bottom: HashMap::new(),
             file_line_count_cache: HashMap::new(),

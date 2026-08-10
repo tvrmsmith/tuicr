@@ -134,15 +134,51 @@ fn profile_unit_result(result: &Result<()>) -> String {
     }
 }
 
+/// How the file list lays out the directories above each file.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum FileTreeMode {
+    /// One directory row per path ancestor (the historical default).
+    #[default]
+    Nested,
+    /// A run of single-child directories collapses into one row, so
+    /// `a/b/c` costs one row instead of three when nothing branches off it.
+    Compact,
+    /// No directory rows at all. Every file sits at depth 0 and carries its
+    /// full path as its label.
+    Flat,
+}
+
+impl FileTreeMode {
+    /// Label for a file row. Without directory rows above it a bare file
+    /// name says nothing about where the file lives, so `Flat` spells the
+    /// whole path out.
+    fn file_label(self, path: &std::path::Path) -> String {
+        match self {
+            Self::Flat => path.to_string_lossy().to_string(),
+            Self::Nested | Self::Compact => path
+                .file_name()
+                .map(|name| name.to_string_lossy().to_string())
+                .unwrap_or_else(|| path.to_string_lossy().to_string()),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FileTreeItem {
     Directory {
+        /// Full path of the deepest directory this row stands for, and the
+        /// row's `expanded_dirs` key. Under `Compact` that is the tail of a
+        /// joined chain, so it is not the same thing as the label.
         path: String,
+        /// Rendered text, trailing `/` included.
+        label: String,
         depth: usize,
         expanded: bool,
     },
     File {
         file_idx: usize,
+        /// Rendered text: the file name, or the full path under `Flat`.
+        label: String,
         depth: usize,
     },
 }
@@ -1340,7 +1376,13 @@ pub struct App {
     /// Visual-row -> annotation-index map for the diff viewport. Wrapped
     /// logical lines repeat their annotation index across multiple rows.
     pub diff_row_to_annotation: Vec<usize>,
+    /// Expanded directory rows, keyed by the `path` of the row that emitted
+    /// them, which depends on `file_tree_mode`. Seed and query it through
+    /// [`App::tree_layout`] rather than from a raw parent chain.
     pub expanded_dirs: HashSet<String>,
+    /// Directory layout of the file list. Read from config at startup and
+    /// fixed for the session.
+    pub file_tree_mode: FileTreeMode,
     /// Stores lines expanded downward from the upper boundary of each gap
     pub expanded_top: HashMap<GapId, Vec<DiffLine>>,
     /// Stores lines expanded upward from the lower boundary of each gap (in ascending line order)

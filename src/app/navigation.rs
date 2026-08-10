@@ -729,8 +729,6 @@ impl App {
     }
 
     pub fn jump_to_file(&mut self, idx: usize) {
-        use std::path::Path;
-
         if idx < self.diff_files.len() {
             // Deliberate jump cancels any in-flight two-press walk arming.
             self.primed_walk_next = false;
@@ -748,13 +746,8 @@ impl App {
             self.diff_state.scroll_offset = self.diff_state.cursor_line.min(max_scroll);
 
             let file_path = self.diff_files[idx].display_path().clone();
-            let mut current = file_path.parent();
-            while let Some(parent) = current {
-                if parent != Path::new("") {
-                    self.expanded_dirs
-                        .insert(parent.to_string_lossy().to_string());
-                }
-                current = parent.parent();
+            for row in self.tree_layout().dir_rows(&file_path) {
+                self.expanded_dirs.insert(row.path);
             }
 
             if let Some(tree_idx) = self.file_idx_to_tree_idx(idx) {

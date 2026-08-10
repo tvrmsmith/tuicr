@@ -1,6 +1,111 @@
 use super::*;
+use std::path::Path;
+
+/// One directory row the file list emits for a file.
+pub(in crate::app) struct DirRow {
+    /// Full path of the deepest directory the row stands for. Doubles as the
+    /// row's `expanded_dirs` key.
+    pub path: String,
+    /// Rendered text, trailing `/` included. Under `FileTreeMode::Compact`
+    /// this spans several path segments.
+    pub label: String,
+}
+
+/// Which directory rows the active tree mode emits, for one `diff_files`
+/// state. Built once and reused across a whole pass, because `Compact` has to
+/// see the entire file set before it can tell which chains join.
+pub(in crate::app) struct TreeLayout {
+    mode: FileTreeMode,
+    /// Directories that merge into their single child instead of taking a
+    /// row of their own. Always empty outside `Compact`.
+    joined: HashSet<String>,
+}
+
+impl TreeLayout {
+    fn new(mode: FileTreeMode, diff_files: &[DiffFile]) -> Self {
+        let joined = match mode {
+            FileTreeMode::Compact => Self::joined_dirs(diff_files),
+            FileTreeMode::Nested | FileTreeMode::Flat => HashSet::new(),
+        };
+        Self { mode, joined }
+    }
+
+    /// A directory joins into its child when it has exactly one directory
+    /// child and no files of its own — VS Code's "compact folders" rule.
+    fn joined_dirs(diff_files: &[DiffFile]) -> HashSet<String> {
+        let mut dir_children: HashMap<String, HashSet<String>> = HashMap::new();
+        let mut holds_own_files: HashSet<String> = HashSet::new();
+
+        for file in diff_files {
+            let mut child: Option<String> = None;
+            for dir in ancestors(file.display_path()).into_iter().rev() {
+                match child {
+                    Some(child) => {
+                        dir_children.entry(dir.clone()).or_default().insert(child);
+                    }
+                    None => {
+                        holds_own_files.insert(dir.clone());
+                    }
+                }
+                child = Some(dir);
+            }
+        }
+
+        dir_children
+            .into_iter()
+            .filter(|(dir, children)| children.len() == 1 && !holds_own_files.contains(dir))
+            .map(|(dir, _)| dir)
+            .collect()
+    }
+
+    /// Directory rows above `path`, outermost first. The file's depth is the
+    /// number of rows returned, so `Flat`'s empty result puts every file at
+    /// depth 0.
+    pub(in crate::app) fn dir_rows(&self, path: &Path) -> Vec<DirRow> {
+        if self.mode == FileTreeMode::Flat {
+            return Vec::new();
+        }
+
+        let ancestors = ancestors(path);
+        let mut rows = Vec::new();
+        let mut chain_start = 0;
+        for (idx, dir) in ancestors.iter().enumerate() {
+            if idx + 1 < ancestors.len() && self.joined.contains(dir) {
+                continue;
+            }
+            let label_start = match chain_start {
+                0 => 0,
+                start => ancestors[start - 1].len() + 1,
+            };
+            rows.push(DirRow {
+                path: dir.clone(),
+                label: format!("{}/", &dir[label_start..]),
+            });
+            chain_start = idx + 1;
+        }
+        rows
+    }
+}
+
+/// Directory ancestors of `path`, outermost first, excluding the repo root.
+fn ancestors(path: &Path) -> Vec<String> {
+    let mut dirs: Vec<String> = Vec::new();
+    let mut current = path.parent();
+    while let Some(parent) = current {
+        if parent != Path::new("") {
+            dirs.push(parent.to_string_lossy().to_string());
+        }
+        current = parent.parent();
+    }
+    dirs.reverse();
+    dirs
+}
 
 impl App {
+    pub(in crate::app) fn tree_layout(&self) -> TreeLayout {
+        TreeLayout::new(self.file_tree_mode, &self.diff_files)
+    }
+
     pub fn file_list_down(&mut self, n: usize) {
         let visible_items = self.build_visible_items();
         let max_idx = visible_items.len().saturating_sub(1);
@@ -194,20 +299,13 @@ impl App {
     }
 
     pub fn expand_all_dirs(&mut self) {
-        use std::path::Path;
-
-        self.expanded_dirs.clear();
-        for file in &self.diff_files {
-            let path = file.display_path();
-            let mut current = path.parent();
-            while let Some(parent) = current {
-                if parent != Path::new("") {
-                    self.expanded_dirs
-                        .insert(parent.to_string_lossy().to_string());
-                }
-                current = parent.parent();
-            }
-        }
+        let layout = self.tree_layout();
+        self.expanded_dirs = self
+            .diff_files
+            .iter()
+            .flat_map(|file| layout.dir_rows(file.display_path()))
+            .map(|row| row.path)
+            .collect();
         self.ensure_valid_tree_selection();
     }
 
@@ -237,8 +335,6 @@ impl App {
     }
 
     fn ensure_valid_tree_selection(&mut self) {
-        use std::path::Path;
-
         let visible_items = self.build_visible_items();
         if visible_items.is_empty() {
             self.file_list_state.select(0);
@@ -256,21 +352,18 @@ impl App {
             }
         } else {
             if let Some(file) = self.diff_files.get(current_file_idx) {
-                let file_path = file.display_path();
-                let mut current = file_path.parent();
-                while let Some(parent) = current {
-                    if parent != Path::new("") {
-                        let parent_str = parent.to_string_lossy().to_string();
-                        for (tree_idx, item) in visible_items.iter().enumerate() {
-                            if let FileTreeItem::Directory { path, .. } = item
-                                && *path == parent_str
-                            {
-                                self.file_list_state.select(tree_idx);
-                                return;
-                            }
+                // Fall back to the innermost directory row still on screen,
+                // which is the collapsed ancestor that hid the file.
+                let dir_rows = self.tree_layout().dir_rows(file.display_path());
+                for row in dir_rows.iter().rev() {
+                    for (tree_idx, item) in visible_items.iter().enumerate() {
+                        if let FileTreeItem::Directory { path, .. } = item
+                            && *path == row.path
+                        {
+                            self.file_list_state.select(tree_idx);
+                            return;
                         }
                     }
-                    current = parent.parent();
                 }
             }
             self.file_list_state.select(0);
@@ -278,8 +371,7 @@ impl App {
     }
 
     pub fn build_visible_items(&self) -> Vec<FileTreeItem> {
-        use std::path::Path;
-
+        let layout = self.tree_layout();
         let mut items = Vec::new();
         let mut seen_dirs: HashSet<String> = HashSet::new();
 
@@ -291,30 +383,20 @@ impl App {
                 continue;
             }
             let path = file.display_path();
-
-            let mut ancestors: Vec<String> = Vec::new();
-            let mut current = path.parent();
-            while let Some(parent) = current {
-                if parent != Path::new("") {
-                    ancestors.push(parent.to_string_lossy().to_string());
-                }
-                current = parent.parent();
-            }
-            ancestors.reverse();
+            let dir_rows = layout.dir_rows(path);
 
             let mut visible = true;
-            for (depth, dir) in ancestors.iter().enumerate() {
-                if !seen_dirs.contains(dir) && visible {
-                    let expanded = self.expanded_dirs.contains(dir);
+            for (depth, row) in dir_rows.iter().enumerate() {
+                if visible && seen_dirs.insert(row.path.clone()) {
                     items.push(FileTreeItem::Directory {
-                        path: dir.clone(),
+                        path: row.path.clone(),
+                        label: row.label.clone(),
                         depth,
-                        expanded,
+                        expanded: self.expanded_dirs.contains(&row.path),
                     });
-                    seen_dirs.insert(dir.clone());
                 }
 
-                if !self.expanded_dirs.contains(dir) {
+                if !self.expanded_dirs.contains(&row.path) {
                     visible = false;
                 }
             }
@@ -322,7 +404,8 @@ impl App {
             if visible {
                 items.push(FileTreeItem::File {
                     file_idx,
-                    depth: ancestors.len(),
+                    label: self.file_tree_mode.file_label(path),
+                    depth: dir_rows.len(),
                 });
             }
         }
