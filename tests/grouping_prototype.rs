@@ -19,11 +19,11 @@ mod grouping;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 
-use grouping::changeset::{self, ChangeKind, ChangedFile, Changeset};
-use grouping::order::{self, OrderScore, Ordered};
-use grouping::passes::{self, GroupingConfig};
+use grouping::arms::{self as passes, GroupingConfig};
+use grouping::order_score::{self as order, OrderScore, Ordered};
 use grouping::refine::{self, RunRecord, Shape};
 use grouping::score::{self, Partition, Score};
+use tuicr::grouping::changeset::{self, ChangeKind, ChangedFile, Changeset};
 
 const ORCA_FILES: &str = include_str!("fixtures/grouping/orca-971b16754.files");
 const ORCA_GROUPS: &str = include_str!("fixtures/grouping/orca-971b16754.groups");
@@ -975,7 +975,7 @@ fn emit_refine_prompts() {
         let dir = prompt_dir().join(&label);
         std::fs::create_dir_all(&dir).expect("create prompt dir");
         for shape in Shape::ALL {
-            let text = refine::prompt(&changeset, &grouping, shape);
+            let text = refine::prompt(&changeset, &grouping.partition(), shape);
             let path = dir.join(format!("{}.txt", shape.slug()));
             std::fs::write(&path, &text).expect("write prompt");
             println!(
@@ -1088,7 +1088,7 @@ fn every_documented_rule_reaches_the_model() {
     let grouping = passes::group(&changeset, GroupingConfig::default());
     for shape in Shape::ALL {
         let slug = shape.slug();
-        let digest = numbered_items(&refine::prompt(&changeset, &grouping, shape));
+        let digest = numbered_items(&refine::prompt(&changeset, &grouping.partition(), shape));
         assert_eq!(
             digest.keys().copied().collect::<BTreeSet<u32>>(),
             ordinals,
@@ -1125,7 +1125,7 @@ fn the_emitted_prompt_carries_the_contract() {
     let group_count = partition.groups.len();
 
     for shape in Shape::ALL {
-        let prompt = refine::prompt(&changeset, &grouping, shape);
+        let prompt = refine::prompt(&changeset, &grouping.partition(), shape);
         let slug = shape.slug();
 
         // The control's whole point is that it is *not* shown the heuristic
@@ -1300,7 +1300,7 @@ fn parse_prompt_groups(prompt: &str) -> Vec<(&str, usize, Vec<&str>)> {
 /// A changeset and a hand-built heuristic grouping over it, so a repair branch
 /// can be aimed at a known partition rather than at whatever the passes happen
 /// to produce.
-fn refine_case(groups: &[(&str, &[&str])]) -> (Changeset, passes::Grouping) {
+fn refine_case(groups: &[(&str, &[&str])]) -> (Changeset, Partition) {
     let mut text = String::new();
     let mut assignments = Vec::new();
     for (name, members) in groups {
@@ -1314,10 +1314,13 @@ fn refine_case(groups: &[(&str, &[&str])]) -> (Changeset, passes::Grouping) {
             });
         }
     }
-    (Changeset::parse(&text), passes::Grouping { assignments })
+    (
+        Changeset::parse(&text),
+        passes::Grouping { assignments }.partition(),
+    )
 }
 
-fn two_groups() -> (Changeset, passes::Grouping) {
+fn two_groups() -> (Changeset, Partition) {
     refine_case(&[
         ("alpha", &["src/a.ts", "src/b.ts"]),
         ("beta", &["src/c.ts", "src/d.ts"]),
@@ -1680,7 +1683,7 @@ fn merge_only_cannot_split_a_heuristic_group() {
     )
     .expect("a parseable body applies");
 
-    let heuristic = grouping.partition();
+    let heuristic = grouping.clone();
     let refined_group = refined.partition.group_of();
     for (name, members) in &heuristic.groups {
         let landed: BTreeSet<&str> = members
@@ -1713,7 +1716,7 @@ fn naming_only_leaves_the_partition_alone(body: &str, repairs: &[&str]) {
         .expect("a parseable body applies");
     assert_eq!(
         co_membership(&refined.partition),
-        co_membership(&grouping.partition()),
+        co_membership(&grouping),
         "naming-only moved a file"
     );
     assert_eq!(refined.repairs, repairs);
@@ -2325,7 +2328,7 @@ fn load_runs(fixture: &str, changeset: &Changeset, shape: Shape) -> Vec<Run> {
                 .unwrap_or_else(|error| panic!("read {}: {error}", path.display()));
             let record = RunRecord::parse(&envelope)
                 .unwrap_or_else(|error| panic!("{}: {error}", path.display()));
-            let refined = refine::apply(&record.body, changeset, &grouping, shape)
+            let refined = refine::apply(&record.body, changeset, &grouping.partition(), shape)
                 .unwrap_or_else(|error| panic!("{}: unusable answer: {error}", path.display()));
             let stem = path
                 .file_stem()
