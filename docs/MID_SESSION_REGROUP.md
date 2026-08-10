@@ -33,6 +33,14 @@ below is designed against 30–70s.
 final.** `:regroup` mid-review stays async. That is the whole shape; the rest
 follows.
 
+> **Reviewed and upheld by `gd-26r.27`, on narrower grounds.** This ruling was
+> made before an order metric existed. `gd-26r.22` built one, found evidence
+> against the conclusion, and handed it up rather than reopening this record.
+> The review confirmed the premise — heuristic group order really is chance or
+> worse, `tau_group` −0.192 and +0.080 — and upheld blocking, while striking one
+> of the three supports below. The amendments are marked inline and argued in
+> full in the `gd-26r.27` section of `docs/GROUPING_PASSES.md`.
+
 ### Why blocking wins at startup
 
 The async model in `gd-26r.4` — open instantly on heuristic groups, swap when
@@ -42,31 +50,46 @@ inside a file, and it reorders the sidebar under you for a benefit you have
 already stopped waiting for.
 
 The decisive argument is not the interruption, though. It is that **the
-heuristic arm cannot produce a reading order at all**, so an instant-open on
+heuristic arm cannot produce a meaningful group order**, so an instant-open on
 heuristics does not merely show worse groups, it shows them in no meaningful
 order:
 
-- No group order. `Partition.groups` is a name-keyed `BTreeMap` and
-  `report_fixture` prints by size. Intent-centrality (`docs/GROUPING.md` rule 2)
-  is a judgement about what the changeset is *for*, which is exactly what token
-  heuristics are bad at; whether they can ever acquire one is open as
-  `gd-26r.22`.
-- No within-group file order. `tests_follow_production`
-  (`tests/grouping/passes.rs:38-40,343-379`) is a **membership** rule — rule 4
-  puts a test in its production file's group — not an ordering one. Files land
-  in whatever `sort_files_by_directory` gives, which is path-alphabetical and
-  therefore sorts `…repository.test.ts` *before* `…repository.ts`. Tests come
-  first, by accident.
+- No group order. `Partition.groups` is a name-keyed `BTreeMap` and the
+  heuristic arm's reading order is `gd-26r.12` Decision 3's size-descending
+  proxy. Intent-centrality (`docs/GROUPING.md` rule 2) is a judgement about what
+  the changeset is *for*, which is exactly what token heuristics are bad at.
+  **`gd-26r.27`: measured, and this is confirmed** — `tau_group` −0.192 on
+  fixture 1, which is worse than chance, and +0.080 on fixture 2, which is
+  chance. This is now the *whole* of what blocking buys in ordering terms, and
+  what it buys is +0.042 and +0.335 under a metric biased toward refine.
+- ~~No within-group file order.~~ **Struck by `gd-26r.27`.** This described an
+  unimplemented rule rather than a property of the heuristic arm: both arms
+  built a group from a path-keyed map, so every test preceded the code it
+  covered, 0 of 42 pairs right on fixture 1. A deterministic sort over paths the
+  engine already holds fixes it on **both** arms with no model call, taking rule
+  4 to +1.000 and `tau_within` to the fixture's own ceiling. It is no longer a
+  reason to block, and it is no longer a defect of the fallback either.
 - Partition quality also favours refine, unevenly: heuristics score **0.394 and
   0.378** F1 on the two fixtures against refine's **0.427 and 0.711**. Fixture 1
-  is nearly a tie; fixture 2 is not close. Ordering, not partition quality, is
-  the argument here.
+  is nearly a tie; fixture 2 is not close. Ordering, not partition quality, was
+  the argument here — **but `gd-26r.27` found the order gain weaker than assumed
+  and this one unchanged, so it is the partition gain that now carries the
+  ruling.** It transfers across both fixtures; the order gain does not.
 
 Opening instantly therefore buys a first screen you cannot trust to start with
 the most relevant files — which is the entire point of the collapsed 13-row
 overview (`docs/SIDEBAR_MODEL.md`). Waiting once, at the only moment in the
 review when you have nothing to lose by waiting, buys the ordering that makes
 the overview worth reading.
+
+`gd-26r.27` weighed relaxing this against exactly that sentence, since the sort
+now repairs within-group order for free. It does not relax: the collapsed
+overview shows **group rows**, so the sort repairs what a reader sees *second*,
+on expanding a group, while what they see first is still ordered at −0.192.
+Substituting the cheaper `naming-only` shape for full refine at startup was also
+priced and rejected — it reaches `tau_group` +0.302 on fixture 2 for \$0.12–0.22
+and 20–40s, but cannot move the partition at all, so it saves 10–30 seconds of a
+once-per-review wait by giving back the one advantage that transfers.
 
 **The cost is bounded by `gd-26r.8`.** Reopening a session never refines, so the
 wait is once per *review*, not once per open and never per `:reload`. A 30–70s
@@ -91,7 +114,12 @@ can sit far longer. Two escapes, both landing in the same place:
 - **A configured timeout** does the same automatically.
 
 Both produce `gd-26r.15`'s *refine unavailable* state, with the groups marked
-`source = heuristics`. The timeout default should be generous — well beyond the
+`source = heuristics`. **`gd-26r.27` improved what that state looks like**: the
+heuristic grouping now carries the within-group sort, so a cancelled or timed-out
+startup opens on groups that read production before test, mechanical files at
+the tail, broad tests after unit tests. What the escape gives up is the group
+order and the partition gain, and nothing else. The timeout default should be
+generous — well beyond the
 measured 70s — because the money is spent at dispatch, so a premature timeout
 throws away a paid-for result and gets the unordered grouping anyway.
 
@@ -102,7 +130,7 @@ No new mode key. `[grouping].refine` is already the knob:
 | setting | startup behaviour |
 | --- | --- |
 | `refine = true` | block on the refined grouping, cancellable, with a timeout |
-| `refine = false` | open instantly on heuristics, no wait, no order |
+| `refine = false` | open instantly on heuristics, no wait, no *group* order — but with the `gd-26r.27` within-group sort, which is free and unconditional |
 | `--no-grouping` | no grouping at all (`gd-26r.4`) |
 
 Plus one new key for the timeout. Adding it means adding it to `KNOWN_KEYS`
@@ -212,8 +240,10 @@ process boundary, so only it is in scope for contract approval.
    Blocking startup exists precisely to obtain the order that the heuristic arm
    cannot produce. A refine response without a group order does not satisfy the
    contract; `Refined.order` (prototyped at `tests/grouping/refine.rs:180`) is
-   load-bearing. Whether within-group file order is also carried is
-   `gd-26r.22`'s to settle.
+   load-bearing. **Within-group file order is *not* carried, settled by
+   `gd-26r.27`**: the engine sorts each group deterministically on both arms, so
+   the response owes nothing about it and the prompt does not mention it. This
+   narrows the contract rather than widening it.
 3. **Application is atomic — a full replacement partition.** The sidebar is
    rebuilt in one shot, groups collapsed. There is no partial or progressive
    application, so the response is never consumed in pieces.

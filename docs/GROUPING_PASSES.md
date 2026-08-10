@@ -2028,3 +2028,204 @@ the ruling is the human's to revisit.
   because neither fixture exhibits them. A third fixture authored to the rule
   would settle both; nothing here should be read as evidence for or against
   either rule.
+
+# The within-group sort, and the blocking ruling (`gd-26r.27`)
+
+`gd-26r.22` measured order, found evidence against `gd-26r.14`'s blocking
+startup ruling, and was not allowed to reopen it. This section is the review
+that was handed up instead. It ships the sort `gd-26r.22` costed, re-scores
+every arm on both fixtures with the sort applied, and rules on blocking.
+
+Fixture 2 is present and scored. `$TUICR_GROUPING_FIXTURES` was unset, so it was
+read from the default `~/.local/share/tuicr-fixtures`; had neither been
+populated this section would say so rather than quietly report one fixture.
+
+## What shipped: the sort is the arm, not a variant of it
+
+`gd-26r.22` left the sort as a row in a report. It is now how a computed
+grouping is produced: `Ordered::heuristic` and `Ordered::refined` both apply it,
+`Ordered::new` is documented as ground-truth-and-controls only, and
+`a_presented_grouping_is_sorted_by_construction` pins that there is no
+constructor for a computed grouping that skips it. A caller cannot forget the
+step, because there is no step to forget.
+
+It implements `docs/GROUPING.md` rules 4, 12, 13 and 14 against the written
+specification rather than an invented one. Key, outermost first: **central file
+first** (rule 13), **mechanical stragglers last** (rule 14), **broad tests after
+everything narrower** (rule 12), then directory, then stem — which is what puts
+a production file next to its test, since `stem` strips the test marker — then
+production before test (rule 4), then path for a total and stable order.
+
+Rule 12 is a **band across the group**, not a nudge within one stem: the rule
+says integration and end-to-end tests follow the unit tests, not their own unit
+test. Neither fixture exhibits it, so
+`broad_tests_sort_after_every_unit_test_in_the_group` is the only place it is
+checked.
+
+Rule 13 was **priced, not assumed**, because it is the one within-group rule
+both fixtures' own file order contradicts. The price is zero: with it and
+without it, fixture 1 scores `tau_within` +0.800 and `central-first` −0.250, and
+fixture 2 is identical on every number. It ships **on** anyway, by ruling: the
+rule is normative in `docs/GROUPING.md`, and a sort implementing only the
+measurable subset of a written spec is one nobody can read the spec to check.
+Its `central-first` score remains **unpublished as an arm's grade** — the metric
+derives "central" from the same function, so scoring it would be largely
+self-grading, and both fixtures contradict the rule regardless.
+
+## What the sort bought, on both fixtures
+
+*`tau_group` flatters refine — see the bias in `gd-26r.22` above. `tau_within`
+is unbiased: neither arm is prompted for within-group file order, and since this
+ticket neither arm produces it — the engine does, identically for both.*
+
+**Fixture 1 (orca, 161 files):**
+
+| arm | `tau_group` | `tau_within` | rule 4 |
+| --- | --- | --- | --- |
+| heuristics, no within-group sort (`gd-26r.22`) | −0.192 | −0.960 | **−1.000** (0/42) |
+| **heuristics as shipped** (rules 4, 12, 13, 14) | −0.191 | **+0.800** | **+1.000** (42/42) |
+| the same without rule 13 (what rule 13 is worth) | −0.192 | +0.800 | +1.000 |
+| expected (self-score, the ceiling) | 1.000 | +0.800 | +1.000 |
+
+**Fixture 2 (meridian, 158 files):**
+
+| arm | `tau_group` | `tau_within` | rule 4 |
+| --- | --- | --- | --- |
+| heuristics, no within-group sort (`gd-26r.22`) | +0.080 | −0.667 | — |
+| **heuristics as shipped** | +0.077 | −0.667 | — |
+| the same without rule 13 | +0.077 | −0.667 | — |
+| expected (self-score) | 1.000 | −0.333 | — |
+
+So the sort reaches fixture 1's own within-group ceiling with no model call, and
+**does nothing measurable on fixture 2** — which is not a failure of the sort but
+of the fixture: fixture 2 contributes **zero** rule-4 pairs, because its .NET
+test naming (`FooTests.cs` under a `*.Tests/` project) is not what `is_test`
+matches, left alone deliberately since `is_test` feeds the heuristic passes and
+changing it would move published F1. Fixture 2's only constrained within-group
+pairs are 17 `central-first` and 1 `mechanical-last`, both unscored rules. **The
+largest order improvement in this document is therefore also a one-fixture
+result**, and the honest reading is that it is free rather than that it is
+proven twice.
+
+## Every published number still holds
+
+The sort moves `tau_group` slightly, because two files the *expected* grouping
+separates can share a *computed* group. All 28 recorded arm/fixture pairs were
+re-scored with it. The largest move anywhere is **0.009** (`cold ·
+vertex-opus-low` on fixture 2, +0.437 → +0.428); the median is 0.001. The
+shipped arm is **+0.044 → +0.042** on fixture 1 and **+0.335 → +0.335** on
+fixture 2. No bar moves, no verdict above changes, and `recorded_numbers_hold`
+passes untouched. The report prints both columns — `published` and `as shipped`
+— so no number here is a quiet restatement.
+
+## The ruling on blocking: it stands, on narrower grounds
+
+**`gd-26r.14`'s conclusion survives. One of its three supports does not.**
+
+The premise is **confirmed by measurement**, which is the half `gd-26r.22`
+already conceded: heuristic group order is −0.192 on fixture 1 and +0.080 on
+fixture 2 — chance or worse — so an instant open really does show groups in no
+meaningful order. That was an assertion when `gd-26r.14` was ruled and is now a
+number.
+
+**The free sort does not change the answer, and the argument that it might is
+answered rather than waved off.** `gd-26r.22` called the rule-4 inversion "the
+failure a reader would notice first". It is not: the first screen is the
+collapsed 13-row overview (`docs/SIDEBAR_MODEL.md`), which shows **group rows**.
+Within-group file order is invisible until a group is expanded. So the sort
+repairs what a reader sees *second*, and what they see first is still −0.192.
+Fixing the second defect for free is a reason to fix it, not a reason to stop
+paying for the first.
+
+**The cost side is weaker than `gd-26r.14` knew, and this is recorded rather
+than buried.** Under the pro-refine bias, the shipped arm (full ·
+vertex-opus-low) buys **+0.042 on fixture 1 — indistinguishable from chance —
+after a 30–70s block**, and **+0.335 on fixture 2**. A reader on a
+fixture-1-shaped changeset waits a minute for nothing measurable, and that is
+one changeset in the two measured. What carries the ruling despite that is the
+part that was never disputed: partition quality favours refine on **both**
+fixtures, 0.427 and 0.711 against the heuristics' 0.394 and 0.378. The order
+argument was `gd-26r.14`'s stated reason, and it has weakened; the partition
+argument was always true and is not relitigated here.
+
+**`naming-only` was priced, not dismissed.** It scores `tau_group` +0.302 on
+fixture 2 against the heuristics' +0.080 — close to the shipped arm's +0.335 —
+at roughly \$0.12–0.22 and 20–40s, and −0.001 on fixture 1. But it **cannot move
+the partition at all**, by construction, so adopting it at startup returns F1 to
+0.394 and 0.378 and forfeits the undisputed half of the case to save 10–30
+seconds of a once-per-review wait. Rejected as a startup arm on that trade, not
+on its order number, which is good.
+
+### What is amended in `gd-26r.14`
+
+**Struck.** Its third bullet — "No within-group file order… Tests come first, by
+accident" — is no longer a reason to block. It described an unimplemented rule,
+not a property of the heuristic arm, and it is fixed for free on both arms.
+
+**Narrowed.** "The heuristic arm cannot produce a reading order at all" is now
+"the heuristic arm cannot produce a meaningful **group** order", measured at
+−0.192 and +0.080. That is what blocking buys and all it buys.
+
+**Improved, in `gd-26r.14`'s favour.** Its escape hatches — cancel key, timeout,
+`refine = false` — now land on a grouping that at least reads production before
+test, at fixture 1's within-group ceiling. The fallback is strictly better than
+the one it was ruled against, which makes blocking easier to live with, not
+harder to justify.
+
+**Unamended.** The landing policy for a grouping result arriving under a reader,
+the collapse-all-on-full-regroup rule, `:regroup` staying async, and the six
+settlements for `gd-26r.10` all stand as decided, on their own merits.
+
+### The instant open, and the async landing path
+
+The bead's third item was conditional on blocking being relaxed, and asked what
+an instant open shows and whether `gd-26r.14`'s async landing path covers it
+unchanged. **Blocking is not relaxed, so no async startup path is designed, and
+`gd-26r.14`'s landing path is not touched.**
+
+An instant open remains reachable three ways, all of them already specified and
+all of them landing in the same place: the cancel key, the timeout, and
+`refine = false` (`docs/MID_SESSION_REGROUP.md`, "The escape" and "The
+configuration surface"). What it shows is now better than when that section was
+written — the heuristic grouping with the within-group sort applied — and what
+it gives up is the group order and the partition gain, nothing else. Because
+those three paths all produce `gd-26r.15`'s *refine unavailable* state with
+`source = heuristics` and apply nothing partial, no landing occurs under a
+reader at startup at all: there is no result still in flight to land.
+
+The async landing path therefore continues to govern exactly the two cases it
+was decided for — a requested `:regroup` and the heuristics-only auto backstop —
+under the two rules stated there: all groups collapse with selection on the
+group row containing the current file, and every expanded hunk gap is discarded
+(`docs/MID_SESSION_REGROUP.md`, "What a landing does"). Unchanged, and
+deliberately not redesigned.
+
+### What this settles for `gd-26r.28`'s first slice
+
+- **Startup blocks.** The first vertical slice builds the pre-TUI progress
+  screen with its minimal event read, cancel key and timeout, exactly as
+  `docs/MID_SESSION_REGROUP.md` specifies. No async startup path is needed.
+- **The within-group sort is engine code, not refine code, and lands in the
+  same slice.** It runs on every grouping the engine produces, before any model
+  call and on the fallback path, so a cancelled or unavailable refine still
+  yields a correctly ordered group. It is pure, deterministic, needs no
+  configuration and has no failure mode.
+- **The refine response still owes a group order** (`gd-26r.10` settlement 2,
+  unamended) and still owes **nothing** about within-group file order. The
+  engine's sort is authoritative there on both arms, which is why rules 12–14
+  stay out of the prompt.
+- **No new configuration.** `[grouping].refine` plus the timeout key is the whole
+  surface; the sort adds nothing to `KNOWN_KEYS`.
+
+## What this does not answer
+
+- **Whether the block is worth it on a third changeset.** The order gain is
+  reliably present on one fixture of two, and every transfer failure in this
+  document repeats here. The ruling rests on the partition gain, which does
+  transfer, plus a confirmed premise about the alternative.
+- **Whether the sort helps a repo whose tests `is_test` does not match.** On
+  fixture 2 it demonstrably does not, and fixing `is_test` for .NET naming would
+  move published F1, so it is deliberately not attempted here.
+- **Whether rule 13 is right.** It ships because the spec says so, and both
+  fixtures contradict it. A third fixture authored to the rule would settle it;
+  nothing here is evidence either way.
