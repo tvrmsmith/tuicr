@@ -3608,6 +3608,97 @@ fn recorded_numbers_hold() {
     );
 }
 
+/// The rule-4 row docs/GROUPING_PASSES.md publishes for fixture 1 under
+/// `gd-26r.27`: 42 constrained production/test pairs, all 42 ordered right, so
+/// `tau` for the rule is +1.000. The *count* is locked as well as the score
+/// because a rule that stopped matching would score `None` or +1.000 over two
+/// pairs and read as green.
+const RECORDED_RULE_FOUR_PAIRS: u64 = 42;
+/// Fixture 1's pooled `tau_within` as published, which is also the fixture's
+/// own ceiling — the expected order breaks `central-first` against itself, so
+/// +0.800 is the most any arm can score, not a shortfall.
+const RECORDED_TAU_WITHIN: f64 = 0.800;
+
+/// Locks fixture 1's **order** numbers the way [`recorded_numbers_hold`] locks
+/// its partition numbers: the published tau figures lived in prose, so a change
+/// that put every test back ahead of its production file left the whole suite
+/// green.
+///
+/// **One fixture, one axis, and deliberately no bar on `tau_group`.** What is
+/// guarded here is `tau_within` on fixture 1 and the rule-4 pair count behind
+/// it — the only order numbers in the document that are both unbiased and
+/// non-trivial. `tau_group` is *not* guarded: it flatters refine by
+/// construction (the refine prompt asks for a reading order; the heuristic
+/// arm's order is `gd-26r.12` Decision 3's admitted size-descending proxy), so
+/// a bar on it would read as a quality bar on something the harness already
+/// prints a bias warning above. Fixture 2 is not guarded either: it contributes
+/// **zero** rule-4 pairs, because its .NET test naming is not what `is_test`
+/// matches. Nothing here should be read as order coverage beyond fixture 1's
+/// within-group axis.
+///
+/// The bar runs through `Ordered::heuristic`, the constructor for a *presented*
+/// grouping, rather than through the sort directly, so it keeps measuring the
+/// same thing when `gd-26r.28` moves the sort into `src/`.
+#[test]
+fn recorded_order_numbers_hold() {
+    let (changeset, _) = orca();
+    let expected = orca_ordered();
+    let arm = Ordered::heuristic(
+        &changeset,
+        passes::group(&changeset, GroupingConfig::default()).partition(),
+    );
+    let score = order::score_order(&changeset, &arm, &expected);
+
+    let (ok, broken) = score
+        .within_by_rule
+        .get(&order::Rule::TestFollowsProduction)
+        .copied()
+        .unwrap_or_else(|| {
+            panic!(
+                "fixture 1 must still exhibit rule 4: the published +1.000 is 42 of 42 \
+                 production/test pairs, and no pairs would score as no failures"
+            )
+        });
+    assert_eq!(
+        ok + broken,
+        RECORDED_RULE_FOUR_PAIRS,
+        "fixture 1 constrains {} rule-4 pairs, not the published \
+         {RECORDED_RULE_FOUR_PAIRS} — the rule's reach moved, so its +1.000 is a \
+         different claim than the one published",
+        ok + broken
+    );
+    assert_eq!(
+        broken,
+        0,
+        "{broken} of {} rule-4 pairs put the test ahead of its production file; the \
+         published row is +1.000, 42 of 42, and it is what the within-group sort exists \
+         for",
+        ok + broken
+    );
+
+    let tau_within = score
+        .tau_within
+        .expect("fixture 1 constrains within-group pairs");
+    assert!(
+        (tau_within - RECORDED_TAU_WITHIN).abs() <= RECORDED_SLACK,
+        "tau_within drifted: {tau_within:.3}, off the published {RECORDED_TAU_WITHIN:.3} \
+         by more than {RECORDED_SLACK:.3}"
+    );
+
+    // Locked against the fixture's own ceiling as well as against the constant,
+    // so the bar stays a *ceiling* claim if the fixture's expected order is ever
+    // re-authored, rather than silently becoming a shortfall the constant hides.
+    let ceiling = order::score_order(&changeset, &expected, &expected)
+        .tau_within
+        .expect("the expected order constrains the same pairs");
+    assert!(
+        (tau_within - ceiling).abs() < 1e-9,
+        "the arm scores tau_within {tau_within:.3} against the fixture's own ceiling of \
+         {ceiling:.3}; the published claim is that a pure sort reaches the ceiling with no \
+         model call"
+    );
+}
+
 /// An extension names a file's language or role, never its concern, so one that
 /// survives tokenisation becomes a cluster key and groups files by layer —
 /// exactly what GROUPING.md rule 1 forbids. `.cs` did this on fixture 2
