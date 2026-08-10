@@ -46,6 +46,34 @@ pub const EXTENSIONS: &[&str] = &[
 /// Filename segments that mark a file as a test rather than naming a concern.
 const TEST_MARKERS: &[&str] = &["test", "spec", "tests", "specs"];
 
+/// Lockfiles, vendored trees and generated output: skimmed, not read.
+/// Lives here rather than in `passes` because both the mechanical pass and the
+/// order metric's "mechanical sorts last" constraint ask the same question, and
+/// a grouping that files a lockfile under `mechanical` while the scorer does not
+/// recognise it as mechanical would grade itself against a different rule 8.
+const MECHANICAL_NAMES: &[&str] = &[
+    "package-lock.json",
+    "yarn.lock",
+    "pnpm-lock.yaml",
+    "Cargo.lock",
+    "go.sum",
+    "poetry.lock",
+];
+const MECHANICAL_DIRS: &[&str] = &[
+    "vendor/",
+    "node_modules/",
+    "dist/",
+    "build/",
+    "generated/",
+    "__generated__/",
+];
+const MECHANICAL_SUFFIXES: &[&str] = &[".generated.ts", ".gen.go", "_pb2.py", ".snap"];
+
+/// Filename or directory segments marking a test as broader than a unit test.
+/// Deliberately short: every entry here reorders real files, and a loose match
+/// (`int`, `it`) would catch concern words.
+const BROAD_TEST_MARKERS: &[&str] = &["integration", "e2e", "endtoend", "acceptance", "smoke"];
+
 impl ChangedFile {
     pub fn dir(&self) -> &str {
         self.path.rsplit_once('/').map(|(d, _)| d).unwrap_or("")
@@ -71,6 +99,33 @@ impl ChangedFile {
             .split('.')
             .any(|segment| TEST_MARKERS.contains(&segment.to_ascii_lowercase().as_str()));
         has_marker || self.path.contains("/__tests__/") || self.path.starts_with("tests/")
+    }
+
+    /// Lockfile, vendored tree or generated output (GROUPING.md rule 8).
+    pub fn is_mechanical(&self) -> bool {
+        let name = self.file_name();
+        MECHANICAL_NAMES.contains(&name)
+            || MECHANICAL_DIRS.iter().any(|dir| self.path.contains(dir))
+            || MECHANICAL_SUFFIXES
+                .iter()
+                .any(|suffix| name.ends_with(suffix))
+    }
+
+    /// A test that exercises more than one unit: integration, end-to-end,
+    /// acceptance, smoke. False for anything [`Self::is_test`] rejects, so a
+    /// production file named `integration-client.ts` is not caught.
+    pub fn is_broad_test(&self) -> bool {
+        if !self.is_test() {
+            return false;
+        }
+        let lowered = self.path.to_ascii_lowercase();
+        let in_path = BROAD_TEST_MARKERS
+            .iter()
+            .any(|marker| lowered.contains(&format!("/{marker}/")));
+        let in_name = split_tokens(self.file_name())
+            .iter()
+            .any(|token| BROAD_TEST_MARKERS.contains(&token.as_str()));
+        in_path || in_name
     }
 
     /// The filename with extensions and test markers removed, dot-separated
