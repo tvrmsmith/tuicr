@@ -126,18 +126,71 @@ pub struct Grouping {
     assignments: Vec<Assignment>,
 }
 
+/// One group on its way into [`Grouping::build`]: everything except the
+/// reading order, which is this value's position in the slice, and the
+/// within-group order, which the builder puts on.
+pub struct PresentedGroup {
+    pub id: GroupId,
+    pub name: String,
+    pub source: GroupSource,
+    pub new_since_full_pass: bool,
+    /// Members in any order. The builder sorts them, so no caller — not even a
+    /// session file — can hand back a grouping the within-group rules do not
+    /// hold on.
+    pub members: Vec<String>,
+}
+
 impl Grouping {
-    /// **The one constructor for a presented grouping**, and the only place the
-    /// within-group sort is applied.
+    /// **The one place a presented grouping is built**, and therefore the only
+    /// place the within-group sort is applied.
     ///
-    /// Taking the changeset is deliberate: `gd-26r.27` made the sort part of
-    /// *producing* a grouping rather than a variant of reporting one, so there
-    /// is no path that builds a grouping and skips it — not the heuristic arm,
-    /// not the refine arm, not a grouping restored from a session.
+    /// `gd-26r.27` made the sort part of *producing* a grouping rather than a
+    /// variant of reporting one, so no path can build a grouping and skip it —
+    /// not the heuristic arm, not the refine arm, not a session restore. The
+    /// two public constructors differ only in where the groups and their
+    /// identities come from; both funnel through here.
+    fn build(
+        changeset: &Changeset,
+        mut groups: Vec<PresentedGroup>,
+        mut claims: BTreeMap<String, PassClaim>,
+    ) -> Self {
+        let by_path = order::files_by_path(changeset);
+        let mut assignments = Vec::new();
+        let mut built = Vec::with_capacity(groups.len());
+
+        for group in &mut groups {
+            order::sort_group_files(&group.name, &mut group.members, &by_path, CentralFirst::On);
+        }
+        for group in groups {
+            for path in group.members {
+                let claim = claims.remove(&path);
+                assignments.push(Assignment {
+                    path: PathBuf::from(path),
+                    group_id: group.id.clone(),
+                    pass: claim.as_ref().map_or("restored", |claim| claim.pass),
+                    runner_up: claim.and_then(|claim| claim.runner_up),
+                });
+            }
+            built.push(Group {
+                id: group.id,
+                name: group.name,
+                source: group.source,
+                new_since_full_pass: group.new_since_full_pass,
+            });
+        }
+
+        Self {
+            groups: built,
+            assignments,
+        }
+    }
+
+    /// A freshly computed grouping: the passes' claims bucketed by name and put
+    /// into `order`, with a new identity minted for every group.
     ///
-    /// `order` names the groups in reading order. A name it does not mention is
-    /// appended name-sorted rather than dropped, so a malformed order degrades
-    /// the reading order instead of losing files.
+    /// A name `order` does not mention is appended name-sorted rather than
+    /// dropped, so a malformed order degrades the reading order instead of
+    /// losing files.
     pub fn present(
         changeset: &Changeset,
         claims: Vec<PassClaim>,
@@ -154,11 +207,6 @@ impl Grouping {
             claim_by_path.insert(claim.path.clone(), claim);
         }
 
-        let by_path = order::files_by_path(changeset);
-        for (name, paths) in &mut members {
-            order::sort_group_files(name, paths, &by_path, CentralFirst::On);
-        }
-
         let mut names: Vec<String> = order
             .iter()
             .filter(|name| members.contains_key(*name))
@@ -166,31 +214,30 @@ impl Grouping {
             .collect();
         names.extend(members.keys().filter(|name| !order.contains(name)).cloned());
 
-        let mut groups = Vec::with_capacity(names.len());
-        let mut assignments = Vec::new();
-        for name in names {
-            let id = GroupId::new();
-            for path in members.remove(&name).unwrap_or_default() {
-                let claim = claim_by_path.remove(&path);
-                assignments.push(Assignment {
-                    path: PathBuf::from(&path),
-                    group_id: id.clone(),
-                    pass: claim.as_ref().map_or("restored", |claim| claim.pass),
-                    runner_up: claim.and_then(|claim| claim.runner_up),
-                });
-            }
-            groups.push(Group {
-                id,
+        let presented = names
+            .into_iter()
+            .map(|name| PresentedGroup {
+                id: GroupId::new(),
+                members: members.remove(&name).unwrap_or_default(),
                 name,
                 source,
                 new_since_full_pass: false,
-            });
-        }
+            })
+            .collect();
 
-        Self {
-            groups,
-            assignments,
-        }
+        Self::build(changeset, presented, claim_by_path)
+    }
+
+    /// A grouping read back out of a persisted session, `groups` already in
+    /// reading order.
+    ///
+    /// Identity is restored rather than minted — the point of an opaque
+    /// `group_id` (`docs/REGROUPING_STATE.md`): reopening a session shows
+    /// yesterday's groups, with yesterday's group-keyed sidebar state still
+    /// pointing at them. Which pass claimed a file is *not* restored; it is
+    /// derived debug state and never persisted.
+    pub fn restore(changeset: &Changeset, groups: Vec<PresentedGroup>) -> Self {
+        Self::build(changeset, groups, BTreeMap::new())
     }
 
     /// Groups in reading order.

@@ -103,7 +103,7 @@ impl TreeTestHarness {
             .iter()
             .filter_map(|item| match item {
                 FileTreeItem::Directory { label, .. } => Some(label.clone()),
-                FileTreeItem::File { .. } => None,
+                FileTreeItem::File { .. } | FileTreeItem::Group { .. } => None,
             })
             .collect()
     }
@@ -113,7 +113,7 @@ impl TreeTestHarness {
             .iter()
             .filter_map(|item| match item {
                 FileTreeItem::File { label, .. } => Some(label.clone()),
-                FileTreeItem::Directory { .. } => None,
+                FileTreeItem::Directory { .. } | FileTreeItem::Group { .. } => None,
             })
             .collect()
     }
@@ -281,6 +281,7 @@ fn rendered_tree(app: &App) -> Vec<(String, usize)> {
                     .to_string(),
                 *depth,
             ),
+            FileTreeItem::Group { label, .. } => (format!("[{label}]"), 0),
         })
         .collect()
 }

@@ -54,6 +54,12 @@ pub(super) fn render_file_list(frame: &mut Frame, app: &mut App, area: Rect) {
         .map(|item| match item {
             FileTreeItem::Directory { label, depth, .. } => depth * 2 + 2 + label.width(),
             FileTreeItem::File { label, depth, .. } => depth * 2 + 4 + label.width(),
+            FileTreeItem::Group {
+                label,
+                reviewed,
+                total,
+                ..
+            } => 2 + label.width() + 1 + group_count(*reviewed, *total).width(),
         })
         .max()
         .unwrap_or(0);
@@ -92,6 +98,36 @@ pub(super) fn render_file_list(frame: &mut Frame, app: &mut App, area: Rect) {
         .iter()
         .map(|item| {
             let line = match item {
+                // The group name is rendered **verbatim** — no prettification,
+                // no title-casing, no substituting a directory name for a poor
+                // one. A generic name beside a large count is the cheapest
+                // signal that the grouping is weak there, and papering over it
+                // hides the signal (`docs/SIDEBAR_MODEL.md`).
+                FileTreeItem::Group {
+                    label,
+                    reviewed,
+                    total,
+                    expanded,
+                    ..
+                } => {
+                    let icon = if *expanded {
+                        EXPANDED_GLYPH
+                    } else {
+                        COLLAPSED_GLYPH
+                    };
+                    let count = group_count(*reviewed, *total);
+                    // The count is flush right, which is what makes the
+                    // collapsed overview scannable as a column of sizes.
+                    let gap = (inner.width as usize)
+                        .saturating_sub(2 + label.width() + count.width())
+                        .max(1);
+                    Line::from(vec![
+                        Span::styled(format!("{icon} "), styles::dir_icon_style(&app.theme)),
+                        Span::raw(label.clone()),
+                        Span::raw(" ".repeat(gap)),
+                        Span::styled(count, styles::dim_style(&app.theme)),
+                    ])
+                }
                 FileTreeItem::Directory {
                     label,
                     depth,
@@ -178,6 +214,11 @@ pub(super) fn render_file_list(frame: &mut Frame, app: &mut App, area: Rect) {
             y: area.y + area.height.saturating_sub(1),
         });
     }
+}
+
+/// A group row's `reviewed/total` badge.
+fn group_count(reviewed: usize, total: usize) -> String {
+    format!("{reviewed}/{total}")
 }
 
 /// Leading `│` border plus one space before the prompt sigil.
