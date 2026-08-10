@@ -109,16 +109,19 @@ two points, both settled after it was written:
 ### What the seam is owed
 
 The seam consumes `groups` in order and, for each group, the files assigned to
-it. That is exactly the two-level contiguity `SIDEBAR_MODEL.md` requires:
-`diff_files` contiguous **by group**, and within a group contiguous **by
-directory**, with `seen_dirs` reset at every group boundary. Handing the seam a
-flat per-file map would leave it to rediscover the grouping by bucketing, with
-no order to bucket into — which is how the prototype's shape fails here.
+it. That is exactly the contiguity `SIDEBAR_MODEL.md` requires: `diff_files`
+contiguous **by group**. Handing the seam a flat per-file map would leave it to
+rediscover the grouping by bucketing, with no order to bucket into — which is
+how the prototype's shape fails here.
+
+That requirement used to be two-level — by group, and within a group by
+directory, with `seen_dirs` reset at every group boundary. `gd-26r.31` dropped
+the second level with the in-group directory rows that needed it.
 
 The engine does **not** produce `diff_files` order itself; it produces the
 grouping, and the seam flattens it. Keeping the flatten on the seam side is
-what lets the three tree modes (`nested` / `compact` / `flat`) vary without the
-engine knowing.
+what lets the ungrouped tree modes (`nested` / `compact` / `flat`) vary without
+the engine knowing.
 
 ### Provenance is two-tiered
 
