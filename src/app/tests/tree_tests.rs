@@ -542,33 +542,16 @@ fn every_group_collapses_to_a_thirteen_row_overview() {
 }
 
 #[test]
-fn per_run_directory_rows_cost_five_rows_over_one_row_per_directory() {
-    // The record published 300 for `groups + nested`, measured at one row per
-    // directory per group. That model still reproduces exactly — 126 distinct
-    // directories, 161 files, 13 groups — so the whole of the +5 is the
-    // per-run emission `gd-26r.28` slice A shipped, not an error in the
-    // original arithmetic.
-    let items = grouped_row_cost_app(FileTreeMode::Nested).build_visible_items();
-    let dir_rows: Vec<&String> = items
-        .iter()
-        .filter_map(|item| match item {
-            FileTreeItem::Directory { path, .. } => Some(path),
-            FileTreeItem::File { .. } | FileTreeItem::Group { .. } => None,
-        })
-        .collect();
-    let distinct: HashSet<&&String> = dir_rows.iter().collect();
-
-    assert_eq!(distinct.len(), 126, "distinct (group, directory) keys");
-    assert_eq!(distinct.len() + 161 + 13, 300, "the published cost model");
-    assert_eq!(dir_rows.len(), 131, "five directories span two runs");
-    assert_eq!(items.len(), 305);
-}
-
-#[test]
-fn grouped_compact_costs_285_rows_on_the_fixture() {
-    // Published as 251, which assumed chain joins decided against a group's
-    // own files. `TreeLayout` (`tree.rs:106`) decides them once over the whole
-    // of `diff_files`, so joins that pay inside a group are never made.
-    // `gd-26r.34` deletes the question with the rows.
-    assert_eq!(grouped_row_count(FileTreeMode::Compact), 285);
+fn the_tree_mode_does_not_reach_the_grouped_sidebar() {
+    // The mode governs the ungrouped tree only (`docs/SIDEBAR_MODEL.md`
+    // point 5), so all three land on the one grouped layout. This replaces the
+    // interim pins at 305 and 285, which measured the in-group directory rows
+    // `gd-26r.34` deleted.
+    for mode in [
+        FileTreeMode::Nested,
+        FileTreeMode::Compact,
+        FileTreeMode::Flat,
+    ] {
+        assert_eq!(grouped_row_count(mode), 174, "{mode:?}");
+    }
 }

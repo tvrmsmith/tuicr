@@ -749,19 +749,20 @@ impl App {
             let max_scroll = self.max_scroll_offset();
             self.diff_state.scroll_offset = self.diff_state.cursor_line.min(max_scroll);
 
-            // Reveal the target: every ancestor directory row, and — under
-            // grouping — the group above them, since a collapsed group hides
-            // the whole subtree.
+            // Reveal the target. Under grouping the path ancestors reveal
+            // nothing — there are no in-group directory rows — and the file's
+            // group id is the only key that does; ungrouped it is every
+            // ancestor directory row.
             let file_path = self.diff_files[idx].display_path().clone();
-            let group_id = self
-                .group_of_file(&file_path)
-                .map(|group| group.id.as_str().to_string());
-            if let Some(id) = &group_id {
-                self.expanded_dirs.insert(id.clone());
-            }
-            for row in self.tree_layout().dir_rows(&file_path) {
-                self.expanded_dirs
-                    .insert(Self::dir_row_key(group_id.as_deref(), &row.path));
+            if self.grouping.is_some() {
+                if let Some(group) = self.group_of_file(&file_path) {
+                    let id = group.id.as_str().to_string();
+                    self.expanded_dirs.insert(id);
+                }
+            } else {
+                for row in self.tree_layout().dir_rows(&file_path) {
+                    self.expanded_dirs.insert(row.path);
+                }
             }
 
             if let Some(tree_idx) = self.file_idx_to_tree_idx(idx) {

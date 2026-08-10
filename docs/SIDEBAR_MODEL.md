@@ -509,15 +509,13 @@ collapsed group emits nothing beneath it, so no decision about in-group layout
 can reach that number. It was never at risk, and it remains the case for the
 whole feature.
 
-**The code does not match this yet.** What ships today is `gd-26r.28` slice A:
-in-group directory rows, per-run, `nested` by default under grouping — 305 rows
-on the fixture. It is correct and loses no files; it is simply more layout than
-this record now calls for. Two follow-ups close the gap:
+**`gd-26r.34` made the code match this**: `build_grouped_items` emits no
+directory rows, grouped files carry the full relative path at depth 1 in every
+tree mode, and `expanded_dirs` holds group ids only while grouping is on. The
+per-run regression test retired with the rows it guarded, as did the two
+interim row-cost pins (305 and 285); 174 and 13 are pinned and unchanged. One
+follow-up is left:
 
-- `gd-26r.34` — remove in-group directory emission from `build_grouped_items`,
-  label grouped files with the full relative path, and reduce `expanded_dirs`
-  to group ids while grouping is on. Retires the per-run regression test with
-  the rows it guards.
 - `gd-26r.35` — bind `<leader>g` and `:set groups!`, making grouping a
   session toggle rather than a startup-only setting, and document both.
 
