@@ -202,6 +202,27 @@ fn main() -> anyhow::Result<()> {
         Some("ascending") => app::CommitOrder::Ascending,
         _ => app::CommitOrder::Descending,
     };
+    // `compact_folders = true` is the older spelling of `file_tree = "compact"`
+    // and still honoured, but only where `file_tree` says nothing: an explicit
+    // mode is the reader's last word and must not be overridden by the alias.
+    let file_tree_mode = match config_outcome
+        .config
+        .as_ref()
+        .and_then(|cfg| cfg.file_tree.as_deref())
+    {
+        Some("compact") => app::FileTreeMode::Compact,
+        Some("flat") => app::FileTreeMode::Flat,
+        Some(_) => app::FileTreeMode::Nested,
+        None if config_outcome
+            .config
+            .as_ref()
+            .and_then(|cfg| cfg.compact_folders)
+            .unwrap_or(false) =>
+        {
+            app::FileTreeMode::Compact
+        }
+        None => app::FileTreeMode::Nested,
+    };
     let commit_selection = match config_outcome
         .config
         .as_ref()
@@ -307,6 +328,12 @@ fn main() -> anyhow::Result<()> {
     app.commit_order = commit_order;
     app.commit_selection_start = commit_selection;
 
+    // The tree mode decides which directory rows the sidebar emits, so the
+    // startup expansion `App::new` performed under the default mode has to be
+    // re-seeded with the keys the configured mode actually produces.
+    app.file_tree_mode = file_tree_mode;
+    app.expand_all_dirs();
+
     let mut session_registered = true;
     match app.ensure_ephemeral_session_file() {
         Ok(_) => session_registered = app.has_persisted_session_file(),
@@ -348,7 +375,6 @@ fn main() -> anyhow::Result<()> {
         app.show_pr_checks = cfg.show_pr_checks.unwrap_or(false);
         app.show_pr_comments = cfg.show_pr_comments.unwrap_or(true);
         app.initial_comments_visibility = pr_comments_visibility;
-        app.set_compact_folders(cfg.compact_folders.unwrap_or(false));
         if cfg.show_file_list == Some(false) {
             app.show_file_list = false;
             app.focused_panel = FocusedPanel::Diff;

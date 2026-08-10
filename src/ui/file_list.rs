@@ -52,16 +52,8 @@ pub(super) fn render_file_list(frame: &mut Frame, app: &mut App, area: Rect) {
     let max_content_width = visible_items
         .iter()
         .map(|item| match item {
-            FileTreeItem::Directory { label, depth, .. } => depth * 2 + 2 + label.width() + 1,
-            FileTreeItem::File { file_idx, depth } => {
-                let file = &app.diff_files[*file_idx];
-                let filename = file
-                    .display_path()
-                    .file_name()
-                    .and_then(|n| n.to_str())
-                    .unwrap_or("?");
-                depth * 2 + 4 + filename.width()
-            }
+            FileTreeItem::Directory { label, depth, .. } => depth * 2 + 2 + label.width(),
+            FileTreeItem::File { label, depth, .. } => depth * 2 + 4 + label.width(),
         })
         .max()
         .unwrap_or(0);
@@ -115,10 +107,14 @@ pub(super) fn render_file_list(frame: &mut Frame, app: &mut App, area: Rect) {
                     Line::from(vec![
                         Span::raw(indent),
                         Span::styled(format!("{icon} "), styles::dir_icon_style(&app.theme)),
-                        Span::raw(format!("{label}/")),
+                        Span::raw(label.clone()),
                     ])
                 }
-                FileTreeItem::File { file_idx, depth } => {
+                FileTreeItem::File {
+                    file_idx,
+                    label,
+                    depth,
+                } => {
                     let file = &app.diff_files[*file_idx];
                     let path = file.display_path();
                     let is_reviewed = app.session.is_file_reviewed(path);
@@ -138,7 +134,6 @@ pub(super) fn render_file_list(frame: &mut Frame, app: &mut App, area: Rect) {
                             Span::raw(format!("  {}", path.display())),
                         ])
                     } else {
-                        let filename = path.file_name().and_then(|n| n.to_str()).unwrap_or("?");
                         let indent = "  ".repeat(*depth);
                         let mut spans = vec![
                             Span::raw(indent),
@@ -154,17 +149,13 @@ pub(super) fn render_file_list(frame: &mut Frame, app: &mut App, area: Rect) {
                                 styles::file_status_style(&app.theme, status),
                             ));
                         }
-                        spans.push(Span::raw(filename.to_string()));
+                        spans.push(Span::raw(label.clone()));
                         Line::from(spans)
                     }
                 }
             };
 
-            ListItem::new(if app.compact_folders {
-                scroll_compact_row(line, scroll_x)
-            } else {
-                apply_horizontal_scroll(line, scroll_x)
-            })
+            ListItem::new(apply_horizontal_scroll(line, scroll_x))
         })
         .collect();
 
@@ -187,34 +178,6 @@ pub(super) fn render_file_list(frame: &mut Frame, app: &mut App, area: Rect) {
             y: area.y + area.height.saturating_sub(1),
         });
     }
-}
-
-/// Compact paths are measured in terminal columns; pan by the same unit,
-/// preserving grapheme clusters and padding a partially clipped wide glyph.
-fn scroll_compact_row(line: Line<'_>, mut columns: usize) -> Line<'_> {
-    if columns == 0 {
-        return line;
-    }
-    let spans = line
-        .spans
-        .into_iter()
-        .map(|span| {
-            let mut text = String::new();
-            for grapheme in span.styled_graphemes(Style::default()) {
-                let width = grapheme.symbol.width();
-                if columns == 0 {
-                    text.push_str(grapheme.symbol);
-                } else if columns >= width {
-                    columns -= width;
-                } else {
-                    text.push_str(&" ".repeat(width - columns));
-                    columns = 0;
-                }
-            }
-            Span::styled(text, span.style)
-        })
-        .collect::<Vec<_>>();
-    Line::from(spans)
 }
 
 /// Leading `│` border plus one space before the prompt sigil.
@@ -263,21 +226,6 @@ fn filter_footer(app: &App) -> Option<Line<'static>> {
     }
     if let Some(exclude) = app.file_filter.exclude.as_ref() {
         push('e', exclude.source.clone());
-    }
-    // Hiding reviewed files has no pattern to show, and the title fraction
-    // deliberately keeps counting them, so this line is the only persistent
-    // cue that rows are missing.
-    if !app.show_reviewed() {
-        if !spans.is_empty() {
-            spans.push(Span::styled(
-                " \u{00b7} ",
-                Style::default().fg(theme.fg_dim),
-            ));
-        }
-        spans.push(Span::styled(
-            "reviewed hidden",
-            Style::default().fg(theme.fg_secondary),
-        ));
     }
 
     if spans.is_empty() {
@@ -398,62 +346,6 @@ mod tests {
     }
 
     #[test]
-    fn compact_folders_scroll_preserves_partial_wide_and_combining_graphemes() {
-        use ratatui::text::Line;
-        let line = Line::from("界e\u{301}/next");
-        assert_eq!(
-            super::scroll_compact_row(line.clone(), 1).to_string(),
-            " e\u{301}/next"
-        );
-        assert_eq!(super::scroll_compact_row(line, 3).to_string(), "/next");
-    }
-
-    #[test]
-    fn compact_folders_render_joined_labels_and_shallow_filenames() {
-        let mut app = app_with(&["app/src/main/kotlin/Editor.kt"]);
-        app.compact_folders = true;
-        let mut terminal = Terminal::new(TestBackend::new(60, 8)).unwrap();
-        terminal
-            .draw(|frame| super::render_file_list(frame, &mut app, frame.area()))
-            .unwrap();
-        let text = buffer_text(terminal.backend().buffer());
-        assert!(text.contains("▼ app/src/main/kotlin/"), "{text}");
-        assert!(text.contains("│  ▢ M Editor.kt"), "{text}");
-        app.collapse_all_dirs();
-        terminal
-            .draw(|frame| super::render_file_list(frame, &mut app, frame.area()))
-            .unwrap();
-        let text = buffer_text(terminal.backend().buffer());
-        assert!(text.contains("▶ app/src/main/kotlin/"), "{text}");
-        assert!(!text.contains("Editor.kt"), "{text}");
-    }
-
-    #[test]
-    fn compact_folders_measure_and_scroll_unicode_labels() {
-        use unicode_width::UnicodeWidthStr;
-        let mut app = app_with(&["模块/éditeur/long_directory/file.kt"]);
-        app.compact_folders = true;
-        let mut terminal = Terminal::new(TestBackend::new(18, 8)).unwrap();
-        terminal
-            .draw(|frame| super::render_file_list(frame, &mut app, frame.area()))
-            .unwrap();
-        assert_eq!(
-            app.file_list_state.max_content_width,
-            "模块/éditeur/long_directory".width() + 3
-        );
-        app.file_list_state.scroll_x = usize::MAX;
-        terminal
-            .draw(|frame| super::render_file_list(frame, &mut app, frame.area()))
-            .unwrap();
-        assert_eq!(
-            app.file_list_state.scroll_x,
-            app.file_list_state.max_content_width - 16
-        );
-        let text = buffer_text(terminal.backend().buffer());
-        assert!(text.contains("long_directory/"), "{text}");
-    }
-
-    #[test]
     fn should_render_the_prompt_sigil_and_buffer_while_a_prompt_is_open() {
         let mut app = app_with(&["src/main.rs", "README.md"]);
         app.begin_file_tree_prompt(FileTreePrompt::Include);
@@ -505,51 +397,6 @@ mod tests {
         assert!(
             !text.contains("i:") && !text.contains("e:"),
             "unfiltered tree should not advertise filters, got:\n{text}"
-        );
-    }
-
-    #[test]
-    fn should_announce_hidden_reviewed_files_in_the_border() {
-        let mut app = app_with(&["src/main.rs", "README.md"]);
-        app.set_show_reviewed(false);
-
-        let text = buffer_text(&draw(&mut app));
-
-        assert!(
-            text.contains("reviewed hidden"),
-            "expected the reviewed-hidden cue in the tree border, got:\n{text}"
-        );
-    }
-
-    #[test]
-    fn should_keep_the_progress_fraction_in_the_title_while_hiding_reviewed_files() {
-        let mut app = app_with(&["src/main.rs", "README.md"]);
-        let reviewed = app
-            .diff_files
-            .iter()
-            .position(|file| file.display_path().display().to_string() == "README.md")
-            .expect("README.md in the diff");
-        app.toggle_reviewed_for_file_idx(reviewed, false);
-
-        app.set_show_reviewed(false);
-
-        let text = buffer_text(&draw(&mut app));
-        // Counting the hidden row as not-shown would render `0/1` here.
-        assert!(
-            text.contains("1/2"),
-            "expected progress over the whole population, got:\n{text}"
-        );
-    }
-
-    #[test]
-    fn should_not_advertise_hiding_when_reviewed_files_are_shown() {
-        let mut app = app_with(&["src/main.rs"]);
-
-        let text = buffer_text(&draw(&mut app));
-
-        assert!(
-            !text.contains("reviewed hidden"),
-            "default state should not advertise hiding, got:\n{text}"
         );
     }
 }

@@ -119,6 +119,10 @@ mod tests {
             comment_count: 0,
             reviewed_count: 0,
             file_count: 1,
+            unreleased_count: 0,
+            release_count: 0,
+            released_at: None,
+            superseded_by: None,
             anchor: "main".to_string(),
             active: false,
         }

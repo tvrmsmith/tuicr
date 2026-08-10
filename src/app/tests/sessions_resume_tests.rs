@@ -197,6 +197,10 @@ fn stage_session(app: &mut App, session: ReviewSession) -> SessionSummary {
         comment_count: 1,
         reviewed_count: 0,
         file_count: 1,
+        unreleased_count: 0,
+        release_count: 0,
+        released_at: None,
+        superseded_by: None,
         anchor: "main".to_string(),
         active: false,
     };
@@ -384,6 +388,10 @@ fn should_resume_a_pr_session_through_the_forge_open_path() {
         comment_count: 1,
         reviewed_count: 0,
         file_count: 1,
+        unreleased_count: 0,
+        release_count: 0,
+        released_at: None,
+        superseded_by: None,
         anchor: "pr/7".to_string(),
         active: false,
     }]));
@@ -417,6 +425,10 @@ fn should_report_a_pr_session_with_no_saved_pull_request() {
         comment_count: 1,
         reviewed_count: 0,
         file_count: 1,
+        unreleased_count: 0,
+        release_count: 0,
+        released_at: None,
+        superseded_by: None,
         anchor: "pr/9".to_string(),
         active: false,
     }]));
@@ -470,6 +482,10 @@ fn should_hide_sessions_with_no_review_progress() {
         comment_count: 0,
         reviewed_count: 0,
         file_count: 1,
+        unreleased_count: 0,
+        release_count: 0,
+        released_at: None,
+        superseded_by: None,
         anchor: "main".to_string(),
         active: false,
     };
