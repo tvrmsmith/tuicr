@@ -119,14 +119,104 @@ impl TreeTestHarness {
     }
 }
 
-fn row_cost_harness(mode: FileTreeMode) -> TreeTestHarness {
+/// The hand grouping the row costs in `docs/SIDEBAR_MODEL.md` were drawn
+/// against: 13 groups in intent-centrality order.
+const ROW_COST_GROUPS: &str =
+    include_str!("../../../tests/fixtures/grouping/orca-971b16754.groups");
+
+fn row_cost_files() -> Vec<DiffFile> {
     let files: Vec<DiffFile> = ROW_COST_FIXTURE
         .lines()
         .filter(|line| !line.trim().is_empty())
         .map(|line| make_file(line.split_once('\t').map_or(line, |(_status, path)| path)))
         .collect();
     assert_eq!(files.len(), 161, "fixture changed size");
-    TreeTestHarness::from_files(mode, files)
+    files
+}
+
+fn row_cost_harness(mode: FileTreeMode) -> TreeTestHarness {
+    TreeTestHarness::from_files(mode, row_cost_files())
+}
+
+/// The same fixture with the same hand grouping the mockups were drawn from,
+/// driven through the real grouped sidebar: the record's partition and reading
+/// order, the shipped within-group sort, and per-run directory emission.
+fn grouped_row_cost_app(mode: FileTreeMode) -> App {
+    grouped_app_from(mode, row_cost_files(), ROW_COST_GROUPS)
+}
+
+fn grouped_app_from(mode: FileTreeMode, files: Vec<DiffFile>, groups_text: &str) -> App {
+    use crate::grouping::changeset::Changeset;
+    use crate::grouping::{GroupId, GroupSource, Grouping, PresentedGroup};
+
+    let mut presented: Vec<PresentedGroup> = Vec::new();
+    for line in groups_text.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        match line
+            .strip_prefix('[')
+            .and_then(|rest| rest.strip_suffix(']'))
+        {
+            Some(name) => presented.push(PresentedGroup {
+                id: GroupId::new(),
+                name: name.to_string(),
+                source: GroupSource::Heuristics,
+                new_since_full_pass: false,
+                members: Vec::new(),
+            }),
+            None => presented
+                .last_mut()
+                .expect("a path before any [group] header")
+                .members
+                .push(line.to_string()),
+        }
+    }
+    assert!(!presented.is_empty(), "no [group] header in the fixture");
+
+    let vcs_info = VcsInfo {
+        root_path: PathBuf::from("/tmp"),
+        head_commit: "head".into(),
+        branch_name: Some("main".into()),
+        vcs_type: VcsType::Git,
+    };
+    let mut session = ReviewSession::new(
+        vcs_info.root_path.clone(),
+        vcs_info.head_commit.clone(),
+        vcs_info.branch_name.clone(),
+        SessionDiffSource::WorkingTree,
+    );
+    for file in &files {
+        session.add_file(file.display_path().clone(), file.status, file.content_hash);
+    }
+    // Recorded on the session so `enable_grouping` restores it verbatim
+    // instead of computing a heuristic one: the table measures the record's
+    // grouping, not the engine's.
+    session.record_grouping(&Grouping::restore(
+        &Changeset::from_diff_files(&files),
+        presented,
+    ));
+
+    let mut app = App::build(
+        Box::new(StubVcs(vcs_info.clone())),
+        vcs_info,
+        crate::theme::Theme::dark(),
+        None,
+        false,
+        files,
+        session,
+        DiffSource::WorkingTree,
+        InputMode::Normal,
+        Vec::new(),
+        None,
+        None,
+    )
+    .expect("build app");
+    app.file_tree_mode = mode;
+    app.enable_grouping();
+    app.expand_all_dirs();
+    app
 }
 
 #[test]
@@ -417,4 +507,68 @@ fn flat_costs_161_rows_on_the_fixture() {
     let h = row_cost_harness(FileTreeMode::Flat);
 
     assert_eq!(h.build_visible_items().len(), 161);
+}
+
+// The grouped half of the same table, re-measured by `gd-26r.31` against the
+// shipped code. The record's numbers had been drawn from mockups and nothing
+// held them to the sidebar; two of the three had drifted.
+
+fn grouped_row_count(mode: FileTreeMode) -> usize {
+    grouped_row_cost_app(mode).build_visible_items().len()
+}
+
+#[test]
+fn the_chosen_grouped_layout_costs_174_rows_on_the_fixture() {
+    // 161 files plus 13 group rows, no directory rows. `gd-26r.34` makes this
+    // the only grouped layout; today it is what `flat` already produces.
+    assert_eq!(grouped_row_count(FileTreeMode::Flat), 174);
+}
+
+#[test]
+fn every_group_collapses_to_a_thirteen_row_overview() {
+    // The strongest claim in `docs/SIDEBAR_MODEL.md`, and the one the whole
+    // sidebar case rests on. A collapsed group emits nothing beneath it, so no
+    // in-group layout decision can move this — hence all three modes.
+    for mode in [
+        FileTreeMode::Nested,
+        FileTreeMode::Compact,
+        FileTreeMode::Flat,
+    ] {
+        let mut app = grouped_row_cost_app(mode);
+        app.collapse_all_dirs();
+
+        assert_eq!(app.build_visible_items().len(), 13, "{mode:?}");
+    }
+}
+
+#[test]
+fn per_run_directory_rows_cost_five_rows_over_one_row_per_directory() {
+    // The record published 300 for `groups + nested`, measured at one row per
+    // directory per group. That model still reproduces exactly — 126 distinct
+    // directories, 161 files, 13 groups — so the whole of the +5 is the
+    // per-run emission `gd-26r.28` slice A shipped, not an error in the
+    // original arithmetic.
+    let items = grouped_row_cost_app(FileTreeMode::Nested).build_visible_items();
+    let dir_rows: Vec<&String> = items
+        .iter()
+        .filter_map(|item| match item {
+            FileTreeItem::Directory { path, .. } => Some(path),
+            FileTreeItem::File { .. } | FileTreeItem::Group { .. } => None,
+        })
+        .collect();
+    let distinct: HashSet<&&String> = dir_rows.iter().collect();
+
+    assert_eq!(distinct.len(), 126, "distinct (group, directory) keys");
+    assert_eq!(distinct.len() + 161 + 13, 300, "the published cost model");
+    assert_eq!(dir_rows.len(), 131, "five directories span two runs");
+    assert_eq!(items.len(), 305);
+}
+
+#[test]
+fn grouped_compact_costs_285_rows_on_the_fixture() {
+    // Published as 251, which assumed chain joins decided against a group's
+    // own files. `TreeLayout` (`tree.rs:106`) decides them once over the whole
+    // of `diff_files`, so joins that pay inside a group are never made.
+    // `gd-26r.34` deletes the question with the rows.
+    assert_eq!(grouped_row_count(FileTreeMode::Compact), 285);
 }
