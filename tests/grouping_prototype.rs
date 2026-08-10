@@ -3699,6 +3699,129 @@ fn recorded_order_numbers_hold() {
     );
 }
 
+/// The heuristic arm's published `tau_group`: `gd-26r.22` −0.192 unsorted,
+/// `gd-26r.27` −0.191 with the within-group sort applied.
+const RECORDED_TAU_GROUP_FIXTURE_ONE: f64 = -0.191;
+/// The same on fixture 2: `gd-26r.22` +0.080 unsorted, `gd-26r.27` +0.077 as
+/// shipped.
+const RECORDED_TAU_GROUP_FIXTURE_TWO: f64 = 0.077;
+
+/// **A reproducibility bar, not a quality bar** — the distinction is the whole
+/// content of this test, so it is stated here, in the assertion messages, and
+/// in `docs/GROUPING_PASSES.md` rather than left to be inferred from a green
+/// tick.
+///
+/// What it means: the heuristic arm's group order is still the one the document
+/// publishes, so a change that wrecked it cannot pass silently.
+///
+/// What it does **not** mean:
+///
+/// - **Not that the number is good.** −0.191 is *worse than chance*: the
+///   heuristic arm's order is `gd-26r.12` Decision 3's size-descending proxy and
+///   was never intent-centrality. This bar exists to make the published row
+///   true, and it deliberately fails if group order *improves*, so the row gets
+///   re-recorded rather than quietly falsified — the same two-sided rule
+///   [`recorded_numbers_hold`] applies to F1.
+/// - **Not a comparison between arms.** `tau_group` flatters refine by
+///   construction, so no refine arm gets a bar here. Those arms are replays of
+///   recorded runs in any case, so a bar on them would guard the recording, not
+///   the engine; what the metric itself must do is pinned by
+///   `one_group_moved_scores_far_above_a_reversal` and
+///   `a_shuffled_order_sits_near_zero` instead.
+#[test]
+fn the_published_heuristic_group_order_still_reproduces() {
+    let (changeset, _) = orca();
+    assert_recorded_tau_group(
+        ORCA_FIXTURE,
+        &changeset,
+        &orca_ordered(),
+        RECORDED_TAU_GROUP_FIXTURE_ONE,
+    );
+}
+
+#[test]
+#[ignore = "needs $TUICR_GROUPING_FIXTURES"]
+fn the_published_heuristic_group_order_still_reproduces_on_the_second_fixture() {
+    let changeset = external_changeset(SECOND_FIXTURE).unwrap_or_else(|| {
+        panic!(
+            "no fixture {SECOND_FIXTURE} in {} (set TUICR_GROUPING_FIXTURES)",
+            fixture_dir().display()
+        )
+    });
+    let expected = external_ordered(SECOND_FIXTURE).expect("its .files sits beside its .groups");
+    assert_recorded_tau_group(
+        SECOND_FIXTURE,
+        &changeset,
+        &expected,
+        RECORDED_TAU_GROUP_FIXTURE_TWO,
+    );
+}
+
+fn assert_recorded_tau_group(
+    label: &str,
+    changeset: &Changeset,
+    expected: &Ordered,
+    published: f64,
+) {
+    let arm = Ordered::heuristic(
+        changeset,
+        passes::group(changeset, GroupingConfig::default()).partition(),
+    );
+    let tau_group = order::score_order(changeset, &arm, expected)
+        .tau_group
+        .expect("both fixtures hold more than one expected group");
+    assert!(
+        (tau_group - published).abs() <= RECORDED_SLACK,
+        "{label}: the heuristic arm's tau_group is {tau_group:.3}, off the published \
+         {published:.3} by more than {RECORDED_SLACK:.3}. This bar says only that the \
+         published row still reproduces — it is NOT a quality bar, since this number is \
+         chance or worse by construction, and it is NOT a comparison against refine, which \
+         tau_group flatters. If the order genuinely moved, re-record the row in \
+         docs/GROUPING_PASSES.md and say why; do not widen the bar to fit."
+    );
+}
+
+/// Fixture 2's contribution to rule 4 is **zero pairs**, and that is asserted
+/// rather than left as a sentence in `docs/GROUPING_PASSES.md`, because it is
+/// the precondition for every one-fixture caveat in that document.
+///
+/// It is a bar on an *absence*, so it fails in the useful direction: the day
+/// `is_test`, `stem` and `covers` are all taught the .NET convention —
+/// `ScPricerTests.cs` under `tests/PACF.Rcm.Rules.Tests/` against
+/// `ScPricer.cs` under `src/PACF.Rcm.Rules/` — this test goes red and the
+/// caveat has to be rewritten rather than silently outliving its cause. All
+/// three gates matter: `gd-26r.29` measured a fix to `is_test` **alone** and it
+/// produced no rule-4 pairs at all.
+///
+/// Fixture 2 gets no `tau_within` bar. Its only constrained pairs are 17
+/// `central-first` and 1 `mechanical-last`, both rules the document explicitly
+/// does not grade an arm on, and `gd-26r.22` recorded that its within-group
+/// file order is a plain path sort in 14 of 14 groups and is not claimed as
+/// ground truth. A bar there would grade an arm against an accident of how the
+/// fixture was typed. That waits on `gd-26r.19`.
+#[test]
+#[ignore = "needs $TUICR_GROUPING_FIXTURES"]
+fn the_second_fixture_still_constrains_no_rule_four_pair() {
+    let (changeset, _) = require_external_fixture(SECOND_FIXTURE);
+    let expected = external_ordered(SECOND_FIXTURE).expect("its .files sits beside its .groups");
+    let arm = Ordered::heuristic(
+        &changeset,
+        passes::group(&changeset, GroupingConfig::default()).partition(),
+    );
+    let score = order::score_order(&changeset, &arm, &expected);
+
+    assert_eq!(
+        score
+            .within_by_rule
+            .get(&order::Rule::TestFollowsProduction),
+        None,
+        "fixture 2 now constrains rule-4 pairs, where docs/GROUPING_PASSES.md says it \
+         constrains none. That is the premise under 'the largest order improvement in this \
+         document is therefore also a one-fixture result' — rewrite the caveat and publish \
+         the new number rather than deleting this assertion."
+    );
+}
+
 /// An extension names a file's language or role, never its concern, so one that
 /// survives tokenisation becomes a cluster key and groups files by layer —
 /// exactly what GROUPING.md rule 1 forbids. `.cs` did this on fixture 2
