@@ -167,7 +167,10 @@ streaming, not incremental, not conversational.
 
 - **Array position is reading order.** Required, not optional (`gd-26r.14`
   point 2): blocking startup exists precisely to obtain the order the heuristic
-  arm could not produce. Within-group file order is `gd-26r.22`'s to settle.
+  arm could not produce. **Within-group file order is not carried at all**
+  (`gd-26r.27`): the engine sorts each group's files itself, deterministically
+  and identically on both arms, so `groups[].files` order is read as membership
+  and discarded as order.
 - **Only `groups[].name` and `groups[].files` are read.**
 - The `merge` / `was` variants of the prototype's other shapes
   (`Shape::MergeOnly`, `Shape::NamingOnly`) are harness arms, not the shipped
@@ -335,7 +338,8 @@ one-file `dir:` groups. `gd-26r.18` owns that revisit.
 
 ## Deliberately not decided here
 
-- Within-group file order (`gd-26r.22`).
+- ~~Within-group file order~~ — settled by `gd-26r.27`: the engine's sort owns
+  it, the contract carries nothing about it.
 - How the pre-TUI progress screen renders a retry (`gd-26r.15`).
 - Group sizing and any soft/hard cap (`gd-26r.23`).
 - Vertex credential types beyond `authorized_user` ADC (map fog).
