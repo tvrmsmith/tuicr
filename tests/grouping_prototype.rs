@@ -20,6 +20,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 
 use grouping::changeset::{self, ChangeKind, ChangedFile, Changeset};
+use grouping::order::{self, OrderScore, Ordered};
 use grouping::passes::{self, GroupingConfig};
 use grouping::refine::{self, RunRecord, Shape};
 use grouping::score::{self, Partition, Score};
@@ -38,6 +39,32 @@ const FIRE_CHECK_FIXTURE: &str = "meridian-097e2defa-10cc878df";
 
 fn orca() -> (Changeset, Partition) {
     (Changeset::parse(ORCA_FILES), Partition::parse(ORCA_GROUPS))
+}
+
+/// The expected grouping *with* its declared reading order, for `gd-26r.22`'s
+/// order metric. Separate from [`orca`] rather than replacing it: the pairwise
+/// scorer is order-blind on purpose, so the order-aware view is an addition and
+/// no published F1 flows through different code because of it.
+fn orca_ordered() -> Ordered {
+    let (partition, order) = Partition::parse_with_order(ORCA_GROUPS);
+    Ordered::new(partition, order)
+}
+
+fn external_ordered(name: &str) -> Option<Ordered> {
+    let groups = std::fs::read_to_string(fixture_dir().join(format!("{name}.groups"))).ok()?;
+    let (partition, order) = Partition::parse_with_order(&groups);
+    Some(Ordered::new(partition, order))
+}
+
+/// Every fixture's expected grouping in reading order, keyed by the same label
+/// [`fixtures`] uses, so a report can look the order up per fixture.
+fn ordered_fixtures() -> BTreeMap<String, Ordered> {
+    let mut out = BTreeMap::new();
+    out.insert(ORCA_FIXTURE.to_string(), orca_ordered());
+    if let Some(ordered) = external_ordered(SECOND_FIXTURE) {
+        out.insert(SECOND_FIXTURE.to_string(), ordered);
+    }
+    out
 }
 
 fn fixture_dir() -> PathBuf {
@@ -100,6 +127,47 @@ fn row(label: &str, score: Score) {
     );
 }
 
+/// One line of the order report. Every caller prints the bias line above the
+/// block, so a tau never appears without it.
+fn show_tau(tau: Option<f64>) -> String {
+    match tau {
+        Some(value) => format!("{value:>6.3}"),
+        None => "     -".to_string(),
+    }
+}
+
+fn order_row(label: &str, score: &OrderScore) {
+    println!(
+        "{label:<34} tau_group {} ({:>5} pairs)   tau_within {} ({:>3} pairs)",
+        show_tau(score.tau_group),
+        score.group_pairs,
+        show_tau(score.tau_within),
+        score.within_pairs,
+    );
+    for rule in [
+        order::Rule::TestFollowsProduction,
+        order::Rule::UnitBeforeBroadTest,
+        order::Rule::MechanicalLast,
+        order::Rule::CentralFirst,
+    ] {
+        if let Some((ok, broken)) = score.within_by_rule.get(&rule) {
+            println!(
+                "    {:<30} tau {}  ({ok} satisfied, {broken} broken)",
+                rule.label(),
+                show_tau(score.tau_for(rule)),
+            );
+        }
+    }
+}
+
+/// Printed above every block of order numbers. `gd-26r.22` required the bias to
+/// be stated at every number rather than once in a doc, because the numbers get
+/// quoted out of the report and into tickets.
+const ORDER_BIAS: &str = "  BIAS: tau_group flatters refine — the refine prompt asks for reading \
+     order in words (rule 2),\n        while the heuristic arm's order is gd-26r.12 Decision 3's \
+     size-descending PROXY.\n        tau_within is unbiased: neither arm is prompted for \
+     within-group file order.";
+
 /// A count alone is not well-formedness: one misspelt path in the `.groups`
 /// file and one duplicated path leave the count intact, while the scorer — which
 /// matches paths by string — counts the typo's pairs against precision and never
@@ -159,14 +227,98 @@ fn second_fixture_is_well_formed() {
 fn report() {
     let (changeset, expected) = orca();
     report_fixture("orca 971b16754 (161 files)", &changeset, &expected);
+    report_order(&changeset, &orca_ordered());
 
     match external_fixture(SECOND_FIXTURE) {
-        Some((changeset, expected)) => report_fixture(
-            &format!("{SECOND_FIXTURE} (158 files)"),
-            &changeset,
-            &expected,
-        ),
+        Some((changeset, expected)) => {
+            report_fixture(
+                &format!("{SECOND_FIXTURE} (158 files)"),
+                &changeset,
+                &expected,
+            );
+            report_order(
+                &changeset,
+                &external_ordered(SECOND_FIXTURE).expect("the .groups file just parsed"),
+            );
+        }
         None => skip_notice(SECOND_FIXTURE),
+    }
+}
+
+/// The order half of the fixture report (`gd-26r.22`). Split out from
+/// [`report_fixture`] because it needs the expected grouping's *reading order*,
+/// which the order-blind `Partition` the rest of the report runs on does not
+/// carry.
+fn report_order(changeset: &Changeset, expected: &Ordered) {
+    println!("\n=== order: Kendall tau (gd-26r.22) ===");
+    println!("{ORDER_BIAS}");
+
+    let grouping = passes::group(changeset, GroupingConfig::default());
+    order_row(
+        "heuristics (Decision 3 order)",
+        &order::score_order(
+            changeset,
+            &Ordered::heuristic(grouping.partition()),
+            expected,
+        ),
+    );
+    order_row(
+        "top-level-directory",
+        &order::score_order(
+            changeset,
+            &Ordered::heuristic(passes::baseline::top_level_directory(changeset)),
+            expected,
+        ),
+    );
+    order_row(
+        "heuristics + within-group sort",
+        &order::score_order(
+            changeset,
+            &Ordered::heuristic(grouping.partition()).sorted_within_groups(changeset),
+            expected,
+        ),
+    );
+    order_row(
+        "expected (self-score = the ceiling)",
+        &order::score_order(changeset, expected, expected),
+    );
+    // The two controls the metric exists to tell apart. Printed side by side so
+    // a reader can see that "one group moved" and "reversed" are different
+    // numbers rather than both reading as failure.
+    let mut moved = expected.order.clone();
+    if moved.len() > 1 {
+        let last = moved.pop().expect("checked non-empty");
+        moved.insert(0, last);
+    }
+    order_row(
+        "expected, last group moved first",
+        &order::score_order(
+            changeset,
+            &Ordered::new(expected.partition.clone(), moved),
+            expected,
+        ),
+    );
+    let mut reversed = expected.order.clone();
+    reversed.reverse();
+    order_row(
+        "expected, groups reversed",
+        &order::score_order(
+            changeset,
+            &Ordered::new(expected.partition.clone(), reversed),
+            expected,
+        ),
+    );
+
+    let mut by_rule: BTreeMap<&str, usize> = BTreeMap::new();
+    for constraint in order::within_group_constraints(changeset, &expected.partition) {
+        *by_rule.entry(constraint.rule.label()).or_default() += 1;
+    }
+    println!("  within-group pairs the rules constrain:");
+    if by_rule.is_empty() {
+        println!("    none — this fixture cannot score within-group order at all");
+    }
+    for (rule, count) in by_rule {
+        println!("    {rule:<26} {count:>4} pairs");
     }
 }
 
@@ -885,19 +1037,35 @@ fn covered_by(digest: &BTreeSet<String>, documented: &BTreeSet<String>) -> f64 {
 /// come from that rule more than from any other — so a rule renumbered, swapped
 /// with its neighbour, or replaced under an unchanged number fails here, while
 /// a rewording that says the same thing passes.
+///
+/// Scoped to the rules that order *groups*. `gd-26r.22` added rules 12–14, which
+/// order the files inside one, and the prompt deliberately does not carry them:
+/// the answer names a group and its members, and `apply` rebuilds the partition
+/// from a path-keyed map, so a within-group order the model returned would be
+/// discarded on the way back in. Asking for something the round-trip cannot
+/// represent would also make `tau_within` a biased number — see
+/// `docs/GROUPING_PASSES.md`. Widen this the day the answer format carries file
+/// order.
 #[test]
 fn every_documented_rule_reaches_the_model() {
     const GROUPING_MD: &str = include_str!("../docs/GROUPING.md");
-    let documented: BTreeMap<u32, BTreeSet<String>> = numbered_items(GROUPING_MD)
+    const WITHIN_GROUP_RULES: std::ops::RangeInclusive<u32> = 12..=14;
+
+    let all: BTreeMap<u32, BTreeSet<String>> = numbered_items(GROUPING_MD)
         .into_iter()
         .map(|(ordinal, text)| (ordinal, rule_words(&text)))
         .collect();
-    let ordinals: BTreeSet<u32> = documented.keys().copied().collect();
     assert_eq!(
-        ordinals,
-        (1..=documented.len() as u32).collect::<BTreeSet<u32>>(),
+        all.keys().copied().collect::<BTreeSet<u32>>(),
+        (1..=all.len() as u32).collect::<BTreeSet<u32>>(),
         "docs/GROUPING.md's rules are a contiguous numbered list from 1"
     );
+
+    let documented: BTreeMap<u32, BTreeSet<String>> = all
+        .into_iter()
+        .filter(|(ordinal, _)| !WITHIN_GROUP_RULES.contains(ordinal))
+        .collect();
+    let ordinals: BTreeSet<u32> = documented.keys().copied().collect();
 
     let changeset = Changeset::parse(FIRE_CHECK_FILES);
     let grouping = passes::group(&changeset, GroupingConfig::default());
@@ -2370,6 +2538,47 @@ fn refine_report() {
                     runs[0].refined.order.join(", ")
                 );
 
+                // Group reading order (gd-26r.22). Only `tau_group` is reported
+                // here: `apply` rebuilds the partition from a path-keyed
+                // `BTreeMap`, so a run's *within-group* file order is the
+                // harness's path sort and not the model's, and scoring it would
+                // measure `from_assignments` rather than the arm.
+                if let Some(expected_order) = ordered_fixtures().get(&label) {
+                    println!("{ORDER_BIAS}");
+                    let taus: Vec<f64> = runs
+                        .iter()
+                        .filter_map(|run| {
+                            order::score_order(
+                                &changeset,
+                                &Ordered::new(
+                                    run.refined.partition.clone(),
+                                    run.refined.order.clone(),
+                                ),
+                                expected_order,
+                            )
+                            .tau_group
+                        })
+                        .collect();
+                    let heuristic_tau = order::score_order(
+                        &changeset,
+                        &Ordered::heuristic(
+                            passes::group(&changeset, GroupingConfig::default()).partition(),
+                        ),
+                        expected_order,
+                    )
+                    .tau_group;
+                    if !taus.is_empty() {
+                        println!(
+                            "  tau_group mean {:.3}  worst {:.3}  best {:.3}   \
+                             (heuristic arm on this fixture: {})",
+                            taus.iter().sum::<f64>() / taus.len() as f64,
+                            taus.iter().copied().fold(f64::INFINITY, f64::min),
+                            taus.iter().copied().fold(f64::NEG_INFINITY, f64::max),
+                            show_tau(heuristic_tau),
+                        );
+                    }
+                }
+
                 if matches!(shape, Shape::Full | Shape::FullCoarse | Shape::Cold) {
                     println!(
                         "  where it wins and loses, per expected group \
@@ -3470,4 +3679,239 @@ fn grouping_is_a_strict_partition() {
             "{label}: every file assigned exactly once"
         );
     }
+}
+
+/// Diagnostic for `gd-26r.22`: which within-group rule each fixture's own
+/// expected order breaks. `tau_within` has to be read against this ceiling
+/// rather than against 1.0, so the ceiling is measured rather than assumed.
+#[test]
+#[ignore = "printer; run with --ignored --nocapture within_ceiling"]
+fn within_ceiling() {
+    for (label, ordered) in ordered_fixtures() {
+        let changeset = match label.as_str() {
+            ORCA_FIXTURE => Changeset::parse(ORCA_FILES),
+            other => external_changeset(other).expect("listed by ordered_fixtures"),
+        };
+        println!("\n##### {label}");
+        let ranks: BTreeMap<&str, usize> = Ordered::sequence(&ordered)
+            .into_iter()
+            .enumerate()
+            .map(|(i, p)| (p, i))
+            .collect();
+        let mut tally: BTreeMap<&str, (usize, usize)> = BTreeMap::new();
+        let mut examples: Vec<String> = Vec::new();
+        for c in order::within_group_constraints(&changeset, &ordered.partition) {
+            let entry = tally.entry(c.rule.label()).or_default();
+            if ranks[c.before] < ranks[c.after] {
+                entry.0 += 1;
+            } else {
+                entry.1 += 1;
+                if examples.len() < 8 {
+                    examples.push(format!(
+                        "  {} : {} should precede {}",
+                        c.rule.label(),
+                        c.before,
+                        c.after
+                    ));
+                }
+            }
+        }
+        for (rule, (ok, broken)) in tally {
+            println!("  {rule:<26} satisfied {ok:>3}  broken {broken:>3}");
+        }
+        for line in examples {
+            println!("{line}");
+        }
+    }
+}
+
+/// The property `gd-26r.22` asked the order metric for: "one group moved" and
+/// "reversed" must be different numbers, not both "wrong". A metric that
+/// collapsed them could not tell a near-miss from a backwards answer, which is
+/// the whole reason for scoring order rather than asserting it.
+///
+/// Ten equal groups of two files. Moving the last group to the front inverts
+/// only the pairs between it and the nine it crossed; reversing inverts every
+/// pair.
+#[test]
+fn one_group_moved_scores_far_above_a_reversal() {
+    let (changeset, expected) = ten_group_changeset();
+
+    let mut moved = expected.order.clone();
+    let last = moved.pop().expect("ten groups");
+    moved.insert(0, last);
+    let moved = order::score_order(
+        &changeset,
+        &Ordered::new(expected.partition.clone(), moved),
+        &expected,
+    );
+
+    let mut backwards = expected.order.clone();
+    backwards.reverse();
+    let reversed = order::score_order(
+        &changeset,
+        &Ordered::new(expected.partition.clone(), backwards),
+        &expected,
+    );
+
+    assert_eq!(reversed.tau_group, Some(-1.0), "reversed is the floor");
+    assert_eq!(
+        order::score_order(&changeset, &expected, &expected).tau_group,
+        Some(1.0),
+        "the expected order against itself is the ceiling"
+    );
+    let moved_tau = moved.tau_group.expect("cross-group pairs exist");
+    assert!(
+        moved_tau > 0.5,
+        "one group out of ten moved should stay near the ceiling, got {moved_tau}"
+    );
+}
+
+/// Kendall's tau is a *rank correlation*, so a shuffle has to sit near zero
+/// rather than near either end — otherwise "no order at all" would read as a
+/// score, which is precisely what `gd-26r.22` set out to stop happening.
+#[test]
+fn a_shuffled_order_sits_near_zero() {
+    let (changeset, expected) = ten_group_changeset();
+    // A fixed interleave rather than a random shuffle: a test that fails one
+    // run in fifty teaches nothing.
+    let mut shuffled: Vec<String> = Vec::new();
+    let (front, back) = expected.order.split_at(5);
+    for (a, b) in back.iter().zip(front) {
+        shuffled.push(a.clone());
+        shuffled.push(b.clone());
+    }
+    let tau = order::score_order(
+        &changeset,
+        &Ordered::new(expected.partition.clone(), shuffled),
+        &expected,
+    )
+    .tau_group
+    .expect("cross-group pairs exist");
+    assert!(
+        tau.abs() < 0.35,
+        "an interleave carries little order information, got {tau}"
+    );
+}
+
+/// `gd-26r.12` Decision 3, which is the heuristic arm's whole order: concern
+/// groups by size descending, `dir:` fallback groups pinned last as a class
+/// however large they are.
+#[test]
+fn the_heuristic_order_pins_directory_fallback_groups_last() {
+    let partition = Partition::from_assignments([
+        ("a.ts".to_string(), "dir:src".to_string()),
+        ("b.ts".to_string(), "dir:src".to_string()),
+        ("c.ts".to_string(), "dir:src".to_string()),
+        ("d.ts".to_string(), "concern".to_string()),
+        ("e.ts".to_string(), "concern".to_string()),
+        ("f.ts".to_string(), "smaller".to_string()),
+    ]);
+    assert_eq!(
+        Ordered::heuristic(partition).order,
+        vec!["concern", "smaller", "dir:src"],
+        "the three-file fallback group sorts after the one-file concern group"
+    );
+}
+
+/// Rule 4 constrains a test against **its** production file. Two files sharing
+/// a stem in different directories are not that pair, and treating them as one
+/// marked fixture 1's own expected order as broken in four places.
+#[test]
+fn rule_four_does_not_pair_a_test_with_a_same_named_file_elsewhere() {
+    let changeset = Changeset::parse(
+        "M\tsrc/main/ipc/github.ts\n\
+         M\tsrc/main/ipc/github.test.ts\n\
+         M\tsrc/renderer/store/github.ts\n",
+    );
+    let expected = Partition::from_assignments(
+        changeset
+            .files
+            .iter()
+            .map(|file| (file.path.clone(), "one".to_string())),
+    );
+    let pairs = order::within_group_constraints(&changeset, &expected);
+    let rule_four: Vec<_> = pairs
+        .iter()
+        .filter(|c| c.rule == order::Rule::TestFollowsProduction)
+        .collect();
+    assert_eq!(
+        rule_four.len(),
+        1,
+        "only the same-directory pair, got {rule_four:?}"
+    );
+    assert_eq!(rule_four[0].before, "src/main/ipc/github.ts");
+}
+
+/// An unconstrained within-group pair is excluded, not scored as satisfied.
+/// Fixture 2's groups are a plain path sort, so a metric that counted every
+/// pair would grade an arm against an accident of how the fixture was written.
+#[test]
+fn unconstrained_within_group_pairs_are_not_scored() {
+    let changeset = Changeset::parse("M\tsrc/alpha.ts\nM\tsrc/beta.ts\n");
+    let expected = Partition::from_assignments(
+        changeset
+            .files
+            .iter()
+            .map(|file| (file.path.clone(), "one".to_string())),
+    );
+    assert!(
+        order::within_group_constraints(&changeset, &expected).is_empty(),
+        "no rule relates two unrelated production files"
+    );
+    let ordered = Ordered::new(expected, vec!["one".to_string()]);
+    let score = order::score_order(&changeset, &ordered, &ordered);
+    assert_eq!(score.within_pairs, 0);
+    assert_eq!(
+        score.tau_within, None,
+        "nothing to measure must not read as a perfect score"
+    );
+}
+
+/// The measured defect this ticket found, pinned so it cannot come back: both
+/// arms build a group from a path-keyed map, and `x.test.ts` sorts before
+/// `x.ts`, so every test precedes the code it covers.
+#[test]
+fn the_within_group_sort_repairs_rule_four_on_fixture_one() {
+    let (changeset, _) = orca();
+    let expected = orca_ordered();
+    let heuristic =
+        Ordered::heuristic(passes::group(&changeset, GroupingConfig::default()).partition());
+
+    let before = order::score_order(&changeset, &heuristic, &expected);
+    assert_eq!(
+        before.tau_for(order::Rule::TestFollowsProduction),
+        Some(-1.0),
+        "the path sort breaks every rule-4 pair"
+    );
+
+    let after = order::score_order(
+        &changeset,
+        &heuristic.sorted_within_groups(&changeset),
+        &expected,
+    );
+    assert_eq!(
+        after.tau_for(order::Rule::TestFollowsProduction),
+        Some(1.0),
+        "a pure sort reaches the fixture's own ceiling, with no model call"
+    );
+}
+
+/// Ten two-file groups, `g0`..`g9`, expected in that order.
+fn ten_group_changeset() -> (Changeset, Ordered) {
+    let mut lines = String::new();
+    let mut assignments = Vec::new();
+    let mut order = Vec::new();
+    for group in 0..10 {
+        order.push(format!("g{group}"));
+        for member in 0..2 {
+            let path = format!("src/g{group}/f{member}.ts");
+            lines.push_str(&format!("M\t{path}\n"));
+            assignments.push((path, format!("g{group}")));
+        }
+    }
+    (
+        Changeset::parse(&lines),
+        Ordered::new(Partition::from_assignments(assignments), order),
+    )
 }

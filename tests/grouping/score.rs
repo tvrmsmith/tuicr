@@ -40,8 +40,20 @@ pub struct Score {
 
 impl Partition {
     /// Parses the fixture's expected grouping: `[name]` headers, indented paths.
+    ///
+    /// Order-blind by construction, and stays that way: the pairwise scorer
+    /// below judges the partition alone, so every number published before the
+    /// order metric existed is computed by the same code afterwards. Callers
+    /// that need the header order ask [`Self::parse_with_order`] for it.
     pub fn parse(text: &str) -> Self {
+        Self::parse_with_order(text).0
+    }
+
+    /// The partition, plus the `[group]` headers in the order the file lists
+    /// them — the fixture's expected reading order (`GROUPING.md` rule 2).
+    pub fn parse_with_order(text: &str) -> (Self, Vec<String>) {
         let mut groups: BTreeMap<String, Vec<String>> = BTreeMap::new();
+        let mut order: Vec<String> = Vec::new();
         let mut current = String::from(UNGROUPED);
         for line in text.lines() {
             let trimmed = line.trim();
@@ -53,15 +65,21 @@ impl Partition {
                 .and_then(|rest| rest.strip_suffix(']'))
             {
                 current = name.to_string();
+                if !groups.contains_key(&current) {
+                    order.push(current.clone());
+                }
                 groups.entry(current.clone()).or_default();
             } else {
+                if !groups.contains_key(&current) {
+                    order.push(current.clone());
+                }
                 groups
                     .entry(current.clone())
                     .or_default()
                     .push(trimmed.to_string());
             }
         }
-        Self { groups }
+        (Self { groups }, order)
     }
 
     pub fn from_assignments<I>(assignments: I) -> Self

@@ -1751,3 +1751,280 @@ design for and not as a bound.
   next relied on: "on fixture 1 refine is slightly worse than doing nothing" is a
   default-effort statement, and at low effort refine beats the heuristics on
   fixture 1 too.
+
+# Scoring order (`gd-26r.22`)
+
+Every number above this line is **order-blind**. Pairwise F1 asks "are these two
+files in the same group?" and nothing else, so a grouping that partitions
+perfectly and presents the groups back-to-front scores 1.000. This section adds
+a second metric that scores order, and reports both fixtures on it.
+
+**Nothing above this line moved.** The order metric is additive: `Partition` and
+`score_against` are untouched, and `Partition::parse` now delegates to a new
+`parse_with_order` that returns the same partition plus the header order, so
+every published F1 is computed by the same code as before. The one fixture edit
+— fixture 2's lockfile group moved to last, below — is an order-only change to a
+`.groups` file and does not move a single co-membership pair.
+`recorded_numbers_hold` still passes.
+
+## The bead's premise, corrected first
+
+`gd-26r.22` was written when the heuristic arm carried no order at all, and says
+so. As a statement about the *design* that is dead: `gd-26r.12` Decision 3 gave
+the heuristic arm a reading order, and `gd-26r.10` made reading order the `Vec`
+position in `Grouping` rather than a parallel field, so there is nothing left to
+desync (`docs/GROUPS_CONTRACT.md`, `docs/TOTAL_COVERAGE.md`).
+
+It was still true of the *harness*, which keyed a partition by group name in a
+`BTreeMap` and threw the order away on both arms. That is ~30 lines of debt, now
+paid. So the comparability complaint survives only as work, not as a finding: the
+arms are comparable on order by design, and the real question is the better one —
+**does the heuristic order hold up when scored?**
+
+## The metric: Kendall's tau over the induced file sequence
+
+A grouping induces one sequence of files: groups in reading order, files within
+each group in listed order. Total coverage guarantees both arms induce a
+permutation of the *same* set, so no matching step is needed and two sequences
+can be compared directly.
+
+**Kendall's tau** is the fraction of file pairs ordered the same way in both
+sequences, rescaled to `[-1, 1]`: `(concordant - discordant) / pairs`. 1.000 is
+the ceiling, 0.000 is chance, −1.000 is exactly reversed. The raw range is kept
+rather than squashed to `[0, 1]` precisely so that "no better than chance" and
+"backwards" read differently.
+
+It is reported as **two** numbers over disjoint pair universes:
+
+- **`tau_group`** — pairs of files the *expected* grouping puts in different
+  groups. This scores group order.
+- **`tau_within`** — pairs inside one expected group, and only those a rule in
+  `docs/GROUPING.md` actually constrains. This scores file order.
+
+Those two universes are exactly the split pairwise F1 already makes. F1 asks
+whether a pair is together; tau asks whether a pair is in the right order. **The
+two measure different failures and tau does not replace F1** — a partition can be
+perfect and reversed, or well-ordered and wrong.
+
+Why tau and not a displacement score (sum of "how far did each group move"):
+displacement is dominated by group size and needs a normaliser nobody can defend,
+and it cannot distinguish a swapped adjacent pair from a rotation. Tau degrades
+in the way the brief asked for, and the report prints the checks:
+
+| perturbation of the expected order | fixture 1 | fixture 2 |
+| --- | --- | --- |
+| none (self-score, the ceiling) | 1.000 | 1.000 |
+| last group moved to first | 0.943 | 0.945 |
+| all groups reversed | −1.000 | −1.000 |
+
+One group moved is a small dent; reversed is the floor. That is the property the
+metric was chosen for.
+
+**Only the rules score.** `tau_within` counts a pair only where a numbered rule
+relates the two files — a test and the production file it covers, a mechanical
+file and a non-mechanical one, the group's central file and the rest. Pairs no
+rule speaks to carry no intent and are excluded rather than scored against
+whatever the fixture happened to type. Per-rule tau is printed beside the pooled
+number so a rule the fixtures cannot exhibit is visible as such.
+
+## The bias, stated once here and at every number below
+
+**`tau_group` flatters refine by construction.** The refine prompt asks in words
+for a reading order and quotes rule 2 at the model; the heuristic arm's order is
+`gd-26r.12` Decision 3's admitted proxy — concern groups by size descending,
+`dir:` groups pinned last as a class — which was never claimed to be
+intent-centrality. An order metric compares something optimised for against
+something approximated. Every `tau_group` figure below carries that caveat, and
+the harness prints it above every order block rather than relying on this
+paragraph being read.
+
+**`tau_within` is not biased that way.** Neither arm is told anything about
+within-group file order: the prompt does not mention it, and rules 12–14
+deliberately do not reach the model (`every_documented_rule_reaches_the_model`
+says why). Both arms get it from the same place — a path-keyed map — so
+`tau_within` compares two things that were equally uninstructed.
+
+## Is the fixtures' expected order meaningful?
+
+Asked of the human rather than assumed, because the answer decides whether any of
+the numbers mean anything.
+
+**Fixture 1: yes, on both axes.** Its `.groups` file carries a header comment
+saying the groups are in reading order, the order it lists is not
+size-descending or alphabetical, and its mechanical-ish group is last. Within
+groups, all 40 production/test pairs are adjacent with the test second. It was
+authored to the rule.
+
+**Fixture 2: no, as authored.** No header claimed an order, the lockfile group
+was listed *first*, and the within-group file order is provably a plain path sort
+in 14 of 14 groups. **The human ruled fixture 1's convention normative for both
+fixtures**, so the fixture was corrected: `[dependencies]` moved to last per rule
+8, and a header comment added stating the order is meaningful. The partition is
+untouched, so no F1 above moves. Its within-group order is *not* corrected and
+is not claimed to be truth — which is why fixture 2's `tau_within` ceiling is
+below 1.000 and is reported as such.
+
+## Fixture 1 (orca, 161 files, 11,118 cross-group pairs)
+
+*`tau_group` flatters refine — see the bias above.*
+
+| arm | `tau_group` | `tau_within` |
+| --- | --- | --- |
+| **heuristic passes (Decision 3 order)** | **−0.192** | **−0.960** |
+| top-level-directory baseline | +0.145 | −0.960 |
+| heuristics + a within-group sort | −0.192 | **+0.800** (the ceiling) |
+| expected (self-score) | 1.000 | +0.800 |
+
+Refine arms, `tau_group` mean of 10 runs, heuristic arm at −0.192:
+
+| arm | mean | worst | best |
+| --- | --- | --- | --- |
+| cold · vertex-opus-low | **+0.223** | +0.162 | +0.341 |
+| full · opus (default effort, CLI) | +0.217 | +0.108 | +0.377 |
+| full-coarse · opus | +0.174 | +0.122 | +0.228 |
+| full · vertex-opus-default | +0.159 | +0.076 | +0.249 |
+| full · opus-low | +0.136 | +0.021 | +0.284 |
+| cold · gemini-3-flash-low | +0.112 | −0.003 | +0.199 |
+| full · gemini-3-1-pro-low | +0.086 | −0.021 | +0.169 |
+| **full · vertex-opus-low (what ships)** | **+0.044** | −0.047 | +0.140 |
+| merge-only · opus | +0.008 | −0.070 | +0.057 |
+| naming-only · opus | +0.001 | −0.032 | +0.041 |
+| full · gemini-3-flash-low | −0.011 | −0.079 | +0.058 |
+| full · sonnet | −0.080 | −0.187 | +0.071 |
+| full · sonnet-low | −0.089 | −0.183 | −0.021 |
+
+## Fixture 2 (meridian, 158 files, 11,377 cross-group pairs)
+
+Present and scored: read from `$TUICR_GROUPING_FIXTURES` (default
+`~/.local/share/tuicr-fixtures`), which was populated on this machine. Had it
+been absent this section would say so rather than quietly report one fixture.
+
+*`tau_group` flatters refine — see the bias above.*
+
+| arm | `tau_group` | `tau_within` |
+| --- | --- | --- |
+| **heuristic passes (Decision 3 order)** | **+0.080** | −0.667 |
+| top-level-directory baseline | −0.451 | −0.333 |
+| heuristics + a within-group sort | +0.077 | −0.667 |
+| expected (self-score) | 1.000 | −0.333 (**not** 1.000 — see below) |
+
+Refine arms, `tau_group` mean of 10 runs (haiku rows are 1 run), heuristic arm at
++0.080:
+
+| arm | mean | worst | best |
+| --- | --- | --- | --- |
+| full · gemini-3-1-pro-low | **+0.443** | +0.250 | +0.559 |
+| cold · vertex-opus-low | +0.437 | +0.424 | +0.478 |
+| full · vertex-opus-default | +0.408 | +0.129 | +0.556 |
+| full · opus (default effort, CLI) | +0.389 | +0.222 | +0.569 |
+| cold · gemini-3-flash-low | +0.352 | +0.112 | +0.529 |
+| full · opus-low | +0.336 | +0.160 | +0.517 |
+| **full · vertex-opus-low (what ships)** | **+0.335** | +0.198 | +0.498 |
+| naming-only · opus | +0.303 | +0.262 | +0.382 |
+| full-coarse · opus | +0.280 | +0.132 | +0.437 |
+| full · sonnet-low | +0.236 | −0.136 | +0.401 |
+| full · gemini-3-flash-low | +0.238 | +0.064 | +0.457 |
+| full · haiku (1 run) | +0.212 | — | — |
+| merge-only · opus | +0.205 | +0.122 | +0.261 |
+| full · sonnet | +0.184 | +0.054 | +0.297 |
+| full · haiku-low (1 run) | −0.146 | — | — |
+
+The within-group sort moves fixture 2's `tau_group` by −0.003. That is not a bug:
+`tau_group`'s universe is pairs in different *expected* groups, and two such
+files can share a *computed* group, so reordering inside a computed group does
+move a few cross-group pairs.
+
+## What the numbers say
+
+**1. The heuristic group order is not adequate.** −0.192 on fixture 1 is *worse
+than chance* — a reader given those groups back-to-front would do better — and
++0.080 on fixture 2 is chance with a rounding error. Size-descending is not
+intent-centrality, and now there is a number saying so rather than an admission
+in a decision record.
+
+**2. The size proxy is beaten by `dirname` on one fixture and beats it on the
+other**, which is the same non-transfer the partition work kept finding:
+top-level-directory scores +0.145 against the heuristics' −0.192 on fixture 1,
+and −0.451 against +0.080 on fixture 2. Neither ordering heuristic is a heuristic
+about intent; each is accidentally aligned with one repo's shape.
+
+**3. Both arms score −1.000 on rule 4 on fixture 1 — a perfect inversion.** Of
+42 constrained production/test pairs, **zero** are ordered correctly by either
+arm, because both build a group from a path-keyed `BTreeMap` and `x.test.ts`
+sorts before `x.ts`. Every test in the changeset preceded the code it covered.
+The rule has been in `docs/GROUPING.md` since the first draft and nothing
+implemented it, because nothing measured it.
+
+**4. A deterministic sort fixes that for free.** Ordering each group by
+`(mechanical last, directory, filename stem, production before test, unit test
+before broad test, path)` takes rule 4 from −1.000 to **+1.000**, 42 of 42, and
+`tau_within` from −0.960 to +0.800 — the fixture's own ceiling. No model call, no
+prompt change, no cost. This is the largest single order improvement in the
+document and the cheapest.
+
+**5. Refine's order gain is real, modest, and one-fixture.** Under the bias
+stated above, the shipped arm gains +0.236 on fixture 1 (−0.192 to +0.044, which
+is still indistinguishable from chance) and +0.255 on fixture 2 (+0.080 to
++0.335). The best arm anywhere reaches +0.223 and +0.443. So a model does order
+groups better than size-descending, on both fixtures, in the direction the metric
+is biased toward — and on fixture 1 the result of paying for it is *chance*.
+
+**6. Order is the one thing the cheap shapes are good at.** `naming-only`
+returns the bar exactly on F1 by construction — it cannot move the partition —
+and yet scores `tau_group` +0.303 on fixture 2 against the heuristics' +0.080,
+close to `full · opus-low`'s +0.336 at a third of the cost and a quarter of the
+wall clock. On fixture 1 it manages +0.001, so this does not transfer either. It
+is nonetheless the only arm in this document whose entire contribution is order,
+and `gd-26r.11` rejected it on an order-blind metric.
+
+**7. Two rules cannot be scored, and the report says so rather than hiding it.**
+`central-first` scores −0.250 on fixture 1 and −0.294 on fixture 2 against the
+fixtures' *own* expected file order, and `mechanical-last` scores −1.000 on
+fixture 2's single constrained pair. The ground truth contradicts the rule, so no
+arm is graded on either. Fixture 1 contributes no `mechanical-last` pair (nothing
+mechanical) and fixture 2 no `test-follows-production` pair (its .NET test
+naming, `FooTests.cs` under a `*.Tests/` project, is not what `is_test` matches —
+left alone deliberately, since `is_test` feeds the heuristic passes and changing
+it would move published F1).
+
+## Does this challenge `gd-26r.14`?
+
+`gd-26r.14` ruled that refine blocks the whole TUI at startup, and the
+load-bearing reason was ordering: the heuristic arm produced no intent-centrality,
+so an instant open would show groups in no meaningful order.
+
+**Its premise is confirmed, and its conclusion is challenged anyway.** Stated
+plainly rather than softened:
+
+- The heuristic order really is no better than chance — −0.192 and +0.080. That
+  half of `gd-26r.14` was right, and is now measured instead of asserted.
+- But the thing blocking buys is **+0.044 on fixture 1** — chance, after a
+  30–70s wait — and +0.335 on fixture 2. Blocking the TUI for a gain that is
+  reliably present on one of two changesets is a different trade than the one
+  `gd-26r.14` was ruled on.
+- And the sharpest ordering defect in the product is not group order at all:
+  **every test file preceded its production file**, on both arms, and a free
+  deterministic sort fixes it completely. `gd-26r.14` blocks startup for a
+  model call that does not address the failure a reader would notice first.
+
+Not reopened here. A bead is filed against `gd-26r.14` carrying these numbers;
+the ruling is the human's to revisit.
+
+## What this does not answer
+
+- **Two fixtures, again.** Every transfer failure in this document repeats in the
+  order numbers: the heuristics' order beats `dirname` on one fixture and loses
+  on the other, `naming-only` is strong on one and inert on the other.
+- **Whether refine can order files within a group.** Not measured, and currently
+  not measurable: `apply` rebuilds the partition from a path-keyed map, so any
+  within-group order the model returned is discarded before scoring. That is why
+  rules 12–14 are kept out of the prompt and why `tau_within` is unbiased. Making
+  the answer format carry file order is a change to the refine round-trip, not to
+  this harness.
+- **Whether tau matches what a reader feels.** It scores pairs, and a reader
+  reads a list. A group misplaced by one position and a group misplaced by six
+  differ by a lot of pairs and possibly by very little annoyance.
+- **`central-first` and `mechanical-last`.** Written down, normative, unscored
+  because neither fixture exhibits them. A third fixture authored to the rule
+  would settle both; nothing here should be read as evidence for or against
+  either rule.
