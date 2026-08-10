@@ -1,25 +1,27 @@
-//! The heuristic passes on trial, and the resolver that turns their competing
-//! claims into the strict partition docs/GROUPING.md requires.
+//! The heuristic passes, and the resolver that turns their competing claims
+//! into the strict partition `docs/GROUPING.md` requires.
+//!
+//! Everything here is **name-keyed and unordered**: a pass knows only which
+//! files belong together and what to call the group. Opaque identity and
+//! reading order are put on by [`super::Grouping`], the one place a presented
+//! grouping is built.
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use super::RunnerUp;
 use super::changeset::{ChangeKind, ChangedFile, Changeset};
-use super::score::{Partition, f1, free_name};
 
-/// Where a file ended up, which pass put it there, and — on close calls only —
-/// the group it nearly went to instead. Derived state, recomputed per regroup.
+/// A pass's claim on a file: the group name it filed the file under, which pass
+/// filed it, and — on close calls only — the group it nearly went to instead.
+///
+/// Derived state, recomputed on every regroup. `pass` and `runner_up` are
+/// debug-only and never persisted (`docs/GROUPS_CONTRACT.md`).
 #[derive(Debug, Clone)]
-pub struct Assignment {
+pub struct PassClaim {
     pub path: String,
     pub group: String,
     pub pass: &'static str,
     pub runner_up: Option<RunnerUp>,
-}
-
-#[derive(Debug, Clone)]
-pub struct RunnerUp {
-    pub group: String,
-    pub reason: String,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -59,36 +61,6 @@ impl Default for GroupingConfig {
     }
 }
 
-#[derive(Debug, Clone)]
-pub struct Grouping {
-    pub assignments: Vec<Assignment>,
-}
-
-impl Grouping {
-    pub fn partition(&self) -> Partition {
-        Partition::from_assignments(
-            self.assignments
-                .iter()
-                .map(|a| (a.path.clone(), a.group.clone())),
-        )
-    }
-
-    pub fn pass_hits(&self) -> BTreeMap<&'static str, usize> {
-        let mut hits = BTreeMap::new();
-        for assignment in &self.assignments {
-            *hits.entry(assignment.pass).or_default() += 1;
-        }
-        hits
-    }
-
-    pub fn close_calls(&self) -> Vec<&Assignment> {
-        self.assignments
-            .iter()
-            .filter(|a| a.runner_up.is_some())
-            .collect()
-    }
-}
-
 /// CI wiring, which reads as one concern however it is scattered. Deliberately
 /// *only* directories: the filename list this pass used to carry (`package.json`,
 /// `Cargo.toml`, …) was guarded to the repo root, so it was dead in the monorepo
@@ -98,9 +70,13 @@ impl Grouping {
 /// group. Nested build config is left to token and directory evidence.
 const CONFIG_DIRS: &[&str] = &[".github/", ".circleci/", ".husky/"];
 
-pub fn group(changeset: &Changeset, config: GroupingConfig) -> Grouping {
+/// Every file of the changeset filed under exactly one group name.
+///
+/// Total by construction: `directory_fallback_pass` claims unconditionally, so
+/// nothing survives it unassigned (`docs/TOTAL_COVERAGE.md`).
+pub fn assign(changeset: &Changeset, config: GroupingConfig) -> Vec<PassClaim> {
     let files: Vec<&ChangedFile> = changeset.files.iter().collect();
-    let mut assigned: BTreeMap<&str, Assignment> = BTreeMap::new();
+    let mut assigned: BTreeMap<&str, PassClaim> = BTreeMap::new();
 
     // Pass order is priority order: the earlier pass keeps a contested file.
     mechanical_pass(&files, &mut assigned);
@@ -116,20 +92,18 @@ pub fn group(changeset: &Changeset, config: GroupingConfig) -> Grouping {
     // satisfied by construction. See `a_rename_is_one_file_in_the_changeset`.
     directory_fallback_pass(&files, &mut assigned);
 
-    Grouping {
-        assignments: assigned.into_values().collect(),
-    }
+    assigned.into_values().collect()
 }
 
 fn claim<'a>(
-    assigned: &mut BTreeMap<&'a str, Assignment>,
+    assigned: &mut BTreeMap<&'a str, PassClaim>,
     file: &'a ChangedFile,
     group: &str,
     pass: &'static str,
 ) {
     assigned
         .entry(file.path.as_str())
-        .or_insert_with(|| Assignment {
+        .or_insert_with(|| PassClaim {
             path: file.path.clone(),
             group: group.to_string(),
             pass,
@@ -137,7 +111,7 @@ fn claim<'a>(
         });
 }
 
-fn mechanical_pass<'a>(files: &[&'a ChangedFile], assigned: &mut BTreeMap<&'a str, Assignment>) {
+fn mechanical_pass<'a>(files: &[&'a ChangedFile], assigned: &mut BTreeMap<&'a str, PassClaim>) {
     for file in files {
         if file.is_mechanical() {
             claim(assigned, file, "mechanical", "mechanical");
@@ -145,7 +119,7 @@ fn mechanical_pass<'a>(files: &[&'a ChangedFile], assigned: &mut BTreeMap<&'a st
     }
 }
 
-fn config_ci_pass<'a>(files: &[&'a ChangedFile], assigned: &mut BTreeMap<&'a str, Assignment>) {
+fn config_ci_pass<'a>(files: &[&'a ChangedFile], assigned: &mut BTreeMap<&'a str, PassClaim>) {
     for file in files {
         if CONFIG_DIRS.iter().any(|dir| file.path.starts_with(dir)) {
             claim(assigned, file, "config-ci", "config-ci");
@@ -157,7 +131,7 @@ fn config_ci_pass<'a>(files: &[&'a ChangedFile], assigned: &mut BTreeMap<&'a str
 /// code it documents is left to the cluster pass (GROUPING.md rule 9).
 fn whole_change_docs_pass<'a>(
     files: &[&'a ChangedFile],
-    assigned: &mut BTreeMap<&'a str, Assignment>,
+    assigned: &mut BTreeMap<&'a str, PassClaim>,
 ) {
     for file in files {
         let is_markdown = file.file_name().ends_with(".md");
@@ -179,7 +153,7 @@ pub struct Cluster {
 fn token_cluster_pass<'a>(
     files: &[&'a ChangedFile],
     config: GroupingConfig,
-    assigned: &mut BTreeMap<&'a str, Assignment>,
+    assigned: &mut BTreeMap<&'a str, PassClaim>,
 ) -> Vec<Cluster> {
     let keys_per_file: Vec<BTreeSet<String>> = files
         .iter()
@@ -243,7 +217,12 @@ fn token_cluster_pass<'a>(
     formed
 }
 
-fn candidate_keys(file: &ChangedFile, config: GroupingConfig) -> BTreeSet<String> {
+/// The cluster keys a file carries: its name tokens, adjacent token pairs, and
+/// — when `use_dir_tokens` — its directory's tokens.
+///
+/// Public for the fixture harness's baselines, which must ask the same question
+/// of a file as the pass does or they are not baselines for this engine.
+pub fn candidate_keys(file: &ChangedFile, config: GroupingConfig) -> BTreeSet<String> {
     let tokens = file.name_tokens();
     let mut keys: BTreeSet<String> = tokens.iter().cloned().collect();
     for pair in tokens.windows(2) {
@@ -282,7 +261,7 @@ fn record_runners_up<'a>(
     files: &[&'a ChangedFile],
     keys_per_file: &[BTreeSet<String>],
     formed: &[Cluster],
-    assigned: &mut BTreeMap<&'a str, Assignment>,
+    assigned: &mut BTreeMap<&'a str, PassClaim>,
 ) {
     let scores: BTreeMap<&str, f64> = formed.iter().map(|c| (c.key.as_str(), c.score)).collect();
     for (index, keys) in keys_per_file.iter().enumerate() {
@@ -322,7 +301,7 @@ fn test_pairing_pass<'a>(
     files: &[&'a ChangedFile],
     config: GroupingConfig,
     clusters: &[Cluster],
-    assigned: &mut BTreeMap<&'a str, Assignment>,
+    assigned: &mut BTreeMap<&'a str, PassClaim>,
 ) {
     let cluster_scores: BTreeMap<&str, f64> =
         clusters.iter().map(|c| (c.key.as_str(), c.score)).collect();
@@ -393,7 +372,7 @@ fn production_partner<'a>(
 fn absorb_leftovers_pass<'a>(
     files: &[&'a ChangedFile],
     config: GroupingConfig,
-    assigned: &mut BTreeMap<&'a str, Assignment>,
+    assigned: &mut BTreeMap<&'a str, PassClaim>,
 ) {
     let placed: Vec<(&ChangedFile, String)> = files
         .iter()
@@ -435,7 +414,7 @@ fn absorb_leftovers_pass<'a>(
     for (file, group, runner_up) in absorbed {
         assigned.insert(
             file.path.as_str(),
-            Assignment {
+            PassClaim {
                 path: file.path.clone(),
                 group,
                 pass: "absorb",
@@ -447,7 +426,11 @@ fn absorb_leftovers_pass<'a>(
 
 /// Shared filename tokens, with directory proximity as a weaker tiebreaker —
 /// enough to place a stray, never enough to outvote a token cluster.
-fn similarity(file: &ChangedFile, other: &ChangedFile) -> f64 {
+///
+/// Public for the same reason as [`candidate_keys`]: the agglomerative baseline
+/// clusters over this exact similarity, which is what makes it a control for
+/// the greedy pass rather than a different experiment.
+pub fn similarity(file: &ChangedFile, other: &ChangedFile) -> f64 {
     let own: BTreeSet<String> = file.name_tokens().into_iter().collect();
     let theirs: BTreeSet<String> = other.name_tokens().into_iter().collect();
     let shared = own.intersection(&theirs).count() as f64;
@@ -465,163 +448,10 @@ fn similarity(file: &ChangedFile, other: &ChangedFile) -> f64 {
 /// smell, so the report counts what lands here.
 fn directory_fallback_pass<'a>(
     files: &[&'a ChangedFile],
-    assigned: &mut BTreeMap<&'a str, Assignment>,
+    assigned: &mut BTreeMap<&'a str, PassClaim>,
 ) {
     for file in files {
         let group = format!("dir:{}", file.dir());
         claim(assigned, file, &group, "directory-fallback");
-    }
-}
-
-/// An alternative to greedy token clustering, run to tell "this pass is weak"
-/// apart from "paths alone cannot do better": average-linkage agglomerative
-/// clustering over the same token similarity, merged down to `target_groups`.
-pub fn agglomerative_grouping(changeset: &Changeset, target_groups: usize) -> Partition {
-    let files: Vec<&ChangedFile> = changeset.files.iter().collect();
-    let mut clusters: Vec<Vec<usize>> = (0..files.len()).map(|i| vec![i]).collect();
-    let matrix: Vec<Vec<f64>> = files
-        .iter()
-        .map(|file| files.iter().map(|other| similarity(file, other)).collect())
-        .collect();
-
-    while clusters.len() > target_groups {
-        let mut best: Option<(usize, usize, f64)> = None;
-        for a in 0..clusters.len() {
-            for b in (a + 1)..clusters.len() {
-                let linkage = average_linkage(&matrix, &clusters[a], &clusters[b]);
-                if best.is_none_or(|(_, _, score)| linkage > score) {
-                    best = Some((a, b, linkage));
-                }
-            }
-        }
-        let Some((a, b, score)) = best else { break };
-        if score <= 0.0 {
-            break;
-        }
-        let merged = clusters.remove(b);
-        clusters[a].extend(merged);
-    }
-
-    // `Partition` buckets by name, so two clusters that derive the same name
-    // would be unioned and the result would quietly be smaller than the
-    // baseline the caller asked for. Colliding names are suffixed instead.
-    let mut assignments = Vec::new();
-    let mut used: BTreeSet<String> = BTreeSet::new();
-    for members in &clusters {
-        let name = free_name(&derive_group_name(&files, members), &used);
-        used.insert(name.clone());
-        assignments.extend(
-            members
-                .iter()
-                .map(|&i| (files[i].path.clone(), name.clone())),
-        );
-    }
-    Partition::from_assignments(assignments)
-}
-
-fn average_linkage(matrix: &[Vec<f64>], left: &[usize], right: &[usize]) -> f64 {
-    let total: f64 = left
-        .iter()
-        .map(|&a| right.iter().map(|&b| matrix[a][b]).sum::<f64>())
-        .sum();
-    total / (left.len() * right.len()) as f64
-}
-
-/// For each expected group, the single filename token that best reproduces it.
-/// Answers which of the human's groups a token pass could ever find at all.
-pub fn best_key_per_expected_group(
-    changeset: &Changeset,
-    expected: &Partition,
-    config: GroupingConfig,
-) -> Vec<(String, String, f64, usize)> {
-    let files: Vec<&ChangedFile> = changeset.files.iter().collect();
-    let mut carriers: BTreeMap<String, BTreeSet<&str>> = BTreeMap::new();
-    for file in &files {
-        for key in candidate_keys(file, config) {
-            carriers.entry(key).or_default().insert(file.path.as_str());
-        }
-    }
-
-    expected
-        .groups
-        .iter()
-        .map(|(name, members)| {
-            let members: BTreeSet<&str> = members.iter().map(String::as_str).collect();
-            let best = carriers
-                .iter()
-                .map(|(key, holders)| {
-                    let hits = holders.intersection(&members).count() as f64;
-                    let precision = hits / holders.len() as f64;
-                    let recall = hits / members.len() as f64;
-                    (key.clone(), f1(precision, recall))
-                })
-                .max_by(|a, b| a.1.partial_cmp(&b.1).unwrap())
-                .unwrap_or_default();
-            (name.clone(), best.0, best.1, members.len())
-        })
-        .collect()
-}
-
-/// GROUPING.md rule 10 wants the changeset's own vocabulary: the token most
-/// members share, preferring the longer one on a tie.
-pub fn derive_group_name(files: &[&ChangedFile], members: &[usize]) -> String {
-    let mut frequency: BTreeMap<String, usize> = BTreeMap::new();
-    for &index in members {
-        let tokens = files[index].name_tokens();
-        for token in tokens.iter().collect::<BTreeSet<_>>() {
-            *frequency.entry(token.clone()).or_default() += 1;
-        }
-        for pair in tokens.windows(2) {
-            *frequency
-                .entry(format!("{}-{}", pair[0], pair[1]))
-                .or_default() += 1;
-        }
-    }
-    frequency
-        .into_iter()
-        .max_by(|a, b| a.1.cmp(&b.1).then(a.0.len().cmp(&b.0.len())))
-        .map(|(token, _)| token)
-        .unwrap_or_else(|| "unnamed".to_string())
-}
-
-pub mod baseline {
-    use super::*;
-
-    pub fn all_one_group(changeset: &Changeset) -> Partition {
-        Partition::from_assignments(
-            changeset
-                .files
-                .iter()
-                .map(|f| (f.path.clone(), "all".to_string())),
-        )
-    }
-
-    pub fn one_file_per_group(changeset: &Changeset) -> Partition {
-        Partition::from_assignments(
-            changeset
-                .files
-                .iter()
-                .map(|f| (f.path.clone(), f.path.clone())),
-        )
-    }
-
-    pub fn top_level_directory(changeset: &Changeset) -> Partition {
-        Partition::from_assignments(
-            changeset
-                .files
-                .iter()
-                .map(|f| (f.path.clone(), f.top_level_dir().to_string())),
-        )
-    }
-
-    /// Not required by the README, but reported because on this changeset the
-    /// top-level cut is only two buckets and behaves like all-one-group.
-    pub fn parent_directory(changeset: &Changeset) -> Partition {
-        Partition::from_assignments(
-            changeset
-                .files
-                .iter()
-                .map(|f| (f.path.clone(), f.dir().to_string())),
-        )
     }
 }

@@ -52,14 +52,27 @@
 //!
 //! `tau_within` is not biased that way: the refine prompt says nothing about
 //! within-group file order, so both arms are unprompted there.
+//!
+//! # Where the sort went
+//!
+//! The within-group sort this metric grades is **engine code** and lives in
+//! `tuicr::grouping::order` (`gd-26r.27`, moved by `gd-26r.28`). What is left
+//! here is measurement: the rule constraints, the tau split, and the [`Ordered`]
+//! wrapper that puts a name-keyed [`Partition`] into a reading order so the two
+//! can be compared. [`Ordered::heuristic`] and [`Ordered::refined`] delegate to
+//! the engine's sort rather than reimplementing it, so a computed arm is scored
+//! on exactly the order a reader would see.
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use super::changeset::{ChangedFile, Changeset};
-use super::score::Partition;
+use tuicr::grouping::changeset::{ChangedFile, Changeset};
+use tuicr::grouping::order::{self, central_file, covers};
 
-/// Prefix of the directory-fallback groups `gd-26r.12` Decision 3 pins last.
-const FALLBACK_PREFIX: &str = "dir:";
+/// Re-exported so the harness names one order module: the sort and its knob are
+/// the engine's, only the grading below is test code.
+pub use tuicr::grouping::order::CentralFirst;
+
+use super::score::Partition;
 
 #[derive(Debug, Clone)]
 pub struct OrderScore {
@@ -90,24 +103,6 @@ impl OrderScore {
     }
 }
 
-/// Whether the sort applies rule 13 — the group's central file leads it.
-///
-/// A knob rather than a constant because rule 13 is the one within-group rule
-/// both fixtures' own file order *contradicts* (`tau` −0.25 and −0.29 against
-/// themselves), so the measurement can price it but not settle it: on both
-/// fixtures it is worth nothing and costs nothing. `gd-26r.27` ruled it **on**
-/// anyway, because `GROUPING.md` rule 13 is normative and a sort that
-/// implements the measurable subset of a written spec is a sort nobody can read
-/// the spec to check. See `docs/GROUPING_PASSES.md`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CentralFirst {
-    /// Kept to price rule 13, which is otherwise invisible: both fixtures score
-    /// the same with it and without it.
-    Off,
-    /// What ships.
-    On,
-}
-
 /// A grouping's groups in reading order. Held separately from [`Partition`] so
 /// the pairwise scorer stays order-blind and its published numbers stay
 /// comparable across this change.
@@ -131,20 +126,9 @@ impl Ordered {
         Self { partition, order }
     }
 
-    /// `gd-26r.12` Decision 3's group order: concern groups by member count
-    /// descending, `dir:` fallback groups pinned last as a class and
-    /// size-descending among themselves. Name breaks size ties so the order is
-    /// total and reproducible.
+    /// `gd-26r.12` Decision 3's group order, from the engine.
     pub fn heuristic_order(partition: &Partition) -> Vec<String> {
-        let mut names: Vec<&String> = partition.groups.keys().collect();
-        names.sort_by_key(|name| {
-            (
-                name.starts_with(FALLBACK_PREFIX),
-                std::cmp::Reverse(partition.groups[*name].len()),
-                name.as_str(),
-            )
-        });
-        names.into_iter().cloned().collect()
+        order::heuristic_group_order(&partition.groups)
     }
 
     /// What the heuristic arm ships: Decision 3's group order, plus the
@@ -166,67 +150,19 @@ impl Ordered {
     }
 
     /// The same groups and the same reading order, with each group's files
-    /// re-sorted to satisfy the within-group rules.
-    ///
-    /// This is a **pure sort over paths the engine already holds**: no model
-    /// call, no token similarity, nothing nondeterministic. It exists because
-    /// the measurement showed both arms breaking rule 4 on every pair — both
-    /// build their groups from a path-keyed map, and `x.test.ts` sorts before
-    /// `x.ts`, so a plain path sort puts every test ahead of the code it covers.
+    /// re-sorted by the engine to satisfy the within-group rules.
     pub fn sorted_within_groups(self, changeset: &Changeset) -> Self {
         self.sorted_within_groups_with(changeset, CentralFirst::On)
     }
 
-    /// Key, outermost first:
-    ///
-    /// 1. the central file, when rule 13 is on (`GROUPING.md` rule 13);
-    /// 2. mechanical stragglers last (rule 14);
-    /// 3. broad tests after everything narrower (rule 12) — a group-wide band,
-    ///    not a per-file adjustment, because the rule says integration and
-    ///    end-to-end tests follow *the* unit tests, not their own;
-    /// 4. directory, then stem — which is what puts a production file and its
-    ///    test adjacent, since `stem` strips the test marker;
-    /// 5. production before test (rule 4);
-    /// 6. path, for a total and stable order where no rule speaks.
     pub fn sorted_within_groups_with(
         mut self,
         changeset: &Changeset,
         central_first: CentralFirst,
     ) -> Self {
-        let by_path: BTreeMap<&str, &ChangedFile> = changeset
-            .files
-            .iter()
-            .map(|file| (file.path.as_str(), file))
-            .collect();
+        let by_path = order::files_by_path(changeset);
         for (name, members) in &mut self.partition.groups {
-            let files: Vec<&ChangedFile> = members
-                .iter()
-                .filter_map(|path| by_path.get(path.as_str()).copied())
-                .collect();
-            let central = match central_first {
-                CentralFirst::On => central_file(name, &files).map(|file| file.path.clone()),
-                CentralFirst::Off => None,
-            };
-            members.sort_by_key(|path| match by_path.get(path.as_str()) {
-                Some(file) => (
-                    central.as_deref() != Some(path.as_str()),
-                    file.is_mechanical(),
-                    file.is_broad_test(),
-                    file.dir().to_string(),
-                    file.stem(),
-                    file.is_test(),
-                    path.clone(),
-                ),
-                None => (
-                    true,
-                    false,
-                    false,
-                    String::new(),
-                    String::new(),
-                    false,
-                    path.clone(),
-                ),
-            });
+            order::sort_group_files(name, members, &by_path, central_first);
         }
         self
     }
@@ -375,50 +311,6 @@ pub fn within_group_constraints<'a>(
         }
     }
     constraints.into_iter().collect()
-}
-
-/// Whether `test` is plausibly the test *of* `production`: same directory, or a
-/// `__tests__` directory directly beneath it. Callers have already matched the
-/// stems; this is the locality half of "its production file".
-fn covers(production: &ChangedFile, test: &ChangedFile) -> bool {
-    let home = production.dir();
-    test.dir() == home || test.dir() == format!("{home}/__tests__")
-}
-
-/// The file a group is named for: the production, non-mechanical member sharing
-/// the most name tokens with the group name.
-///
-/// Requires a **unique** maximum and at least one shared token. A group whose
-/// name matches two members equally well, or none, constrains nothing — the
-/// conservative reading, because a wrong central file would invert every pair
-/// in the group at once.
-fn central_file<'a>(name: &str, files: &[&'a ChangedFile]) -> Option<&'a ChangedFile> {
-    let wanted: BTreeSet<String> = name
-        .split(['-', '_', '/', ':', ' '])
-        .filter(|token| token.len() > 1)
-        .map(str::to_ascii_lowercase)
-        .collect();
-    if wanted.is_empty() {
-        return None;
-    }
-
-    let scored: Vec<(usize, &ChangedFile)> = files
-        .iter()
-        .filter(|file| !file.is_test() && !file.is_mechanical())
-        .map(|file| {
-            let tokens: BTreeSet<String> = file.name_tokens().into_iter().collect();
-            (tokens.intersection(&wanted).count(), *file)
-        })
-        .filter(|(shared, _)| *shared > 0)
-        .collect();
-
-    let best = scored.iter().map(|(shared, _)| *shared).max()?;
-    let mut winners = scored.iter().filter(|(shared, _)| *shared == best);
-    let (_, winner) = winners.next()?;
-    match winners.next() {
-        Some(_) => None,
-        None => Some(winner),
-    }
 }
 
 /// Kendall's tau of `computed` against `expected`, split into the group-order
