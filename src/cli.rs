@@ -695,6 +695,42 @@ mod tests {
     }
 
     #[test]
+    fn should_parse_no_grouping_flag() {
+        let parsed = parse_for_test(&["tuicr", "--no-grouping"]).expect("parse should succeed");
+        assert!(parsed.no_grouping);
+    }
+
+    #[test]
+    fn should_leave_no_grouping_off_by_default() {
+        let parsed = parse_for_test(&["tuicr"]).expect("parse should succeed");
+        assert!(
+            !parsed.no_grouping,
+            "grouping is on unless it is turned off"
+        );
+    }
+
+    #[test]
+    fn should_carry_no_grouping_through_the_tui_subcommand() {
+        let parsed =
+            parse_for_test(&["tuicr", "--no-grouping", "tui", "-w"]).expect("parse should succeed");
+        assert!(parsed.no_grouping, "the root flag survives the merge");
+        assert!(parsed.working_tree);
+
+        let parsed =
+            parse_for_test(&["tuicr", "tui", "--no-grouping"]).expect("parse should succeed");
+        assert!(parsed.no_grouping, "and so does the subcommand's own");
+    }
+
+    /// `--no-grouping` is a TUI option like any other, so it is the thing that
+    /// makes `tuicr --no-grouping review list` a conflict rather than a run.
+    #[test]
+    fn should_reject_no_grouping_combined_with_a_non_tui_command() {
+        let err = parse_for_test(&["tuicr", "--no-grouping", "review", "list"])
+            .expect_err("parse should fail");
+        assert_eq!(err.kind(), ErrorKind::ArgumentConflict);
+    }
+
+    #[test]
     fn should_parse_stdout_flag() {
         let parsed = parse_for_test(&["tuicr", "--stdout"]).expect("parse should succeed");
         assert!(parsed.output_to_stdout);

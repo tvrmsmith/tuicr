@@ -9,8 +9,9 @@ engine, because there is no grouping engine in `src/` yet — the passes live in
 `tests/grouping/` as a scored prototype.
 
 Assumed, settled elsewhere: grouping is file-level with a **strict partition**
-(`gd-26r.5`); groups are collapsible top-level sidebar nodes with directory
-nodes scoped inside (`gd-26r.7`, `docs/SIDEBAR_MODEL.md`); grouping is a
+(`gd-26r.5`); groups are collapsible top-level sidebar nodes whose
+members are listed directly beneath them, with no directory rows inside a
+group (`gd-26r.7`, `gd-26r.31`, `docs/SIDEBAR_MODEL.md`); grouping is a
 persisted session artefact keyed by a stable opaque `group_id`, incremental
 assignment is heuristics-only and never moves an unchanged file (`gd-26r.8`,
 `docs/REGROUPING_STATE.md`); refine blocks the TUI at startup, is cancellable,

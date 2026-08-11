@@ -26,6 +26,14 @@ visible rows (full terminal height).
 The thing being judged is the real task: scanning a 100–400 file review and
 knowing where you are.
 
+The mockups are indicative of the shape, not cell-exact. They draw a grouped
+file row as 4 cells of chrome — two of indent and the `▢ ` checkbox — but the
+shipped row also carries the `M `/`A `/`D ` status badge, so it spends 6. At
+the mockup's 38-cell inner width the real path budget is therefore 32, not 34,
+and the middle elision splits it 11/20 around the ellipsis rather than 11/22.
+Read the mockup rows for their proportions; `src/ui/file_list.rs` is where the
+cells are counted.
+
 ## Decision
 
 **Groups are collapsible top-level nodes in the one sidebar.** A group is the

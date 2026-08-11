@@ -118,13 +118,22 @@ pub(super) fn render_file_list(frame: &mut Frame, app: &mut App, area: Rect) {
                     };
                     let count = group_count(*reviewed, *total);
                     // The count is flush right, which is what makes the
-                    // collapsed overview scannable as a column of sizes.
-                    let gap = (inner.width as usize)
-                        .saturating_sub(2 + label.width() + count.width())
+                    // collapsed overview scannable as a column of sizes, so a
+                    // name too wide for the panel gives way to it rather than
+                    // pushing it past the right edge. Panning is left alone
+                    // for the same reason it is on file rows.
+                    let inner_width = inner.width as usize;
+                    let name = if scroll_x == 0 {
+                        elide_middle(label, inner_width.saturating_sub(3 + count.width()))
+                    } else {
+                        label.clone()
+                    };
+                    let gap = inner_width
+                        .saturating_sub(2 + name.width() + count.width())
                         .max(1);
                     Line::from(vec![
                         Span::styled(format!("{icon} "), styles::dir_icon_style(&app.theme)),
-                        Span::raw(label.clone()),
+                        Span::raw(name),
                         Span::raw(" ".repeat(gap)),
                         Span::styled(count, styles::dim_style(&app.theme)),
                     ])
@@ -233,10 +242,10 @@ pub(super) fn render_file_list(frame: &mut Frame, app: &mut App, area: Rect) {
 
 /// Drop the middle of `label` so it fits in `max_width` cells, marking the cut
 /// with `…`. Two thirds of the budget go to the tail and the remainder to the
-/// head, which is the split mockup A is drawn at (`docs/SIDEBAR_MODEL.md`): the
-/// tail carries the file name and the head still says which part of the tree
-/// the row came from. Widths are display cells, not characters, so a fullwidth
-/// segment is measured the way the panel renders it.
+/// head, which is the 1:2 split mockup A is drawn at (`docs/SIDEBAR_MODEL.md`):
+/// the tail carries the file name and the head still says which part of the
+/// tree the row came from. Widths are display cells, not characters, so a
+/// fullwidth segment is measured the way the panel renders it.
 fn elide_middle(label: &str, max_width: usize) -> String {
     if label.width() <= max_width {
         return label.to_string();
@@ -340,7 +349,11 @@ mod tests {
     //! Render checks for the filter status/prompt line in the file tree's
     //! bottom border, driven through the real `ui::render`.
     use super::elide_middle;
-    use crate::app::{App, DiffSource, FileTreePrompt, FocusedPanel, InputMode};
+    use crate::app::{
+        App, DiffSource, FileTreeItem, FileTreeMode, FileTreePrompt, FocusedPanel, InputMode,
+    };
+    use crate::grouping::changeset::Changeset;
+    use crate::grouping::{GroupId, GroupSource, Grouping, PresentedGroup};
     use crate::model::{DiffFile, DiffLine, FileStatus, ReviewSession, SessionDiffSource};
     use crate::vcs::traits::{VcsBackend, VcsInfo, VcsType};
     use ratatui::Terminal;
@@ -426,8 +439,86 @@ mod tests {
         app
     }
 
+    /// Everything above, plus a grouping recorded on the session so the group
+    /// name is the record's rather than whatever the heuristics derive — the
+    /// same route a refined grouping takes back out of a session file.
+    fn app_with_group_named(name: &str, paths: &[&str]) -> App {
+        let vcs_info = VcsInfo {
+            root_path: PathBuf::from("/tmp"),
+            head_commit: "head".into(),
+            branch_name: Some("main".into()),
+            vcs_type: VcsType::Git,
+        };
+        let files: Vec<DiffFile> = paths.iter().map(|p| file(p)).collect();
+        let mut session = ReviewSession::new(
+            vcs_info.root_path.clone(),
+            vcs_info.head_commit.clone(),
+            vcs_info.branch_name.clone(),
+            SessionDiffSource::WorkingTree,
+        );
+        for file in &files {
+            session.add_file(file.display_path().clone(), file.status, file.content_hash);
+        }
+        session.record_grouping(&Grouping::restore(
+            &Changeset::from_diff_files(&files),
+            vec![PresentedGroup {
+                id: GroupId::new(),
+                name: name.to_string(),
+                source: GroupSource::Heuristics,
+                new_since_full_pass: false,
+                members: paths.iter().map(|p| (*p).to_string()).collect(),
+            }],
+        ));
+
+        let mut app = App::build(
+            Box::new(StubVcs(vcs_info.clone())),
+            vcs_info,
+            crate::theme::Theme::dark(),
+            None,
+            false,
+            files,
+            session,
+            DiffSource::WorkingTree,
+            InputMode::Normal,
+            Vec::new(),
+            None,
+            None,
+        )
+        .expect("build app");
+        app.show_file_list = true;
+        app.focused_panel = FocusedPanel::FileList;
+        app.enable_grouping();
+        app.expand_all_dirs();
+        assert_eq!(
+            group_row(&app).0,
+            name,
+            "the session restored the record's grouping, not a heuristic one"
+        );
+        app
+    }
+
+    /// The first group row's name and its `reviewed/total` badge.
+    fn group_row(app: &App) -> (String, String) {
+        app.build_visible_items()
+            .iter()
+            .find_map(|item| match item {
+                FileTreeItem::Group {
+                    label,
+                    reviewed,
+                    total,
+                    ..
+                } => Some((label.clone(), super::group_count(*reviewed, *total))),
+                _ => None,
+            })
+            .expect("a group row")
+    }
+
     fn draw(app: &mut App) -> Buffer {
-        let backend = TestBackend::new(120, 24);
+        draw_at(app, 120)
+    }
+
+    fn draw_at(app: &mut App, width: u16) -> Buffer {
+        let backend = TestBackend::new(width, 24);
         let mut terminal = Terminal::new(backend).unwrap();
         terminal
             .draw(|frame| crate::ui::render(frame, app))
@@ -490,28 +581,44 @@ mod tests {
         );
     }
 
-    /// Mockup A's own rows (`docs/SIDEBAR_MODEL.md`): 38 inner cells less 4 of
-    /// chrome leaves 34, drawn as an 11-cell head, the ellipsis, and a 22-cell
-    /// tail.
+    /// Mockup A's own rows (`docs/SIDEBAR_MODEL.md`) drawn through the
+    /// renderer at the mockup's 38-cell inner width. The mockups omit the
+    /// M/A/D badge, so a shipped grouped row spends 6 cells of chrome rather
+    /// than the 4 they draw: 32 cells of path, split as an 11-cell head, the
+    /// ellipsis and a 20-cell tail.
     #[test]
-    fn should_split_the_mockup_rows_the_way_the_record_draws_them() {
-        assert_eq!(
-            elide_middle("src/main/github/github-enterprise-repository.ts", 34),
-            "src/main/gi\u{2026}terprise-repository.ts"
-        );
-        assert_eq!(
-            elide_middle(
+    fn should_split_the_mockup_rows_the_way_the_renderer_draws_them() {
+        let mut app = app_with_group_named(
+            "enterprise-host-routing",
+            &[
+                "src/main/github/github-enterprise-repository.ts",
                 "mobile/src/tasks/github-project-host-routing-source.test.ts",
-                34
-            ),
-            "mobile/src/\u{2026}routing-source.test.ts"
+            ],
+        );
+
+        // 20% of 200 columns is a 40-cell panel, so 38 inside its border.
+        let buffer = draw_at(&mut app, 200);
+        let text = sidebar_text(&app, &buffer);
+
+        assert_eq!(
+            app.file_list_inner_area.map(|inner| inner.width),
+            Some(38),
+            "this test only measures mockup A if the panel is the mockup's width"
+        );
+        assert!(
+            text.contains("src/main/gi\u{2026}rprise-repository.ts"),
+            "expected mockup A's first row, got:\n{text}"
+        );
+        assert!(
+            text.contains("mobile/src/\u{2026}uting-source.test.ts"),
+            "expected mockup A's second row, got:\n{text}"
         );
     }
 
     #[test]
     fn should_measure_a_fullwidth_path_in_cells_not_characters() {
-        // Ten characters, twenty cells: measured as characters this fits in a
-        // 16-cell row and is handed to ratatui to clip.
+        // Fourteen characters, twenty-three cells: measured as characters this
+        // fits in a 16-cell row and is handed to ratatui to clip.
         let label = "日本語/設定/読み込み.rs";
 
         let elided = elide_middle(label, 16);
@@ -538,6 +645,83 @@ mod tests {
         assert!(
             text.contains("src/main/generate"),
             "panning asks for the whole path, not an elided one, got:\n{text}"
+        );
+    }
+
+    /// Elision is the grouped sidebar's answer to full paths. The ungrouped
+    /// tree under `Flat` draws the same full paths and does *not* elide them:
+    /// it has horizontal panning and a directory tree to fall back on.
+    #[test]
+    fn should_leave_an_ungrouped_flat_path_unelided() {
+        let mut app = app_with(&["src/main/generated/api/v2/repo.ts"]);
+        app.file_tree_mode = FileTreeMode::Flat;
+        app.expand_all_dirs();
+
+        let buffer = draw(&mut app);
+        let text = sidebar_text(&app, &buffer);
+
+        assert!(
+            !text.contains('\u{2026}'),
+            "the ungrouped tree clips rather than elides, got:\n{text}"
+        );
+    }
+
+    /// A name too wide for the panel must not push the count off the row: the
+    /// flush-right `reviewed/total` is what makes the collapsed overview
+    /// scannable as a column of sizes.
+    #[test]
+    fn should_keep_a_group_count_on_the_row_when_the_name_is_too_wide() {
+        let mut app = app_with_group_named(
+            "enterprise-host-routing",
+            &["src/main/github/host.ts", "src/main/github/routing.ts"],
+        );
+
+        // 22 inner cells: a 23-cell name and a 3-cell count cannot both fit.
+        let buffer = draw(&mut app);
+        let text = sidebar_text(&app, &buffer);
+
+        let (name, count) = group_row(&app);
+        assert!(
+            name.width() + count.width() > 22,
+            "this test only bites if the name would otherwise clip the count"
+        );
+        assert!(
+            text.contains("enter\u{2026}st-routing 0/2"),
+            "expected the name to give way to the count, got:\n{text}"
+        );
+    }
+
+    #[test]
+    fn should_draw_a_group_row_collapsed_and_expanded() {
+        let mut app = app_with_group_named("host-routing", &["src/host.ts", "src/routing.ts"]);
+
+        let buffer = draw(&mut app);
+        let expanded = sidebar_text(&app, &buffer);
+
+        assert!(
+            expanded.contains("\u{25bc} host-routing"),
+            "an expanded group is drawn with the open glyph, got:\n{expanded}"
+        );
+        assert!(
+            expanded.contains("host-routing     0/2"),
+            "the count is flush right against the panel edge, got:\n{expanded}"
+        );
+        assert!(
+            expanded.contains("src/host.ts"),
+            "an expanded group lists its members, got:\n{expanded}"
+        );
+
+        app.collapse_all_dirs();
+        let buffer = draw(&mut app);
+        let collapsed = sidebar_text(&app, &buffer);
+
+        assert!(
+            collapsed.contains("\u{25b6} host-routing     0/2"),
+            "a collapsed group keeps its count, got:\n{collapsed}"
+        );
+        assert!(
+            !collapsed.contains("src/host.ts"),
+            "a collapsed group emits no rows below it, got:\n{collapsed}"
         );
     }
 

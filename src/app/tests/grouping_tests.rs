@@ -593,6 +593,50 @@ fn a_group_whose_every_file_the_filter_hides_loses_its_row() {
     );
 }
 
+/// A filter that hides *part* of a group leaves the row, and the row's count
+/// has to be of what it is actually showing — a count taken from the grouping
+/// instead of the filtered rows would still read `0/3` under a filter hiding
+/// two of the three.
+#[test]
+fn a_partly_filtered_group_counts_only_the_rows_it_still_shows() {
+    let mut app = grouped_paths(PATHS);
+    let (name, members) = {
+        let grouping = app.grouping.as_ref().expect("grouping computed");
+        let group = grouping
+            .groups()
+            .iter()
+            .find(|group| grouping.files_in(&group.id).count() > 1)
+            .expect("a group with more than one member");
+        let members: Vec<String> = grouping
+            .files_in(&group.id)
+            .map(|path| path.to_string_lossy().to_string())
+            .collect();
+        (group.name.clone(), members)
+    };
+    let total_before = members.len();
+
+    exclude(&mut app, &format!("^{}$", regex::escape(&members[0])));
+
+    let row = group_rows(&app)
+        .into_iter()
+        .find(|row| row.0 == name)
+        .expect("the group keeps its row while any member survives");
+    assert_eq!(
+        (row.1, row.2),
+        (0, total_before - 1),
+        "the row counts the files it shows, not the files the grouping holds"
+    );
+    let shown = visible_files(&app);
+    assert!(
+        !shown.contains(&members[0]),
+        "the excluded member is gone, got {shown:?}"
+    );
+    assert!(
+        shown.contains(&members[1]),
+        "and its siblings are not, got {shown:?}"
+    );
+}
+
 #[test]
 fn the_commit_message_row_obeys_the_filter_like_any_other() {
     let mut app = grouped_paths_with_commit_message(PATHS);
@@ -715,4 +759,90 @@ fn a_session_saved_before_grouping_existed_still_parses() {
             .all(|review| review.group_id.is_none()),
         "no group is invented for a session that never had one"
     );
+}
+
+/// Enter on a group row folds it, the same key that folds a directory row in
+/// the ungrouped tree.
+#[test]
+fn enter_on_a_group_row_collapses_it() {
+    let mut app = grouped_paths(PATHS);
+    let (idx, id) = first_group_row(&app);
+    let members = files_under(&app, &id);
+    app.file_list_state.select(idx);
+
+    crate::handler::handle_file_list_action(
+        &mut app,
+        crate::input::keybindings::Action::SelectFile,
+    );
+
+    let shown = visible_files(&app);
+    assert!(
+        members.iter().all(|path| !shown.contains(path)),
+        "the group's files went away with the fold, got {shown:?}"
+    );
+    assert!(
+        group_ids(&app).contains(&id),
+        "the group keeps its own row, got {:?}",
+        group_ids(&app)
+    );
+}
+
+/// And a left click on the row does the same thing, through the real mouse
+/// entry point rather than the click handler directly.
+#[test]
+fn a_left_click_on_a_group_row_collapses_it() {
+    let mut app = grouped_paths(PATHS);
+    let (idx, id) = first_group_row(&app);
+    let members = files_under(&app, &id);
+    let area = ratatui::layout::Rect::new(0, 0, 40, 20);
+    app.file_list_area = Some(area);
+    app.file_list_inner_area = Some(area);
+
+    crate::handler::handle_mouse_event(
+        &mut app,
+        crossterm::event::MouseEvent {
+            kind: crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Left),
+            column: 2,
+            row: idx as u16,
+            modifiers: crossterm::event::KeyModifiers::NONE,
+        },
+    );
+
+    let shown = visible_files(&app);
+    assert!(
+        members.iter().all(|path| !shown.contains(path)),
+        "the click folded the group, got {shown:?}"
+    );
+    assert_eq!(
+        app.file_list_state.selected(),
+        idx,
+        "and left the cursor on the row it folded"
+    );
+}
+
+/// The first group row's index in the visible tree and its id.
+fn first_group_row(app: &App) -> (usize, String) {
+    app.build_visible_items()
+        .iter()
+        .enumerate()
+        .find_map(|(idx, item)| match item {
+            FileTreeItem::Group { id, .. } => Some((idx, id.clone())),
+            _ => None,
+        })
+        .expect("a group row")
+}
+
+fn files_under(app: &App, id: &str) -> Vec<String> {
+    let grouping = app.grouping.as_ref().expect("grouping computed");
+    let group_id = grouping
+        .groups()
+        .iter()
+        .find(|group| group.id.as_str() == id)
+        .expect("a group with that id")
+        .id
+        .clone();
+    grouping
+        .files_in(&group_id)
+        .map(|path| path.to_string_lossy().to_string())
+        .collect()
 }
