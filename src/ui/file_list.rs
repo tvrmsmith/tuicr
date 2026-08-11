@@ -5,7 +5,7 @@ use ratatui::{
     text::{Line, Span},
     widgets::{Block, Borders, List, ListItem},
 };
-use unicode_width::UnicodeWidthStr;
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::app::{App, FileTreeItem, FocusedPanel};
 use crate::ui::diff_view::apply_horizontal_scroll;
@@ -231,14 +231,14 @@ pub(super) fn render_file_list(frame: &mut Frame, app: &mut App, area: Rect) {
     }
 }
 
-/// Drop the middle of `label` so it fits in `max_width` cells, keeping the
-/// file name whole and marking the cut with `…`. The head keeps whatever the
-/// name leaves over, so the row still says which part of the tree it came
-/// from. When the name alone does not fit, its tail is what survives — the
-/// extension and the distinguishing suffix beat the first few letters.
+/// Drop the middle of `label` so it fits in `max_width` cells, marking the cut
+/// with `…`. Two thirds of the budget go to the tail and the remainder to the
+/// head, which is the split mockup A is drawn at (`docs/SIDEBAR_MODEL.md`): the
+/// tail carries the file name and the head still says which part of the tree
+/// the row came from. Widths are display cells, not characters, so a fullwidth
+/// segment is measured the way the panel renders it.
 fn elide_middle(label: &str, max_width: usize) -> String {
-    let chars: Vec<char> = label.chars().collect();
-    if chars.len() <= max_width {
+    if label.width() <= max_width {
         return label.to_string();
     }
     if max_width <= 1 {
@@ -246,14 +246,32 @@ fn elide_middle(label: &str, max_width: usize) -> String {
     }
 
     let budget = max_width - 1;
-    let name_len = label.rsplit('/').next().unwrap_or(label).chars().count();
-    let tail_len = name_len.min(budget);
-    let head_len = budget - tail_len;
+    let tail_budget = budget * 2 / 3;
+    let head_budget = budget - tail_budget;
 
-    let mut out: String = chars[..head_len].iter().collect();
-    out.push('\u{2026}');
-    out.extend(&chars[chars.len() - tail_len..]);
-    out
+    let mut head = String::new();
+    let mut used = 0;
+    for ch in label.chars() {
+        let width = ch.width().unwrap_or(0);
+        if used + width > head_budget {
+            break;
+        }
+        head.push(ch);
+        used += width;
+    }
+
+    let mut tail = String::new();
+    let mut used = 0;
+    for ch in label.chars().rev() {
+        let width = ch.width().unwrap_or(0);
+        if used + width > tail_budget {
+            break;
+        }
+        tail.insert(0, ch);
+        used += width;
+    }
+
+    format!("{head}\u{2026}{tail}")
 }
 
 /// A group row's `reviewed/total` badge.
@@ -321,6 +339,7 @@ fn filter_footer(app: &App) -> Option<Line<'static>> {
 mod tests {
     //! Render checks for the filter status/prompt line in the file tree's
     //! bottom border, driven through the real `ui::render`.
+    use super::elide_middle;
     use crate::app::{App, DiffSource, FileTreePrompt, FocusedPanel, InputMode};
     use crate::model::{DiffFile, DiffLine, FileStatus, ReviewSession, SessionDiffSource};
     use crate::vcs::traits::{VcsBackend, VcsInfo, VcsType};
@@ -328,6 +347,7 @@ mod tests {
     use ratatui::backend::TestBackend;
     use ratatui::buffer::Buffer;
     use std::path::PathBuf;
+    use unicode_width::UnicodeWidthStr;
 
     struct StubVcs(VcsInfo);
     impl VcsBackend for StubVcs {
@@ -427,11 +447,15 @@ mod tests {
     }
 
     /// Just the file-list panel's columns, so an assertion about the sidebar
-    /// cannot be satisfied by the diff pane's own header.
-    fn sidebar_text(buffer: &Buffer) -> String {
+    /// cannot be satisfied by the diff pane's own header. The cut comes from
+    /// the inner area the renderer just stored, so it follows the split
+    /// instead of restating it.
+    fn sidebar_text(app: &App, buffer: &Buffer) -> String {
+        let inner = app.file_list_inner_area.expect("the panel was rendered");
+        let end = (inner.x + inner.width).min(buffer.area.width);
         (0..buffer.area.height)
             .map(|y| {
-                (0..24.min(buffer.area.width))
+                (0..end)
                     .map(|x| buffer[(x, y)].symbol().to_string())
                     .collect::<String>()
             })
@@ -457,15 +481,49 @@ mod tests {
     fn should_elide_the_middle_of_a_grouped_path_and_keep_the_file_name() {
         let mut app = grouped_app_with(&["src/main/generated/api/v2/repo.ts"]);
 
-        let text = sidebar_text(&draw(&mut app));
+        let buffer = draw(&mut app);
+        let text = sidebar_text(&app, &buffer);
 
         assert!(
-            text.contains("src/main\u{2026}repo.ts"),
+            text.contains("src/m\u{2026}v2/repo.ts"),
             "expected a middle-elided path in the tree, got:\n{text}"
         );
+    }
+
+    /// Mockup A's own rows (`docs/SIDEBAR_MODEL.md`): 38 inner cells less 4 of
+    /// chrome leaves 34, drawn as an 11-cell head, the ellipsis, and a 22-cell
+    /// tail.
+    #[test]
+    fn should_split_the_mockup_rows_the_way_the_record_draws_them() {
+        assert_eq!(
+            elide_middle("src/main/github/github-enterprise-repository.ts", 34),
+            "src/main/gi\u{2026}terprise-repository.ts"
+        );
+        assert_eq!(
+            elide_middle(
+                "mobile/src/tasks/github-project-host-routing-source.test.ts",
+                34
+            ),
+            "mobile/src/\u{2026}routing-source.test.ts"
+        );
+    }
+
+    #[test]
+    fn should_measure_a_fullwidth_path_in_cells_not_characters() {
+        // Ten characters, twenty cells: measured as characters this fits in a
+        // 16-cell row and is handed to ratatui to clip.
+        let label = "日本語/設定/読み込み.rs";
+
+        let elided = elide_middle(label, 16);
+
         assert!(
-            !text.contains("generated/api"),
-            "the middle is what should have been dropped, got:\n{text}"
+            elided.width() <= 16,
+            "elided to {} cells: {elided}",
+            elided.width()
+        );
+        assert!(
+            elided.starts_with("日本") && elided.ends_with("込み.rs"),
+            "expected head and tail of the path, got {elided}"
         );
     }
 
@@ -474,7 +532,8 @@ mod tests {
         let mut app = grouped_app_with(&["src/main/generated/api/v2/repo.ts"]);
         app.file_list_state.scroll_x = 1;
 
-        let text = sidebar_text(&draw(&mut app));
+        let buffer = draw(&mut app);
+        let text = sidebar_text(&app, &buffer);
 
         assert!(
             text.contains("src/main/generate"),

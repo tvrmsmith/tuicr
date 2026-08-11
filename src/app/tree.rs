@@ -413,9 +413,10 @@ impl App {
                 // the two cannot disagree about which sidebar is on screen.
                 if self.grouping.is_some() {
                     if let Some(group) = self.group_of_file(file.display_path()) {
+                        let key = Self::group_row_key(group);
                         for (tree_idx, item) in visible_items.iter().enumerate() {
                             if let FileTreeItem::Group { id, .. } = item
-                                && id == group.id.as_str()
+                                && *id == key
                             {
                                 self.file_list_state.select(tree_idx);
                                 return;

@@ -439,13 +439,16 @@ sound where it holds.**
    key and both runs collapse together.*
 
 4. **Ship the guard with the change.** A `debug_assert` in
-   `build_visible_items` that the group runs are contiguous, plus a test of the
-   property that contiguity buys: `file_idx` ascends across the visible rows,
-   which is what `next_file`/`prev_file` step by. The invariant has been
-   load-bearing and unguarded; this change is the moment to fix that, because
-   it is the change that starts violating the old form of it. The guard
-   survives the revision unchanged: group contiguity is still what the grouped
-   branch reads `diff_files` by.
+   `build_grouped_items` that the group runs are contiguous, plus a test of the
+   property the sidebar needs: `file_idx` ascends across the visible rows,
+   which is what `next_file`/`prev_file` step by. Ascending `file_idx` has two
+   preconditions and the assert covers one of them — contiguity; the other, that
+   `grouping.groups()` runs in the same order as the runs in `diff_files`, is
+   covered by the test `grouping_reorders_diff_files_into_group_runs`. The
+   invariant has been load-bearing and unguarded; this change is the moment to
+   fix that, because it is the change that starts violating the old form of it.
+   The guard survives the revision unchanged: group contiguity is still what
+   the grouped branch reads `diff_files` by.
 
    *Originally: the guard plus a test that a deliberately non-contiguous
    `diff_files` loses no files from the sidebar. That test cannot be written

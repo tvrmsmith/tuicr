@@ -1,6 +1,7 @@
 use crate::app::*;
 use crate::model::{DiffFile, DiffLine, FileStatus};
 use crate::vcs::traits::{VcsBackend, VcsInfo, VcsType};
+use std::collections::BTreeSet;
 
 /// The 161-file changeset the sidebar row costs in `docs/SIDEBAR_MODEL.md`
 /// were measured against. Lines are `<status>\t<path>`.
@@ -190,7 +191,17 @@ fn grouped_app_from(mode: FileTreeMode, files: Vec<DiffFile>, groups_text: &str)
     for file in &files {
         session.add_file(file.display_path().clone(), file.status, file.content_hash);
     }
-    let recorded_names: Vec<String> = presented.iter().map(|group| group.name.clone()).collect();
+    // Membership as a set: the engine applies its own within-group sort on
+    // restore, so only the partition itself is the record's to pin.
+    let recorded: Vec<(String, BTreeSet<String>)> = presented
+        .iter()
+        .map(|group| {
+            (
+                group.name.clone(),
+                group.members.iter().cloned().collect::<BTreeSet<String>>(),
+            )
+        })
+        .collect();
     // Recorded on the session so `enable_grouping` restores it verbatim
     // instead of computing a heuristic one: the table measures the record's
     // grouping, not the engine's.
@@ -218,17 +229,25 @@ fn grouped_app_from(mode: FileTreeMode, files: Vec<DiffFile>, groups_text: &str)
     app.enable_grouping();
     // The row costs only mean anything against the record's own partition. A
     // grouping the session cannot restore falls back to the heuristic one
-    // silently, and a row count alone would not notice.
-    let restored: Vec<String> = app
-        .grouping
-        .as_ref()
-        .expect("grouping restored")
+    // silently, and a row count alone would not notice — nor would a name-only
+    // check, since it is the membership that decides how many rows a group
+    // costs.
+    let grouping = app.grouping.as_ref().expect("grouping restored");
+    let restored: Vec<(String, BTreeSet<String>)> = grouping
         .groups()
         .iter()
-        .map(|group| group.name.clone())
+        .map(|group| {
+            (
+                group.name.clone(),
+                grouping
+                    .files_in(&group.id)
+                    .map(|path| path.to_string_lossy().to_string())
+                    .collect(),
+            )
+        })
         .collect();
     assert_eq!(
-        restored, recorded_names,
+        restored, recorded,
         "the session restored the fixture's grouping, not a heuristic one"
     );
     app.expand_all_dirs();

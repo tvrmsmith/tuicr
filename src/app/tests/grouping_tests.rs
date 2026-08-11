@@ -403,11 +403,27 @@ fn the_commit_message_row_survives_collapsing_every_group() {
 #[test]
 fn collapsing_the_group_holding_the_current_file_parks_the_cursor_on_its_group_row() {
     let mut app = grouped_paths(PATHS);
-    let target = app
-        .diff_files
-        .iter()
-        .position(|file| !file.is_commit_message)
-        .expect("a real file");
+    // Not the first group: row 0 is what the `select(0)` fallback produces, so
+    // a target there would pass whether the grouped arm ran or not.
+    let first_group = app
+        .grouping
+        .as_ref()
+        .expect("grouping computed")
+        .groups()
+        .first()
+        .expect("at least one group")
+        .id
+        .as_str()
+        .to_string();
+    let target = (0..app.diff_files.len())
+        .find(|&idx| {
+            let file = &app.diff_files[idx];
+            !file.is_commit_message
+                && app
+                    .group_of_file(file.display_path())
+                    .is_some_and(|group| group.id.as_str() != first_group)
+        })
+        .expect("a file outside the first group");
     app.jump_to_file(target);
     let group_id = app
         .group_of_file(app.diff_files[target].display_path())
@@ -423,6 +439,10 @@ fn collapsing_the_group_holding_the_current_file_parks_the_cursor_on_its_group_r
         .iter()
         .position(|item| matches!(item, FileTreeItem::Group { id, .. } if *id == group_id))
         .expect("the group row is still on screen");
+    assert!(
+        expected > 0,
+        "the target's group row must not be row 0, or the fallback satisfies this test"
+    );
     assert_eq!(
         app.file_list_state.selected(),
         expected,
@@ -461,46 +481,46 @@ fn searching_the_tree_onto_a_file_inside_a_collapsed_group_moves_the_cursor() {
     );
 }
 
+/// The grouping the engine produced for `PATHS` minus `Cargo.lock`, with
+/// `Cargo.lock` appended to `diff_files` afterwards. That is the shape
+/// `order_files_by_group` sorts an unmentioned file into — last by index,
+/// mentioned by no group — without any hand-built partition.
+fn app_with_an_orphan_file() -> (App, usize) {
+    let grouped: Vec<&str> = PATHS
+        .iter()
+        .copied()
+        .filter(|path| *path != "Cargo.lock")
+        .collect();
+    let mut app = grouped_paths(&grouped);
+
+    let orphan = make_file("Cargo.lock");
+    app.session
+        .add_file(orphan.display_path().clone(), orphan.status, 0);
+    app.diff_files.push(orphan);
+
+    (app, PATHS.len() - 1)
+}
+
 #[test]
 fn a_file_the_grouping_does_not_mention_still_gets_a_row() {
     // The partition is total, so this state is only reachable by building it.
     // `order_files_by_group` deliberately sorts an unmentioned file last
     // rather than dropping it; the sidebar has to honour that or the defence
     // is cancelled and the file is lost from the review.
-    use crate::grouping::changeset::Changeset;
-    use crate::grouping::{GroupId, GroupSource, Grouping, PresentedGroup};
+    let (mut app, orphan_idx) = app_with_an_orphan_file();
 
-    let mut app = grouped_paths(PATHS);
-    let orphan = PathBuf::from("Cargo.lock");
-    let members: Vec<String> = app
-        .diff_files
-        .iter()
-        .map(|file| file.display_path().to_string_lossy().to_string())
-        .filter(|path| path != "Cargo.lock")
-        .collect();
-    let changeset = Changeset::from_diff_files(&app.diff_files);
-    app.grouping = Some(Grouping::restore(
-        &changeset,
-        vec![PresentedGroup {
-            id: GroupId::new(),
-            name: "everything else".to_string(),
-            source: GroupSource::Heuristics,
-            new_since_full_pass: false,
-            members,
-        }],
-    ));
-    app.expand_all_dirs();
-
+    let items = app.build_visible_items();
     assert!(
-        visible_files(&app).contains(&"Cargo.lock".to_string()),
-        "an unmentioned file keeps a row of its own"
+        matches!(
+            items.last(),
+            Some(FileTreeItem::File { file_idx, depth, .. })
+                if *file_idx == orphan_idx && *depth == 0
+        ),
+        "the orphan is the last row, at top level after the groups: {:?}",
+        items.last()
     );
+    assert_ascending_by_file_idx(&items);
 
-    let orphan_idx = app
-        .diff_files
-        .iter()
-        .position(|file| file.display_path() == &orphan)
-        .expect("still in the diff");
     app.jump_to_file(orphan_idx);
     let selected = app
         .build_visible_items()
@@ -513,26 +533,108 @@ fn a_file_the_grouping_does_not_mention_still_gets_a_row() {
 }
 
 #[test]
+fn a_filter_that_hides_the_orphan_takes_its_row_with_it() {
+    let (mut app, orphan_idx) = app_with_an_orphan_file();
+    assert!(visible_files(&app).contains(&"Cargo.lock".to_string()));
+
+    exclude(&mut app, r"^Cargo\.lock$");
+
+    assert!(
+        !visible_files(&app).contains(&"Cargo.lock".to_string()),
+        "the orphan row obeys the filter like every other row"
+    );
+    assert!(!app.build_visible_items().iter().any(
+        |item| matches!(item, FileTreeItem::File { file_idx, .. } if *file_idx == orphan_idx)
+    ));
+}
+
+/// Apply an exclude pattern the way the user does, through the tree prompt.
+fn exclude(app: &mut App, pattern: &str) {
+    app.begin_file_tree_prompt(FileTreePrompt::Exclude);
+    for ch in pattern.chars() {
+        app.file_tree_prompt_insert_char(ch);
+    }
+    app.commit_file_tree_prompt();
+}
+
+#[test]
+fn a_group_whose_every_file_the_filter_hides_loses_its_row() {
+    let mut app = grouped_paths_with_commit_message(PATHS);
+    let (doomed, members) = {
+        let grouping = app.grouping.as_ref().expect("grouping computed");
+        assert!(
+            grouping.groups().len() > 1,
+            "a sibling group has to survive for this to say anything"
+        );
+        let group = &grouping.groups()[0];
+        let members: Vec<String> = grouping
+            .files_in(&group.id)
+            .map(|path| regex::escape(&path.to_string_lossy()))
+            .collect();
+        (group.name.clone(), members)
+    };
+    let before: Vec<String> = group_rows(&app).into_iter().map(|row| row.0).collect();
+
+    exclude(&mut app, &format!("^({})$", members.join("|")));
+
+    let after: Vec<String> = group_rows(&app).into_iter().map(|row| row.0).collect();
+    assert!(
+        !after.contains(&doomed),
+        "a group with nothing left to show disappears with its files, got {after:?}"
+    );
+    assert_eq!(
+        after.len(),
+        before.len() - 1,
+        "and only that group: {before:?} -> {after:?}"
+    );
+    assert!(
+        visible_files(&app).contains(&"COMMIT_MSG".to_string()),
+        "the pseudo-file is outside the partition and outside the filter's reach here"
+    );
+}
+
+#[test]
+fn the_commit_message_row_obeys_the_filter_like_any_other() {
+    let mut app = grouped_paths_with_commit_message(PATHS);
+    assert!(visible_files(&app).contains(&"COMMIT_MSG".to_string()));
+
+    exclude(&mut app, "^COMMIT_MSG$");
+
+    assert!(
+        !visible_files(&app).contains(&"COMMIT_MSG".to_string()),
+        "being pinned above the groups does not exempt it from the filter"
+    );
+    assert!(
+        !group_rows(&app).is_empty(),
+        "and the rest of the sidebar is untouched"
+    );
+}
+
+fn assert_ascending_by_file_idx(items: &[FileTreeItem]) {
+    let mut previous: Option<usize> = None;
+    for item in items {
+        let FileTreeItem::File { file_idx, .. } = item else {
+            continue;
+        };
+        if let Some(previous) = previous {
+            assert!(
+                *file_idx > previous,
+                "row order must ascend: {file_idx} came after {previous}"
+            );
+        }
+        previous = Some(*file_idx);
+    }
+    assert!(previous.is_some(), "the fixture has rows to check");
+}
+
+#[test]
 fn the_visible_rows_ascend_by_file_idx() {
     // What group contiguity buys the sidebar (`docs/SIDEBAR_MODEL.md` point
     // 4): `next_file`/`prev_file` step by comparing `file_idx` against the
     // current one, so a row order that ran backwards would skip files.
     let app = grouped_paths_with_commit_message(PATHS);
 
-    let mut previous: Option<usize> = None;
-    for item in app.build_visible_items() {
-        let FileTreeItem::File { file_idx, .. } = item else {
-            continue;
-        };
-        if let Some(previous) = previous {
-            assert!(
-                file_idx > previous,
-                "row order must ascend: {file_idx} came after {previous}"
-            );
-        }
-        previous = Some(file_idx);
-    }
-    assert!(previous.is_some(), "the fixture has rows to check");
+    assert_ascending_by_file_idx(&app.build_visible_items());
 }
 
 #[test]

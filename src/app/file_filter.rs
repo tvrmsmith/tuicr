@@ -341,7 +341,8 @@ impl App {
                 .unwrap_or(*candidates.last().expect("candidates is non-empty"))
         };
 
-        self.select_file_in_tree(target);
+        // Reveal and select the match without touching the diff viewport.
+        self.reveal_file(target);
         let path = self.diff_files[target].display_path().display().to_string();
         let position = candidates
             .iter()
@@ -361,13 +362,6 @@ impl App {
             Some(FileTreeItem::File { file_idx, .. }) => file_idx,
             _ => self.diff_state.current_file_idx,
         }
-    }
-
-    /// Reveal `file_idx` in the tree and select its row, without touching the
-    /// diff viewport. The reveal itself is `reveal_file`, shared with
-    /// `jump_to_file`, so a search step expands the same keys a jump does.
-    pub(in crate::app) fn select_file_in_tree(&mut self, file_idx: usize) {
-        self.reveal_file(file_idx);
     }
 }
 
