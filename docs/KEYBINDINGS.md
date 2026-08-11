@@ -42,10 +42,10 @@ Press `?` to open help.
 
 | Key | Action |
 |-----|--------|
-| `Space` | Toggle expand directory |
-| `Enter` | Expand directory / jump to file in diff |
-| `o` | Expand all directories |
-| `O` | Collapse all directories |
+| `Space` | Toggle expand directory (group row while grouping is on) |
+| `Enter` | Expand directory or group / jump to file in diff |
+| `o` | Expand all directories or groups |
+| `O` | Collapse all directories or groups |
 | `i` | Filter to files matching a regex (include) |
 | `e` | Filter out files matching a regex (exclude) |
 | `I` | Clear the include filter |
@@ -239,7 +239,7 @@ Mouse support is on by default. Disable with `mouse = false` in config.
 |--------|--------|
 | Wheel up / down | Scroll the panel under the cursor (file list, comment navigator, diff, commit list, or help popup) without moving the cursor line |
 | Click on a file | Jump to that file (lazygit-style) |
-| Click on a directory | Expand or collapse it |
+| Click on a directory or group row | Expand or collapse it |
 | Click on a diff line | Position the cursor on that line |
 | Click on a commit | Toggle selection (or expand the row to load more) |
 | Drag in diff | Highlight a range; press `y` to copy the selected source lines |
