@@ -214,7 +214,8 @@ mockup below assumed it pays there.
 
 It pays far less than drawn, which is part of why `gd-26r.31` dropped in-group
 directory rows entirely. The mockup was hand-drawn deciding each chain join
-against the group's own files; the shipped `TreeLayout` (`tree.rs:106`) decides
+against the group's own files; the shipped `TreeLayout::joined_dirs`
+(built once by `TreeLayout::new`) decides
 joins once over the whole of `diff_files`, so a directory with one child inside
 a group but five across the changeset does not join. Measured, that is 285
 rows, not the 251 drawn.
@@ -437,13 +438,21 @@ sound where it holds.**
    a directory in two runs inside one group shares a single `(group, directory)`
    key and both runs collapse together.*
 
-4. **Ship the guard and the test with the change.** A `debug_assert` in
-   `build_visible_items` that the group runs are contiguous, plus a test that a
-   deliberately non-contiguous `diff_files` loses no files from the sidebar.
-   The invariant has been load-bearing and unguarded; this change is the moment
-   to fix that, because it is the change that starts violating the old form of
-   it. The guard survives the revision unchanged: group contiguity is still
-   what the grouped branch reads `diff_files` by.
+4. **Ship the guard with the change.** A `debug_assert` in
+   `build_visible_items` that the group runs are contiguous, plus a test of the
+   property that contiguity buys: `file_idx` ascends across the visible rows,
+   which is what `next_file`/`prev_file` step by. The invariant has been
+   load-bearing and unguarded; this change is the moment to fix that, because
+   it is the change that starts violating the old form of it. The guard
+   survives the revision unchanged: group contiguity is still what the grouped
+   branch reads `diff_files` by.
+
+   *Originally: the guard plus a test that a deliberately non-contiguous
+   `diff_files` loses no files from the sidebar. That test cannot be written
+   against the shipped guard, which panics on exactly the input it would have
+   to construct — and it would prove nothing now, since members are resolved
+   by path rather than by scanning a run. Ascending `file_idx` is the property
+   the assert actually protects.*
 
 5. **The tree mode does not reach the grouped branch.** `nested` and `compact`
    change what ancestors the *ungrouped* tree emits; `flat` drops its directory
@@ -504,7 +513,8 @@ larger one is that in-group directory rows had stopped paying for themselves:
   ids and directory paths.
 
 What did *not* move: the collapsed overview is still **13 rows for 161 files**,
-verified in all three modes and on the second fixture (14 groups, 14 rows). A
+verified in all three modes, and the second fixture (158 files, 14 groups,
+uncommitted — `gd-26r.20`) agreed at 14 rows when it was measured. A
 collapsed group emits nothing beneath it, so no decision about in-group layout
 can reach that number. It was never at risk, and it remains the case for the
 whole feature.

@@ -140,7 +140,7 @@ fn row_cost_harness(mode: FileTreeMode) -> TreeTestHarness {
 
 /// The same fixture with the same hand grouping the mockups were drawn from,
 /// driven through the real grouped sidebar: the record's partition and reading
-/// order, the shipped within-group sort, and per-run directory emission.
+/// order, the shipped within-group sort, and the flat depth-1 member list.
 fn grouped_row_cost_app(mode: FileTreeMode) -> App {
     grouped_app_from(mode, row_cost_files(), ROW_COST_GROUPS)
 }
@@ -190,6 +190,7 @@ fn grouped_app_from(mode: FileTreeMode, files: Vec<DiffFile>, groups_text: &str)
     for file in &files {
         session.add_file(file.display_path().clone(), file.status, file.content_hash);
     }
+    let recorded_names: Vec<String> = presented.iter().map(|group| group.name.clone()).collect();
     // Recorded on the session so `enable_grouping` restores it verbatim
     // instead of computing a heuristic one: the table measures the record's
     // grouping, not the engine's.
@@ -215,6 +216,21 @@ fn grouped_app_from(mode: FileTreeMode, files: Vec<DiffFile>, groups_text: &str)
     .expect("build app");
     app.file_tree_mode = mode;
     app.enable_grouping();
+    // The row costs only mean anything against the record's own partition. A
+    // grouping the session cannot restore falls back to the heuristic one
+    // silently, and a row count alone would not notice.
+    let restored: Vec<String> = app
+        .grouping
+        .as_ref()
+        .expect("grouping restored")
+        .groups()
+        .iter()
+        .map(|group| group.name.clone())
+        .collect();
+    assert_eq!(
+        restored, recorded_names,
+        "the session restored the fixture's grouping, not a heuristic one"
+    );
     app.expand_all_dirs();
     app
 }

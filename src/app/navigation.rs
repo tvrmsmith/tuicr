@@ -749,25 +749,7 @@ impl App {
             let max_scroll = self.max_scroll_offset();
             self.diff_state.scroll_offset = self.diff_state.cursor_line.min(max_scroll);
 
-            // Reveal the target. Under grouping the path ancestors reveal
-            // nothing — there are no in-group directory rows — and the file's
-            // group id is the only key that does; ungrouped it is every
-            // ancestor directory row.
-            let file_path = self.diff_files[idx].display_path().clone();
-            if self.grouping.is_some() {
-                if let Some(group) = self.group_of_file(&file_path) {
-                    let id = group.id.as_str().to_string();
-                    self.expanded_dirs.insert(id);
-                }
-            } else {
-                for row in self.tree_layout().dir_rows(&file_path) {
-                    self.expanded_dirs.insert(row.path);
-                }
-            }
-
-            if let Some(tree_idx) = self.file_idx_to_tree_idx(idx) {
-                self.file_list_state.select(tree_idx);
-            }
+            self.reveal_file(idx);
 
             // Single-file view filters `line_annotations` by
             // `current_file_idx`, so a file switch must rebuild them or

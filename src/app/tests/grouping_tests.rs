@@ -98,6 +98,14 @@ fn grouped_paths(paths: &[&str]) -> App {
     grouped_app(paths.iter().map(|path| make_file(path)).collect())
 }
 
+/// The same changeset with the commit-message pseudo-file in it, which is the
+/// only row that lives outside the partition.
+fn grouped_paths_with_commit_message(paths: &[&str]) -> App {
+    let mut files: Vec<DiffFile> = paths.iter().map(|path| make_file(path)).collect();
+    files.push(commit_message_file());
+    grouped_app(files)
+}
+
 fn file_order(app: &App) -> Vec<String> {
     app.diff_files
         .iter()
@@ -293,7 +301,7 @@ fn a_group_lists_its_files_flat_at_depth_one_by_full_path() {
         FileTreeMode::Compact,
         FileTreeMode::Flat,
     ] {
-        let mut app = grouped_paths(PATHS);
+        let mut app = grouped_paths_with_commit_message(PATHS);
         app.file_tree_mode = mode;
         let items = app.build_visible_items();
 
@@ -320,7 +328,11 @@ fn a_group_lists_its_files_flat_at_depth_one_by_full_path() {
             let expected = usize::from(!file.is_commit_message);
             assert_eq!(*depth, expected, "{mode:?}: {path}");
         }
-        assert_eq!(visible_files(&app).len(), PATHS.len(), "{mode:?}");
+        assert!(
+            app.diff_files.iter().any(|file| file.is_commit_message),
+            "the depth-0 case only runs with a pseudo-file present"
+        );
+        assert_eq!(visible_files(&app).len(), PATHS.len() + 1, "{mode:?}");
     }
 }
 
@@ -371,6 +383,156 @@ fn jumping_to_a_hidden_file_reveals_it_by_opening_its_group_alone() {
         HashSet::from([group_id]),
         "the group id is the only key that reveals anything"
     );
+}
+
+#[test]
+fn the_commit_message_row_survives_collapsing_every_group() {
+    // It is emitted before the group loop precisely so no collapse can reach
+    // it (`docs/TOTAL_COVERAGE.md`): the review always has a way back to the
+    // message, however the groups are folded.
+    let mut app = grouped_paths_with_commit_message(PATHS);
+    app.collapse_all_dirs();
+
+    assert_eq!(
+        visible_files(&app),
+        vec!["COMMIT_MSG".to_string()],
+        "only the pseudo-file survives a full collapse"
+    );
+}
+
+#[test]
+fn collapsing_the_group_holding_the_current_file_parks_the_cursor_on_its_group_row() {
+    let mut app = grouped_paths(PATHS);
+    let target = app
+        .diff_files
+        .iter()
+        .position(|file| !file.is_commit_message)
+        .expect("a real file");
+    app.jump_to_file(target);
+    let group_id = app
+        .group_of_file(app.diff_files[target].display_path())
+        .expect("assigned to a group")
+        .id
+        .as_str()
+        .to_string();
+
+    app.collapse_all_dirs();
+
+    let expected = app
+        .build_visible_items()
+        .iter()
+        .position(|item| matches!(item, FileTreeItem::Group { id, .. } if *id == group_id))
+        .expect("the group row is still on screen");
+    assert_eq!(
+        app.file_list_state.selected(),
+        expected,
+        "the cursor follows the hidden file up to its group row, not to row 0"
+    );
+}
+
+#[test]
+fn searching_the_tree_onto_a_file_inside_a_collapsed_group_moves_the_cursor() {
+    // `/` + Enter reveals through whatever hides the match. Under grouping
+    // that is the group row, and walking path ancestors instead would expand
+    // keys no grouped row answers to, leaving the cursor parked while the
+    // status line claimed a hit.
+    let mut app = grouped_paths(PATHS);
+    app.collapse_all_dirs();
+    assert!(visible_files(&app).is_empty(), "everything starts hidden");
+
+    app.begin_file_tree_prompt(FileTreePrompt::Search);
+    for ch in "auth.md".chars() {
+        app.file_tree_prompt_insert_char(ch);
+    }
+    app.commit_file_tree_prompt();
+
+    assert!(visible_files(&app).contains(&"docs/auth.md".to_string()));
+    let selected = app
+        .build_visible_items()
+        .get(app.file_list_state.selected())
+        .cloned();
+    assert!(
+        matches!(
+            selected,
+            Some(FileTreeItem::File { file_idx, .. })
+                if app.diff_files[file_idx].display_path() == Path::new("docs/auth.md")
+        ),
+        "the cursor sits on the match, got {selected:?}"
+    );
+}
+
+#[test]
+fn a_file_the_grouping_does_not_mention_still_gets_a_row() {
+    // The partition is total, so this state is only reachable by building it.
+    // `order_files_by_group` deliberately sorts an unmentioned file last
+    // rather than dropping it; the sidebar has to honour that or the defence
+    // is cancelled and the file is lost from the review.
+    use crate::grouping::changeset::Changeset;
+    use crate::grouping::{GroupId, GroupSource, Grouping, PresentedGroup};
+
+    let mut app = grouped_paths(PATHS);
+    let orphan = PathBuf::from("Cargo.lock");
+    let members: Vec<String> = app
+        .diff_files
+        .iter()
+        .map(|file| file.display_path().to_string_lossy().to_string())
+        .filter(|path| path != "Cargo.lock")
+        .collect();
+    let changeset = Changeset::from_diff_files(&app.diff_files);
+    app.grouping = Some(Grouping::restore(
+        &changeset,
+        vec![PresentedGroup {
+            id: GroupId::new(),
+            name: "everything else".to_string(),
+            source: GroupSource::Heuristics,
+            new_since_full_pass: false,
+            members,
+        }],
+    ));
+    app.expand_all_dirs();
+
+    assert!(
+        visible_files(&app).contains(&"Cargo.lock".to_string()),
+        "an unmentioned file keeps a row of its own"
+    );
+
+    let orphan_idx = app
+        .diff_files
+        .iter()
+        .position(|file| file.display_path() == &orphan)
+        .expect("still in the diff");
+    app.jump_to_file(orphan_idx);
+    let selected = app
+        .build_visible_items()
+        .get(app.file_list_state.selected())
+        .cloned();
+    assert!(
+        matches!(selected, Some(FileTreeItem::File { file_idx, .. }) if file_idx == orphan_idx),
+        "and the cursor can reach it, got {selected:?}"
+    );
+}
+
+#[test]
+fn the_visible_rows_ascend_by_file_idx() {
+    // What group contiguity buys the sidebar (`docs/SIDEBAR_MODEL.md` point
+    // 4): `next_file`/`prev_file` step by comparing `file_idx` against the
+    // current one, so a row order that ran backwards would skip files.
+    let app = grouped_paths_with_commit_message(PATHS);
+
+    let mut previous: Option<usize> = None;
+    for item in app.build_visible_items() {
+        let FileTreeItem::File { file_idx, .. } = item else {
+            continue;
+        };
+        if let Some(previous) = previous {
+            assert!(
+                file_idx > previous,
+                "row order must ascend: {file_idx} came after {previous}"
+            );
+        }
+        previous = Some(file_idx);
+    }
+    assert!(previous.is_some(), "the fixture has rows to check");
 }
 
 #[test]

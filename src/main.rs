@@ -263,9 +263,10 @@ fn main() -> anyhow::Result<()> {
     // re-seeded with the keys the configured mode actually produces.
     app.file_tree_mode = file_tree_mode;
     // Grouping is the binary's decision, not `App::build`'s: it reorders
-    // `diff_files` and rebuilds the sidebar around group nodes, and it has to
-    // run after the tree mode is known because the two decide together which
-    // rows exist and what keys they expand under.
+    // `diff_files` and rebuilds the sidebar around group nodes. It does not
+    // read the tree mode — the grouped sidebar renders the same in all three
+    // (`docs/SIDEBAR_MODEL.md` point 5) — so only `expand_all_dirs` below has
+    // to come after both.
     if !cli_args.no_grouping {
         app.enable_grouping();
     }

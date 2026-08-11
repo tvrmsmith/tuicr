@@ -363,26 +363,11 @@ impl App {
         }
     }
 
-    /// Expand the ancestors of `file_idx` and select its row, without
-    /// touching the diff viewport.
+    /// Reveal `file_idx` in the tree and select its row, without touching the
+    /// diff viewport. The reveal itself is `reveal_file`, shared with
+    /// `jump_to_file`, so a search step expands the same keys a jump does.
     pub(in crate::app) fn select_file_in_tree(&mut self, file_idx: usize) {
-        use std::path::Path;
-
-        let Some(file) = self.diff_files.get(file_idx) else {
-            return;
-        };
-        let path = file.display_path().clone();
-        let mut current = path.parent();
-        while let Some(parent) = current {
-            if parent != Path::new("") {
-                self.expanded_dirs
-                    .insert(parent.to_string_lossy().to_string());
-            }
-            current = parent.parent();
-        }
-        if let Some(tree_idx) = self.file_idx_to_tree_idx(file_idx) {
-            self.file_list_state.select(tree_idx);
-        }
+        self.reveal_file(file_idx);
     }
 }
 

@@ -362,6 +362,33 @@ impl App {
         }
     }
 
+    /// Expand whatever hides `file_idx` and put the tree cursor on its row.
+    ///
+    /// Under grouping the file's group id is the only key that reveals
+    /// anything — there are no in-group directory rows — and ungrouped it is
+    /// every directory row on the path. Every reveal site goes through here,
+    /// so the two key spaces cannot drift apart.
+    pub(in crate::app) fn reveal_file(&mut self, file_idx: usize) {
+        let Some(file) = self.diff_files.get(file_idx) else {
+            return;
+        };
+        let path = file.display_path().clone();
+        if self.grouping.is_some() {
+            if let Some(group) = self.group_of_file(&path) {
+                let key = Self::group_row_key(group);
+                self.expanded_dirs.insert(key);
+            }
+        } else {
+            for row in self.tree_layout().dir_rows(&path) {
+                self.expanded_dirs.insert(row.path);
+            }
+        }
+
+        if let Some(tree_idx) = self.file_idx_to_tree_idx(file_idx) {
+            self.file_list_state.select(tree_idx);
+        }
+    }
+
     fn ensure_valid_tree_selection(&mut self) {
         let visible_items = self.build_visible_items();
         if visible_items.is_empty() {
@@ -382,14 +409,17 @@ impl App {
             if let Some(file) = self.diff_files.get(current_file_idx) {
                 // Under grouping the only thing that can have hidden the file
                 // is its group row; ungrouped it is the innermost directory
-                // row still on screen.
-                if let Some(group) = self.group_of_file(file.display_path()) {
-                    for (tree_idx, item) in visible_items.iter().enumerate() {
-                        if let FileTreeItem::Group { id, .. } = item
-                            && id == group.id.as_str()
-                        {
-                            self.file_list_state.select(tree_idx);
-                            return;
+                // row still on screen. Same discriminant as `reveal_file`, so
+                // the two cannot disagree about which sidebar is on screen.
+                if self.grouping.is_some() {
+                    if let Some(group) = self.group_of_file(file.display_path()) {
+                        for (tree_idx, item) in visible_items.iter().enumerate() {
+                            if let FileTreeItem::Group { id, .. } = item
+                                && id == group.id.as_str()
+                            {
+                                self.file_list_state.select(tree_idx);
+                                return;
+                            }
                         }
                     }
                 } else {
@@ -491,6 +521,25 @@ impl App {
                     depth: 1,
                 });
             }
+        }
+
+        // A file the grouping does not mention still gets a row, at top level
+        // after the groups — the same place `order_files_by_group` sorts it.
+        // The partition is total today, so this emits nothing; it is here
+        // because losing a file from the review is the worse failure, and a
+        // defence the renderer cancels is no defence.
+        for (file_idx, file) in self.diff_files.iter().enumerate() {
+            if file.is_commit_message
+                || grouping.group_of(file.display_path()).is_some()
+                || !self.file_passes_filter(file)
+            {
+                continue;
+            }
+            items.push(FileTreeItem::File {
+                file_idx,
+                label: FileTreeMode::Flat.file_label(file.display_path()),
+                depth: 0,
+            });
         }
 
         items

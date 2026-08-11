@@ -73,6 +73,7 @@ pub(super) fn render_file_list(frame: &mut Frame, app: &mut App, area: Rect) {
         app.file_list_state.scroll_x = max_scroll_x;
     }
     let scroll_x = app.file_list_state.scroll_x;
+    let grouped = app.grouping.is_some();
 
     // When diff panel is focused, sync file list selection to current view
     // But preserve the current offset to not interfere with manual scrolling
@@ -185,7 +186,21 @@ pub(super) fn render_file_list(frame: &mut Frame, app: &mut App, area: Rect) {
                                 styles::file_status_style(&app.theme, status),
                             ));
                         }
-                        spans.push(Span::raw(label.clone()));
+                        // A grouped row carries the full relative path, which
+                        // out-measures a narrow panel. Elide its middle so the
+                        // file name — the part that distinguishes it from its
+                        // siblings — survives (`docs/SIDEBAR_MODEL.md`).
+                        // Panning is left alone: once the user scrolls right
+                        // they asked for the whole path, and `scroll_x` is
+                        // measured against the unelided width.
+                        let chrome: usize = spans.iter().map(|span| span.width()).sum();
+                        let elide = grouped && scroll_x == 0;
+                        let text = if elide {
+                            elide_middle(label, (inner.width as usize).saturating_sub(chrome))
+                        } else {
+                            label.clone()
+                        };
+                        spans.push(Span::raw(text));
                         Line::from(spans)
                     }
                 }
@@ -214,6 +229,31 @@ pub(super) fn render_file_list(frame: &mut Frame, app: &mut App, area: Rect) {
             y: area.y + area.height.saturating_sub(1),
         });
     }
+}
+
+/// Drop the middle of `label` so it fits in `max_width` cells, keeping the
+/// file name whole and marking the cut with `…`. The head keeps whatever the
+/// name leaves over, so the row still says which part of the tree it came
+/// from. When the name alone does not fit, its tail is what survives — the
+/// extension and the distinguishing suffix beat the first few letters.
+fn elide_middle(label: &str, max_width: usize) -> String {
+    let chars: Vec<char> = label.chars().collect();
+    if chars.len() <= max_width {
+        return label.to_string();
+    }
+    if max_width <= 1 {
+        return "\u{2026}".repeat(max_width);
+    }
+
+    let budget = max_width - 1;
+    let name_len = label.rsplit('/').next().unwrap_or(label).chars().count();
+    let tail_len = name_len.min(budget);
+    let head_len = budget - tail_len;
+
+    let mut out: String = chars[..head_len].iter().collect();
+    out.push('\u{2026}');
+    out.extend(&chars[chars.len() - tail_len..]);
+    out
 }
 
 /// A group row's `reviewed/total` badge.
@@ -384,6 +424,62 @@ mod tests {
             })
             .collect::<Vec<_>>()
             .join("\n")
+    }
+
+    /// Just the file-list panel's columns, so an assertion about the sidebar
+    /// cannot be satisfied by the diff pane's own header.
+    fn sidebar_text(buffer: &Buffer) -> String {
+        (0..buffer.area.height)
+            .map(|y| {
+                (0..24.min(buffer.area.width))
+                    .map(|x| buffer[(x, y)].symbol().to_string())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    fn grouped_app_with(paths: &[&str]) -> App {
+        let mut app = app_with(paths);
+        for path in paths {
+            app.session
+                .add_file(PathBuf::from(path), FileStatus::Modified, 0);
+        }
+        app.enable_grouping();
+        app.expand_all_dirs();
+        app
+    }
+
+    /// The panel is 20% of the terminal, so at 120 columns a grouped file row
+    /// has 22 inner cells less 6 of chrome (indent, checkbox, status badge) —
+    /// 16 for a path of 33.
+    #[test]
+    fn should_elide_the_middle_of_a_grouped_path_and_keep_the_file_name() {
+        let mut app = grouped_app_with(&["src/main/generated/api/v2/repo.ts"]);
+
+        let text = sidebar_text(&draw(&mut app));
+
+        assert!(
+            text.contains("src/main\u{2026}repo.ts"),
+            "expected a middle-elided path in the tree, got:\n{text}"
+        );
+        assert!(
+            !text.contains("generated/api"),
+            "the middle is what should have been dropped, got:\n{text}"
+        );
+    }
+
+    #[test]
+    fn should_stop_eliding_once_the_user_pans_the_panel() {
+        let mut app = grouped_app_with(&["src/main/generated/api/v2/repo.ts"]);
+        app.file_list_state.scroll_x = 1;
+
+        let text = sidebar_text(&draw(&mut app));
+
+        assert!(
+            text.contains("src/main/generate"),
+            "panning asks for the whole path, not an elided one, got:\n{text}"
+        );
     }
 
     #[test]
