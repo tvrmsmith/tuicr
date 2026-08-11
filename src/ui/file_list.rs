@@ -5,7 +5,8 @@ use ratatui::{
     text::{Line, Span},
     widgets::{Block, Borders, List, ListItem},
 };
-use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
+use unicode_segmentation::UnicodeSegmentation;
+use unicode_width::UnicodeWidthStr;
 
 use crate::app::{App, FileTreeItem, FocusedPanel};
 use crate::ui::diff_view::apply_horizontal_scroll;
@@ -245,7 +246,9 @@ pub(super) fn render_file_list(frame: &mut Frame, app: &mut App, area: Rect) {
 /// head, which is the 1:2 split mockup A is drawn at (`docs/SIDEBAR_MODEL.md`):
 /// the tail carries the file name and the head still says which part of the
 /// tree the row came from. Widths are display cells, not characters, so a
-/// fullwidth segment is measured the way the panel renders it.
+/// fullwidth segment is measured the way the panel renders it, and the walk is
+/// by grapheme cluster so a combining mark cannot lead the tail (macOS hands
+/// back NFD paths) nor a joiner dangle at the end of the head.
 fn elide_middle(label: &str, max_width: usize) -> String {
     if label.width() <= max_width {
         return label.to_string();
@@ -260,23 +263,23 @@ fn elide_middle(label: &str, max_width: usize) -> String {
 
     let mut head = String::new();
     let mut used = 0;
-    for ch in label.chars() {
-        let width = ch.width().unwrap_or(0);
+    for cluster in label.graphemes(true) {
+        let width = cluster.width();
         if used + width > head_budget {
             break;
         }
-        head.push(ch);
+        head.push_str(cluster);
         used += width;
     }
 
     let mut tail = String::new();
     let mut used = 0;
-    for ch in label.chars().rev() {
-        let width = ch.width().unwrap_or(0);
+    for cluster in label.graphemes(true).rev() {
+        let width = cluster.width();
         if used + width > tail_budget {
             break;
         }
-        tail.insert(0, ch);
+        tail.insert_str(0, cluster);
         used += width;
     }
 
@@ -346,8 +349,9 @@ fn filter_footer(app: &App) -> Option<Line<'static>> {
 
 #[cfg(test)]
 mod tests {
-    //! Render checks for the filter status/prompt line in the file tree's
-    //! bottom border, driven through the real `ui::render`.
+    //! Render checks for the file tree panel, driven through the real
+    //! `ui::render`: the prompt/filter line in its bottom border, the middle
+    //! elision of grouped file rows, and group rows themselves.
     use super::elide_middle;
     use crate::app::{
         App, DiffSource, FileTreeItem, FileTreeMode, FileTreePrompt, FocusedPanel, InputMode,
@@ -360,6 +364,7 @@ mod tests {
     use ratatui::backend::TestBackend;
     use ratatui::buffer::Buffer;
     use std::path::PathBuf;
+    use unicode_segmentation::UnicodeSegmentation;
     use unicode_width::UnicodeWidthStr;
 
     struct StubVcs(VcsInfo);
@@ -634,6 +639,51 @@ mod tests {
         );
     }
 
+    /// Both cuts have to land on a grapheme boundary at every width, so no
+    /// combining mark ever leads the tail and no joiner ever dangles at the end
+    /// of the head.
+    fn assert_cuts_on_cluster_boundaries(label: &str) {
+        let boundaries: Vec<usize> = label
+            .grapheme_indices(true)
+            .map(|(at, _)| at)
+            .chain(std::iter::once(label.len()))
+            .collect();
+
+        for max_width in 2..=label.width() {
+            let elided = elide_middle(label, max_width);
+            let Some((head, tail)) = elided.split_once('\u{2026}') else {
+                continue;
+            };
+            assert!(
+                boundaries.contains(&head.len()),
+                "head cut mid-cluster at width {max_width}, got {elided:?}"
+            );
+            assert!(
+                boundaries.contains(&(label.len() - tail.len())),
+                "tail cut mid-cluster at width {max_width}, got {elided:?}"
+            );
+        }
+    }
+
+    /// macOS hands paths back in NFD, so an accented component is a base
+    /// character followed by a combining mark. The reverse walk that builds the
+    /// tail reaches the mark first; taking it without its base stacks it on the
+    /// ellipsis.
+    #[test]
+    fn should_not_orphan_a_combining_mark_onto_the_ellipsis() {
+        assert_cuts_on_cluster_boundaries("src/ge\u{301}ne\u{301}re\u{301}/api/v2/fo\u{301}rm.rs");
+    }
+
+    /// The head has the mirror problem: a zero-width joiner or variation
+    /// selector costs nothing to admit, so the head can keep one whose partner
+    /// it then rejects.
+    #[test]
+    fn should_not_dangle_a_joiner_before_the_ellipsis() {
+        assert_cuts_on_cluster_boundaries(
+            "src/\u{1f468}\u{200d}\u{1f4bb}/wo\u{fe0f}rk/v2/handler\u{fe0f}.rs",
+        );
+    }
+
     #[test]
     fn should_stop_eliding_once_the_user_pans_the_panel() {
         let mut app = grouped_app_with(&["src/main/generated/api/v2/repo.ts"]);
@@ -649,8 +699,9 @@ mod tests {
     }
 
     /// Elision is the grouped sidebar's answer to full paths. The ungrouped
-    /// tree under `Flat` draws the same full paths and does *not* elide them:
-    /// it has horizontal panning and a directory tree to fall back on.
+    /// tree under `Flat` draws the same full paths and is out of this slice's
+    /// scope: it clips and leans on horizontal panning, not on a directory
+    /// tree, which `Flat` does not draw.
     #[test]
     fn should_leave_an_ungrouped_flat_path_unelided() {
         let mut app = app_with(&["src/main/generated/api/v2/repo.ts"]);
@@ -660,6 +711,11 @@ mod tests {
         let buffer = draw(&mut app);
         let text = sidebar_text(&app, &buffer);
 
+        // 22 inner cells less 4 of chrome: the row clips at `generated`.
+        assert!(
+            text.contains("src/main/generated"),
+            "expected the clipped head of the path, got:\n{text}"
+        );
         assert!(
             !text.contains('\u{2026}'),
             "the ungrouped tree clips rather than elides, got:\n{text}"
@@ -688,6 +744,29 @@ mod tests {
         assert!(
             text.contains("enter\u{2026}st-routing 0/2"),
             "expected the name to give way to the count, got:\n{text}"
+        );
+    }
+
+    /// Panning turns the group row's elision off for the same reason it does on
+    /// file rows: the pan is how the user reads the rest of a long name.
+    #[test]
+    fn should_stop_eliding_a_group_name_once_the_user_pans_the_panel() {
+        let mut app = app_with_group_named(
+            "enterprise-host-routing",
+            &["src/main/github/host.ts", "src/main/github/routing.ts"],
+        );
+        app.file_list_state.scroll_x = 1;
+
+        let buffer = draw(&mut app);
+        let text = sidebar_text(&app, &buffer);
+
+        assert!(
+            text.contains("nterprise-host-rout"),
+            "the panned row draws the name unelided, got:\n{text}"
+        );
+        assert!(
+            !text.contains('\u{2026}'),
+            "and drops the ellipsis the unpanned row carries, got:\n{text}"
         );
     }
 

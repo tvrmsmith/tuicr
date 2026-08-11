@@ -614,6 +614,12 @@ fn a_partly_filtered_group_counts_only_the_rows_it_still_shows() {
         (group.name.clone(), members)
     };
     let total_before = members.len();
+    // The member the filter then hides is the reviewed one, so a `reviewed`
+    // taken from the grouping rather than the rows on screen reads `1`.
+    app.session
+        .get_file_mut(&PathBuf::from(&members[0]))
+        .expect("tracked file")
+        .reviewed = true;
 
     exclude(&mut app, &format!("^{}$", regex::escape(&members[0])));
 
@@ -766,7 +772,7 @@ fn a_session_saved_before_grouping_existed_still_parses() {
 #[test]
 fn enter_on_a_group_row_collapses_it() {
     let mut app = grouped_paths(PATHS);
-    let (idx, id) = first_group_row(&app);
+    let (idx, id) = a_later_group_row(&app);
     let members = files_under(&app, &id);
     app.file_list_state.select(idx);
 
@@ -792,7 +798,7 @@ fn enter_on_a_group_row_collapses_it() {
 #[test]
 fn a_left_click_on_a_group_row_collapses_it() {
     let mut app = grouped_paths(PATHS);
-    let (idx, id) = first_group_row(&app);
+    let (idx, id) = a_later_group_row(&app);
     let members = files_under(&app, &id);
     let area = ratatui::layout::Rect::new(0, 0, 40, 20);
     app.file_list_area = Some(area);
@@ -820,16 +826,22 @@ fn a_left_click_on_a_group_row_collapses_it() {
     );
 }
 
-/// The first group row's index in the visible tree and its id.
-fn first_group_row(app: &App) -> (usize, String) {
-    app.build_visible_items()
+/// A group row past the top of the tree, with its index and id. Row 0 is what
+/// a handler that ignored the clicked or selected row would reach anyway, so a
+/// target there proves nothing about the row lookup.
+fn a_later_group_row(app: &App) -> (usize, String) {
+    let (idx, id) = app
+        .build_visible_items()
         .iter()
         .enumerate()
-        .find_map(|(idx, item)| match item {
+        .filter_map(|(idx, item)| match item {
             FileTreeItem::Group { id, .. } => Some((idx, id.clone())),
             _ => None,
         })
-        .expect("a group row")
+        .nth(1)
+        .expect("a second group row");
+    assert!(idx > 0, "the target has to be off row 0");
+    (idx, id)
 }
 
 fn files_under(app: &App, id: &str) -> Vec<String> {

@@ -109,6 +109,20 @@ impl TreeTestHarness {
             .collect()
     }
 
+    fn file_idx(&self, path: &str) -> usize {
+        self.app
+            .diff_files
+            .iter()
+            .position(|file| file.display_path() == Path::new(path))
+            .expect("a file at that path")
+    }
+
+    fn selected_item(&self) -> Option<FileTreeItem> {
+        self.build_visible_items()
+            .get(self.app.file_list_state.selected())
+            .cloned()
+    }
+
     fn file_labels(&self) -> Vec<String> {
         self.build_visible_items()
             .iter()
@@ -498,6 +512,86 @@ fn compact_chain_toggles_as_one_unit_keyed_by_the_joined_path() {
     // not toggle keys at all.
     h.toggle("a/b");
     assert_eq!(h.visible_file_count(), 0);
+}
+
+/// Revealing a hidden file expands the *rows* that hide it, not each path
+/// ancestor. Under `Compact` the chain is one row keyed by the joined path, so
+/// `z` and `z/y` are keys no row ever answers to and expanding them would
+/// leave the file hidden with the cursor parked.
+#[test]
+fn jumping_to_a_file_under_a_compact_chain_expands_the_joined_row() {
+    let mut h = TreeTestHarness::with_mode(
+        FileTreeMode::Compact,
+        &["z/y/x/file.rs", "src/main.rs", "src/other.rs"],
+    );
+    h.collapse_all();
+    assert_eq!(h.visible_file_count(), 0, "everything starts hidden");
+    let idx = h.file_idx("z/y/x/file.rs");
+
+    h.app.jump_to_file(idx);
+
+    assert_eq!(
+        h.file_labels(),
+        vec!["file.rs"],
+        "the jump reveals the file it named"
+    );
+    assert_eq!(
+        h.app.expanded_dirs,
+        ["z/y/x".to_string()].into_iter().collect(),
+        "and expands the joined row, nothing else"
+    );
+    assert!(
+        matches!(h.selected_item(), Some(FileTreeItem::File { file_idx, .. }) if file_idx == idx),
+        "with the cursor on the file's own row"
+    );
+}
+
+/// The tree search reveals through the same helper, so it inherits the joined
+/// key rather than re-deriving ancestors of its own.
+#[test]
+fn searching_onto_a_file_under_a_compact_chain_expands_the_joined_row() {
+    let mut h = TreeTestHarness::with_mode(
+        FileTreeMode::Compact,
+        &["z/y/x/file.rs", "src/main.rs", "src/other.rs"],
+    );
+    h.collapse_all();
+
+    h.app.begin_file_tree_prompt(FileTreePrompt::Search);
+    for ch in "x/file".chars() {
+        h.app.file_tree_prompt_insert_char(ch);
+    }
+    h.app.commit_file_tree_prompt();
+
+    assert_eq!(h.file_labels(), vec!["file.rs"]);
+    assert_eq!(
+        h.app.expanded_dirs,
+        ["z/y/x".to_string()].into_iter().collect()
+    );
+}
+
+/// And when the file goes the other way — hidden by a collapse rather than
+/// revealed — the cursor parks on the joined row that swallowed it, which is
+/// the only row still on screen that stands for it.
+#[test]
+fn collapsing_over_a_file_under_a_compact_chain_parks_the_cursor_on_the_joined_row() {
+    let mut h = TreeTestHarness::with_mode(
+        FileTreeMode::Compact,
+        &["z/y/x/file.rs", "src/main.rs", "src/other.rs"],
+    );
+    let idx = h.file_idx("z/y/x/file.rs");
+    h.app.jump_to_file(idx);
+
+    h.collapse_all();
+
+    let selected = h.selected_item();
+    assert!(
+        matches!(&selected, Some(FileTreeItem::Directory { path, .. }) if path == "z/y/x"),
+        "expected the joined row, got {selected:?}"
+    );
+    assert!(
+        h.app.file_list_state.selected() > 0,
+        "and not the row-0 fallback a missed lookup lands on"
+    );
 }
 
 #[test]
