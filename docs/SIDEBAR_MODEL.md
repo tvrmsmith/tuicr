@@ -26,6 +26,14 @@ visible rows (full terminal height).
 The thing being judged is the real task: scanning a 100–400 file review and
 knowing where you are.
 
+The mockups are indicative of the shape, not cell-exact. They draw a grouped
+file row as 4 cells of chrome — two of indent and the `▢ ` checkbox — but the
+shipped row also carries the `M `/`A `/`D ` status badge, so it spends 6. At
+the mockup's 38-cell inner width the real path budget is therefore 32, not 34,
+and the middle elision splits it 11/20 around the ellipsis rather than 11/22.
+Read the mockup rows for their proportions; `src/ui/file_list.rs` is where the
+cells are counted.
+
 ## Decision
 
 **Groups are collapsible top-level nodes in the one sidebar.** A group is the
@@ -214,7 +222,8 @@ mockup below assumed it pays there.
 
 It pays far less than drawn, which is part of why `gd-26r.31` dropped in-group
 directory rows entirely. The mockup was hand-drawn deciding each chain join
-against the group's own files; the shipped `TreeLayout` (`tree.rs:106`) decides
+against the group's own files; the shipped `TreeLayout::joined_dirs`
+(built once by `TreeLayout::new`) decides
 joins once over the whole of `diff_files`, so a directory with one child inside
 a group but five across the changeset does not join. Measured, that is 285
 rows, not the 251 drawn.
@@ -437,13 +446,24 @@ sound where it holds.**
    a directory in two runs inside one group shares a single `(group, directory)`
    key and both runs collapse together.*
 
-4. **Ship the guard and the test with the change.** A `debug_assert` in
-   `build_visible_items` that the group runs are contiguous, plus a test that a
-   deliberately non-contiguous `diff_files` loses no files from the sidebar.
-   The invariant has been load-bearing and unguarded; this change is the moment
-   to fix that, because it is the change that starts violating the old form of
-   it. The guard survives the revision unchanged: group contiguity is still
-   what the grouped branch reads `diff_files` by.
+4. **Ship the guard with the change.** A `debug_assert` in
+   `build_grouped_items` that the group runs are contiguous, plus a test of the
+   property the sidebar needs: `file_idx` ascends across the visible rows,
+   which is what `next_file`/`prev_file` step by. Ascending `file_idx` has two
+   preconditions and the assert covers one of them — contiguity; the other, that
+   `grouping.groups()` runs in the same order as the runs in `diff_files`, is
+   covered by the test `grouping_reorders_diff_files_into_group_runs`. The
+   invariant has been load-bearing and unguarded; this change is the moment to
+   fix that, because it is the change that starts violating the old form of it.
+   The guard survives the revision unchanged: group contiguity is still what
+   the grouped branch reads `diff_files` by.
+
+   *Originally: the guard plus a test that a deliberately non-contiguous
+   `diff_files` loses no files from the sidebar. That test cannot be written
+   against the shipped guard, which panics on exactly the input it would have
+   to construct — and it would prove nothing now, since members are resolved
+   by path rather than by scanning a run. Ascending `file_idx` is the property
+   the assert actually protects.*
 
 5. **The tree mode does not reach the grouped branch.** `nested` and `compact`
    change what ancestors the *ungrouped* tree emits; `flat` drops its directory
@@ -504,20 +524,19 @@ larger one is that in-group directory rows had stopped paying for themselves:
   ids and directory paths.
 
 What did *not* move: the collapsed overview is still **13 rows for 161 files**,
-verified in all three modes and on the second fixture (14 groups, 14 rows). A
+verified in all three modes, and the second fixture (158 files, 14 groups,
+uncommitted — `gd-26r.20`) agreed at 14 rows when it was measured. A
 collapsed group emits nothing beneath it, so no decision about in-group layout
 can reach that number. It was never at risk, and it remains the case for the
 whole feature.
 
-**The code does not match this yet.** What ships today is `gd-26r.28` slice A:
-in-group directory rows, per-run, `nested` by default under grouping — 305 rows
-on the fixture. It is correct and loses no files; it is simply more layout than
-this record now calls for. Two follow-ups close the gap:
+**`gd-26r.34` made the code match this**: `build_grouped_items` emits no
+directory rows, grouped files carry the full relative path at depth 1 in every
+tree mode, and `expanded_dirs` holds group ids only while grouping is on. The
+per-run regression test retired with the rows it guarded, as did the two
+interim row-cost pins (305 and 285); 174 and 13 are pinned and unchanged. One
+follow-up is left:
 
-- `gd-26r.34` — remove in-group directory emission from `build_grouped_items`,
-  label grouped files with the full relative path, and reduce `expanded_dirs`
-  to group ids while grouping is on. Retires the per-run regression test with
-  the rows it guards.
 - `gd-26r.35` — bind `<leader>g` and `:set groups!`, making grouping a
   session toggle rather than a startup-only setting, and document both.
 

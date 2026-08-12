@@ -16,16 +16,6 @@ use super::*;
 use crate::grouping::changeset::Changeset;
 use crate::grouping::passes::GroupingConfig;
 
-/// Separates a group id from a directory path in an `expanded_dirs` key.
-///
-/// `expanded_dirs` is a flat `HashSet<String>` shared by group rows and
-/// directory rows, and under grouping the same directory legitimately appears
-/// under several groups — collapsing `src/main/github` in one group must not
-/// collapse it in all of them (`docs/SIDEBAR_MODEL.md`). A unit separator
-/// occurs in neither half, so a qualified key can never collide with a bare
-/// group id or with an unqualified path.
-const KEY_SEP: char = '\u{1f}';
-
 impl App {
     /// Turns grouping on for the session and rebuilds the sidebar around it.
     ///
@@ -40,17 +30,13 @@ impl App {
 
     /// The `expanded_dirs` key of a group row. The group id doubles as the key
     /// so nothing has to be remapped when a regroup renames a group.
+    ///
+    /// Group ids are the *only* keys `expanded_dirs` holds while grouping is
+    /// on, and directory paths the only ones it holds while grouping is off
+    /// (`docs/SIDEBAR_MODEL.md` point 3), so the two key spaces are never
+    /// populated at once and cannot collide.
     pub(in crate::app) fn group_row_key(group: &crate::grouping::Group) -> String {
         group.id.as_str().to_string()
-    }
-
-    /// The `expanded_dirs` key of a directory row, scoped to the group it is
-    /// rendered under. Ungrouped, that is the bare path, exactly as before.
-    pub(in crate::app) fn dir_row_key(group: Option<&str>, dir: &str) -> String {
-        match group {
-            Some(id) => format!("{id}{KEY_SEP}{dir}"),
-            None => dir.to_string(),
-        }
     }
 
     /// The group a path belongs to, when there is a grouping. The

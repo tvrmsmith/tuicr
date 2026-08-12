@@ -98,6 +98,14 @@ fn grouped_paths(paths: &[&str]) -> App {
     grouped_app(paths.iter().map(|path| make_file(path)).collect())
 }
 
+/// The same changeset with the commit-message pseudo-file in it, which is the
+/// only row that lives outside the partition.
+fn grouped_paths_with_commit_message(paths: &[&str]) -> App {
+    let mut files: Vec<DiffFile> = paths.iter().map(|path| make_file(path)).collect();
+    files.push(commit_message_file());
+    grouped_app(files)
+}
+
 fn file_order(app: &App) -> Vec<String> {
     app.diff_files
         .iter()
@@ -283,151 +291,400 @@ fn collapsing_a_group_hides_its_files_and_nothing_else() {
     );
 }
 
-/// A changeset the heuristics put `auth` on as one group spanning two
-/// directories, with a broad test in the first of them — so the within-group
-/// sort's broad-test band splits `src/alpha` into two non-adjacent runs.
-const SPLIT_DIR_PATHS: &[&str] = &[
-    "src/alpha/auth_helper.rs",
-    "src/zeta/auth_store.rs",
-    "src/alpha/auth.e2e.test.rs",
-    // Filler with unrelated tokens: `auth` is only a cluster key once the
-    // changeset is large enough that three carriers are not ubiquitous.
-    "pkg0/unique0.rs",
-    "pkg1/unique1.rs",
-    "pkg2/unique2.rs",
-    "pkg3/unique3.rs",
-    "pkg4/unique4.rs",
-    "pkg5/unique5.rs",
-    "pkg6/unique6.rs",
-    "pkg7/unique7.rs",
-    "pkg8/unique8.rs",
-    "pkg9/unique9.rs",
-    "pkg10/unique10.rs",
-    "pkg11/unique11.rs",
-    "pkg12/unique12.rs",
-];
+#[test]
+fn a_group_lists_its_files_flat_at_depth_one_by_full_path() {
+    // `docs/SIDEBAR_MODEL.md`: inside a group there are no directory rows at
+    // all, whatever the tree mode says. A group's members sit directly beneath
+    // it, each labelled with its full relative path.
+    for mode in [
+        FileTreeMode::Nested,
+        FileTreeMode::Compact,
+        FileTreeMode::Flat,
+    ] {
+        let mut app = grouped_paths_with_commit_message(PATHS);
+        app.file_tree_mode = mode;
+        let items = app.build_visible_items();
 
-fn split_directory_group(app: &App) -> (String, String) {
-    let grouping = app.grouping.as_ref().expect("grouping computed");
-    for group in grouping.groups() {
-        let dirs: Vec<String> = grouping
-            .files_in(&group.id)
-            .map(|path| {
-                path.parent()
-                    .map(|dir| dir.to_string_lossy().to_string())
-                    .unwrap_or_default()
-            })
-            .collect();
-        let mut runs: Vec<String> = Vec::new();
-        for dir in dirs {
-            if runs.last() == Some(&dir) {
+        assert!(
+            !items
+                .iter()
+                .any(|item| matches!(item, FileTreeItem::Directory { .. })),
+            "{mode:?} emitted a directory row under grouping"
+        );
+        for item in &items {
+            let FileTreeItem::File {
+                file_idx,
+                label,
+                depth,
+            } = item
+            else {
                 continue;
-            }
-            if runs.contains(&dir) {
-                return (group.id.as_str().to_string(), dir);
-            }
-            runs.push(dir);
+            };
+            let file = &app.diff_files[*file_idx];
+            let path = file.display_path().to_string_lossy().to_string();
+            assert_eq!(label, &path, "{mode:?} labelled {path} by file name");
+            // The commit-message pseudo-file is outside the partition and
+            // pinned above every group, so it alone sits at depth 0.
+            let expected = usize::from(!file.is_commit_message);
+            assert_eq!(*depth, expected, "{mode:?}: {path}");
         }
+        assert!(
+            app.diff_files.iter().any(|file| file.is_commit_message),
+            "the depth-0 case only runs with a pseudo-file present"
+        );
+        assert_eq!(visible_files(&app).len(), PATHS.len() + 1, "{mode:?}");
     }
-    panic!("fixture no longer splits a directory inside a group");
 }
 
 #[test]
-fn a_directory_split_into_two_runs_inside_one_group_keeps_every_row() {
-    // The within-group sort bands a group by central file, then mechanical and
-    // broad-test tails, so one directory can appear in two non-adjacent runs
-    // inside a single group. Directory rows are emitted per run for exactly
-    // this reason: `docs/SIDEBAR_MODEL.md` assumed one run per group, which
-    // would swallow the second run's files (handed back as `gd-26r.31`).
-    let mut app = grouped_paths(SPLIT_DIR_PATHS);
-    let (group_id, split_dir) = split_directory_group(&app);
+fn expanding_seeds_group_ids_and_nothing_else() {
+    // `expanded_dirs` holds group ids only while grouping is on, which is what
+    // lets one flat string set serve both sidebars without colliding.
+    let app = grouped_paths(PATHS);
+    let ids: HashSet<String> = app
+        .grouping
+        .as_ref()
+        .expect("grouping computed")
+        .groups()
+        .iter()
+        .map(|group| group.id.as_str().to_string())
+        .collect();
+
+    assert_eq!(app.expanded_dirs, ids);
+}
+
+#[test]
+fn jumping_to_a_hidden_file_reveals_it_by_opening_its_group_alone() {
+    let mut app = grouped_paths(PATHS);
+    app.collapse_all_dirs();
+    assert!(visible_files(&app).is_empty(), "everything starts hidden");
+
+    let target = app
+        .diff_files
+        .iter()
+        .position(|file| !file.is_commit_message)
+        .expect("a real file");
+    let path = app.diff_files[target]
+        .display_path()
+        .to_string_lossy()
+        .to_string();
+    let group_id = app
+        .group_of_file(app.diff_files[target].display_path())
+        .expect("assigned to a group")
+        .id
+        .as_str()
+        .to_string();
+
+    app.jump_to_file(target);
+
+    assert!(visible_files(&app).contains(&path));
+    assert_eq!(
+        app.expanded_dirs,
+        HashSet::from([group_id]),
+        "the group id is the only key that reveals anything"
+    );
+}
+
+#[test]
+fn the_commit_message_row_survives_collapsing_every_group() {
+    // It is emitted before the group loop precisely so no collapse can reach
+    // it (`docs/TOTAL_COVERAGE.md`): the review always has a way back to the
+    // message, however the groups are folded.
+    let mut app = grouped_paths_with_commit_message(PATHS);
+    app.collapse_all_dirs();
 
     assert_eq!(
-        visible_files(&app).len(),
-        SPLIT_DIR_PATHS.len(),
-        "fully expanded, every file has a row"
+        visible_files(&app),
+        vec!["COMMIT_MSG".to_string()],
+        "only the pseudo-file survives a full collapse"
     );
+}
 
-    let key = format!("{group_id}\u{1f}{split_dir}");
-    let rows = app
+#[test]
+fn collapsing_the_group_holding_the_current_file_parks_the_cursor_on_its_group_row() {
+    let mut app = grouped_paths(PATHS);
+    // Not the first group: row 0 is what the `select(0)` fallback produces, so
+    // a target there would pass whether the grouped arm ran or not.
+    let first_group = app
+        .grouping
+        .as_ref()
+        .expect("grouping computed")
+        .groups()
+        .first()
+        .expect("at least one group")
+        .id
+        .as_str()
+        .to_string();
+    let target = (0..app.diff_files.len())
+        .find(|&idx| {
+            let file = &app.diff_files[idx];
+            !file.is_commit_message
+                && app
+                    .group_of_file(file.display_path())
+                    .is_some_and(|group| group.id.as_str() != first_group)
+        })
+        .expect("a file outside the first group");
+    app.jump_to_file(target);
+    let group_id = app
+        .group_of_file(app.diff_files[target].display_path())
+        .expect("assigned to a group")
+        .id
+        .as_str()
+        .to_string();
+
+    app.collapse_all_dirs();
+
+    let expected = app
         .build_visible_items()
         .iter()
-        .filter(|item| matches!(item, FileTreeItem::Directory { path, .. } if *path == key))
-        .count();
-    assert_eq!(rows, 2, "the split directory is emitted once per run");
+        .position(|item| matches!(item, FileTreeItem::Group { id, .. } if *id == group_id))
+        .expect("the group row is still on screen");
+    assert!(
+        expected > 0,
+        "the target's group row must not be row 0, or the fallback satisfies this test"
+    );
+    assert_eq!(
+        app.file_list_state.selected(),
+        expected,
+        "the cursor follows the hidden file up to its group row, not to row 0"
+    );
+}
 
-    let in_split_dir: Vec<String> = SPLIT_DIR_PATHS
-        .iter()
-        .filter(|path| path.starts_with(&format!("{split_dir}/")))
-        .map(|path| path.to_string())
-        .collect();
-    assert!(in_split_dir.len() >= 2);
+#[test]
+fn searching_the_tree_onto_a_file_inside_a_collapsed_group_moves_the_cursor() {
+    // `/` + Enter reveals through whatever hides the match. Under grouping
+    // that is the group row, and walking path ancestors instead would expand
+    // keys no grouped row answers to, leaving the cursor parked while the
+    // status line claimed a hit.
+    let mut app = grouped_paths(PATHS);
+    app.collapse_all_dirs();
+    assert!(visible_files(&app).is_empty(), "everything starts hidden");
 
-    app.toggle_directory(&key);
-    let after = visible_files(&app);
-    for path in &in_split_dir {
-        assert!(
-            !after.contains(path),
-            "{path} is in the collapsed directory, in either run"
-        );
+    app.begin_file_tree_prompt(FileTreePrompt::Search);
+    for ch in "auth.md".chars() {
+        app.file_tree_prompt_insert_char(ch);
     }
+    app.commit_file_tree_prompt();
+
+    assert!(visible_files(&app).contains(&"docs/auth.md".to_string()));
+    let selected = app
+        .build_visible_items()
+        .get(app.file_list_state.selected())
+        .cloned();
+    assert!(
+        matches!(
+            selected,
+            Some(FileTreeItem::File { file_idx, .. })
+                if app.diff_files[file_idx].display_path() == Path::new("docs/auth.md")
+        ),
+        "the cursor sits on the match, got {selected:?}"
+    );
+}
+
+/// The grouping the engine produced for `PATHS` minus `Cargo.lock`, with
+/// `Cargo.lock` appended to `diff_files` afterwards. That is the shape
+/// `order_files_by_group` sorts an unmentioned file into — last by index,
+/// mentioned by no group — without any hand-built partition.
+fn app_with_an_orphan_file() -> (App, usize) {
+    let grouped: Vec<&str> = PATHS
+        .iter()
+        .copied()
+        .filter(|path| *path != "Cargo.lock")
+        .collect();
+    let mut app = grouped_paths(&grouped);
+
+    let orphan = make_file("Cargo.lock");
+    app.session
+        .add_file(orphan.display_path().clone(), orphan.status, 0);
+    app.diff_files.push(orphan);
+
+    (app, PATHS.len() - 1)
+}
+
+#[test]
+fn a_file_the_grouping_does_not_mention_still_gets_a_row() {
+    // The partition is total, so this state is only reachable by building it.
+    // `order_files_by_group` deliberately sorts an unmentioned file last
+    // rather than dropping it; the sidebar has to honour that or the defence
+    // is cancelled and the file is lost from the review.
+    let (mut app, orphan_idx) = app_with_an_orphan_file();
+
+    let items = app.build_visible_items();
+    assert!(
+        matches!(
+            items.last(),
+            Some(FileTreeItem::File { file_idx, depth, .. })
+                if *file_idx == orphan_idx && *depth == 0
+        ),
+        "the orphan is the last row, at top level after the groups: {:?}",
+        items.last()
+    );
+    assert_ascending_by_file_idx(&items);
+
+    app.jump_to_file(orphan_idx);
+    let selected = app
+        .build_visible_items()
+        .get(app.file_list_state.selected())
+        .cloned();
+    assert!(
+        matches!(selected, Some(FileTreeItem::File { file_idx, .. }) if file_idx == orphan_idx),
+        "and the cursor can reach it, got {selected:?}"
+    );
+}
+
+#[test]
+fn a_filter_that_hides_the_orphan_takes_its_row_with_it() {
+    let (mut app, orphan_idx) = app_with_an_orphan_file();
+    assert!(visible_files(&app).contains(&"Cargo.lock".to_string()));
+
+    exclude(&mut app, r"^Cargo\.lock$");
+
+    assert!(
+        !visible_files(&app).contains(&"Cargo.lock".to_string()),
+        "the orphan row obeys the filter like every other row"
+    );
+    assert!(!app.build_visible_items().iter().any(
+        |item| matches!(item, FileTreeItem::File { file_idx, .. } if *file_idx == orphan_idx)
+    ));
+}
+
+/// Apply an exclude pattern the way the user does, through the tree prompt.
+fn exclude(app: &mut App, pattern: &str) {
+    app.begin_file_tree_prompt(FileTreePrompt::Exclude);
+    for ch in pattern.chars() {
+        app.file_tree_prompt_insert_char(ch);
+    }
+    app.commit_file_tree_prompt();
+}
+
+#[test]
+fn a_group_whose_every_file_the_filter_hides_loses_its_row() {
+    let mut app = grouped_paths_with_commit_message(PATHS);
+    let (doomed, members) = {
+        let grouping = app.grouping.as_ref().expect("grouping computed");
+        assert!(
+            grouping.groups().len() > 1,
+            "a sibling group has to survive for this to say anything"
+        );
+        let group = &grouping.groups()[0];
+        let members: Vec<String> = grouping
+            .files_in(&group.id)
+            .map(|path| regex::escape(&path.to_string_lossy()))
+            .collect();
+        (group.name.clone(), members)
+    };
+    let before: Vec<String> = group_rows(&app).into_iter().map(|row| row.0).collect();
+
+    exclude(&mut app, &format!("^({})$", members.join("|")));
+
+    let after: Vec<String> = group_rows(&app).into_iter().map(|row| row.0).collect();
+    assert!(
+        !after.contains(&doomed),
+        "a group with nothing left to show disappears with its files, got {after:?}"
+    );
     assert_eq!(
         after.len(),
-        SPLIT_DIR_PATHS.len() - in_split_dir.len(),
-        "and nothing else moved"
+        before.len() - 1,
+        "and only that group: {before:?} -> {after:?}"
+    );
+    assert!(
+        visible_files(&app).contains(&"COMMIT_MSG".to_string()),
+        "the pseudo-file is outside the partition and outside the filter's reach here"
+    );
+}
+
+/// A filter that hides *part* of a group leaves the row, and the row's count
+/// has to be of what it is actually showing — a count taken from the grouping
+/// instead of the filtered rows would still read `0/3` under a filter hiding
+/// two of the three.
+#[test]
+fn a_partly_filtered_group_counts_only_the_rows_it_still_shows() {
+    let mut app = grouped_paths(PATHS);
+    let (name, members) = {
+        let grouping = app.grouping.as_ref().expect("grouping computed");
+        let group = grouping
+            .groups()
+            .iter()
+            .find(|group| grouping.files_in(&group.id).count() > 1)
+            .expect("a group with more than one member");
+        let members: Vec<String> = grouping
+            .files_in(&group.id)
+            .map(|path| path.to_string_lossy().to_string())
+            .collect();
+        (group.name.clone(), members)
+    };
+    let total_before = members.len();
+    // The member the filter then hides is the reviewed one, so a `reviewed`
+    // taken from the grouping rather than the rows on screen reads `1`.
+    app.session
+        .get_file_mut(&PathBuf::from(&members[0]))
+        .expect("tracked file")
+        .reviewed = true;
+
+    exclude(&mut app, &format!("^{}$", regex::escape(&members[0])));
+
+    let row = group_rows(&app)
+        .into_iter()
+        .find(|row| row.0 == name)
+        .expect("the group keeps its row while any member survives");
+    assert_eq!(
+        (row.1, row.2),
+        (0, total_before - 1),
+        "the row counts the files it shows, not the files the grouping holds"
+    );
+    let shown = visible_files(&app);
+    assert!(
+        !shown.contains(&members[0]),
+        "the excluded member is gone, got {shown:?}"
+    );
+    assert!(
+        shown.contains(&members[1]),
+        "and its siblings are not, got {shown:?}"
     );
 }
 
 #[test]
-fn collapsing_a_directory_in_one_group_leaves_it_open_in_another() {
-    // `src/` lives in both groups here, so an unscoped `expanded_dirs` key
-    // would collapse both at once.
-    let app_paths = &[
-        "src/auth/login.rs",
-        "src/auth/session.rs",
-        "src/render/paint.rs",
-        "src/render/canvas.rs",
-    ];
-    let mut app = grouped_paths(app_paths);
-    let ids = group_ids(&app);
+fn the_commit_message_row_obeys_the_filter_like_any_other() {
+    let mut app = grouped_paths_with_commit_message(PATHS);
+    assert!(visible_files(&app).contains(&"COMMIT_MSG".to_string()));
+
+    exclude(&mut app, "^COMMIT_MSG$");
+
     assert!(
-        ids.len() >= 2,
-        "the fixture must span two groups to be a test"
+        !visible_files(&app).contains(&"COMMIT_MSG".to_string()),
+        "being pinned above the groups does not exempt it from the filter"
     );
+    assert!(
+        !group_rows(&app).is_empty(),
+        "and the rest of the sidebar is untouched"
+    );
+}
 
-    let dir_keys: Vec<String> = app
-        .build_visible_items()
-        .iter()
-        .filter_map(|item| match item {
-            FileTreeItem::Directory { path, .. } => Some(path.clone()),
-            _ => None,
-        })
-        .collect();
-    let scoped = dir_keys
-        .iter()
-        .find(|key| key.starts_with(&format!("{}\u{1f}", ids[0])))
-        .expect("directory keys are group-scoped")
-        .clone();
-
-    let before = visible_files(&app).len();
-    app.toggle_directory(&scoped);
-    let after = visible_files(&app);
-
-    assert!(after.len() < before, "the collapse hid something");
-    let other_group_files: Vec<String> = {
-        let grouping = app.grouping.as_ref().unwrap();
-        let id = crate::grouping::GroupId::from_persisted(ids[1].clone());
-        grouping
-            .files_in(&id)
-            .map(|path| path.to_string_lossy().to_string())
-            .collect()
-    };
-    for path in other_group_files {
-        assert!(
-            after.contains(&path),
-            "{path} is in another group and its directory is still open"
-        );
+fn assert_ascending_by_file_idx(items: &[FileTreeItem]) {
+    let mut previous: Option<usize> = None;
+    for item in items {
+        let FileTreeItem::File { file_idx, .. } = item else {
+            continue;
+        };
+        if let Some(previous) = previous {
+            assert!(
+                *file_idx > previous,
+                "row order must ascend: {file_idx} came after {previous}"
+            );
+        }
+        previous = Some(*file_idx);
     }
+    assert!(previous.is_some(), "the fixture has rows to check");
+}
+
+#[test]
+fn the_visible_rows_ascend_by_file_idx() {
+    // What group contiguity buys the sidebar (`docs/SIDEBAR_MODEL.md` point
+    // 4): `next_file`/`prev_file` step by comparing `file_idx` against the
+    // current one, so a row order that ran backwards would skip files.
+    let app = grouped_paths_with_commit_message(PATHS);
+
+    assert_ascending_by_file_idx(&app.build_visible_items());
 }
 
 #[test]
@@ -508,4 +765,96 @@ fn a_session_saved_before_grouping_existed_still_parses() {
             .all(|review| review.group_id.is_none()),
         "no group is invented for a session that never had one"
     );
+}
+
+/// Enter on a group row folds it, the same key that folds a directory row in
+/// the ungrouped tree.
+#[test]
+fn enter_on_a_group_row_collapses_it() {
+    let mut app = grouped_paths(PATHS);
+    let (idx, id) = a_later_group_row(&app);
+    let members = files_under(&app, &id);
+    app.file_list_state.select(idx);
+
+    crate::handler::handle_file_list_action(
+        &mut app,
+        crate::input::keybindings::Action::SelectFile,
+    );
+
+    let shown = visible_files(&app);
+    assert!(
+        members.iter().all(|path| !shown.contains(path)),
+        "the group's files went away with the fold, got {shown:?}"
+    );
+    assert!(
+        group_ids(&app).contains(&id),
+        "the group keeps its own row, got {:?}",
+        group_ids(&app)
+    );
+}
+
+/// And a left click on the row does the same thing, through the real mouse
+/// entry point rather than the click handler directly.
+#[test]
+fn a_left_click_on_a_group_row_collapses_it() {
+    let mut app = grouped_paths(PATHS);
+    let (idx, id) = a_later_group_row(&app);
+    let members = files_under(&app, &id);
+    let area = ratatui::layout::Rect::new(0, 0, 40, 20);
+    app.file_list_area = Some(area);
+    app.file_list_inner_area = Some(area);
+
+    crate::handler::handle_mouse_event(
+        &mut app,
+        crossterm::event::MouseEvent {
+            kind: crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Left),
+            column: 2,
+            row: idx as u16,
+            modifiers: crossterm::event::KeyModifiers::NONE,
+        },
+    );
+
+    let shown = visible_files(&app);
+    assert!(
+        members.iter().all(|path| !shown.contains(path)),
+        "the click folded the group, got {shown:?}"
+    );
+    assert_eq!(
+        app.file_list_state.selected(),
+        idx,
+        "and left the cursor on the row it folded"
+    );
+}
+
+/// A group row past the top of the tree, with its index and id. Row 0 is what
+/// a handler that ignored the clicked or selected row would reach anyway, so a
+/// target there proves nothing about the row lookup.
+fn a_later_group_row(app: &App) -> (usize, String) {
+    let (idx, id) = app
+        .build_visible_items()
+        .iter()
+        .enumerate()
+        .filter_map(|(idx, item)| match item {
+            FileTreeItem::Group { id, .. } => Some((idx, id.clone())),
+            _ => None,
+        })
+        .nth(1)
+        .expect("a second group row");
+    assert!(idx > 0, "the target has to be off row 0");
+    (idx, id)
+}
+
+fn files_under(app: &App, id: &str) -> Vec<String> {
+    let grouping = app.grouping.as_ref().expect("grouping computed");
+    let group_id = grouping
+        .groups()
+        .iter()
+        .find(|group| group.id.as_str() == id)
+        .expect("a group with that id")
+        .id
+        .clone();
+    grouping
+        .files_in(&group_id)
+        .map(|path| path.to_string_lossy().to_string())
+        .collect()
 }
