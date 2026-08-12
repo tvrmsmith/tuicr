@@ -85,6 +85,7 @@ tuicr mr 125                # GitLab MR
 tuicr tui pr 125            # GitHub PR via explicit TUI subcommand
 tuicr tui mr 125            # GitLab MR via explicit TUI subcommand
 tuicr --stdout              # Pipe the review to stdout
+tuicr --no-grouping         # Plain directory tree instead of the grouped sidebar
 tuicr review list           # List saved local review sessions
 tuicr update                # Update the active installation
 tuicr update 0.18.0         # Install a known-good version
@@ -108,6 +109,11 @@ its file or hunk is already marked reviewed, tuicr reveals the target without cl
 reviewed state.
 Auto-detects git, jj, or mercurial. SHA-256 Git repositories automatically use the Git CLI backend,
 including when reviewing root commits; ordinary SHA-1 repositories still default to libgit2.
+
+The file sidebar groups the changeset by concern instead of by directory: one collapsible
+row per group, its files listed beneath it by full relative path. Collapse the groups and a
+large review reads as a short overview of what changed. `--no-grouping` reviews the plain
+directory tree instead, whose layout the `file_tree` config key controls.
 
 ## How it compares
 
