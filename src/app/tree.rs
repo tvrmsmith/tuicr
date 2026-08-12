@@ -14,6 +14,11 @@ pub(in crate::app) struct DirRow {
 /// Which directory rows the active tree mode emits, for one `diff_files`
 /// state. Built once and reused across a whole pass, because `Compact` has to
 /// see the entire file set before it can tell which chains join.
+///
+/// The **ungrouped** tree only. The grouped sidebar has no directory rows, so
+/// nothing here reaches it (`docs/SIDEBAR_MODEL.md` point 5) — which is also
+/// why deciding joins over the whole of `diff_files` is right rather than
+/// merely convenient: ungrouped, the whole of `diff_files` is the tree.
 pub(in crate::app) struct TreeLayout {
     mode: FileTreeMode,
     /// Directories that merge into their single child instead of taking a
@@ -314,29 +319,19 @@ impl App {
     }
 
     pub fn expand_all_dirs(&mut self) {
-        let layout = self.tree_layout();
         self.expanded_dirs = match self.grouping.as_ref() {
-            // Directory keys are group-scoped, so they have to be seeded per
-            // group — and the group rows themselves have to be seeded too, or
-            // every file starts hidden behind a collapsed group.
-            Some(grouping) => grouping
-                .groups()
-                .iter()
-                .flat_map(|group| {
-                    let dirs: Vec<String> = grouping
-                        .files_in(&group.id)
-                        .flat_map(|path| layout.dir_rows(path))
-                        .map(|row| Self::dir_row_key(Some(group.id.as_str()), &row.path))
-                        .collect();
-                    std::iter::once(Self::group_row_key(group)).chain(dirs)
-                })
-                .collect(),
-            None => self
-                .diff_files
-                .iter()
-                .flat_map(|file| layout.dir_rows(file.display_path()))
-                .map(|row| row.path)
-                .collect(),
+            // Group rows are the only collapsible thing under grouping, so
+            // group ids are the whole key space — seeding a directory path
+            // here would put a key in the set that no row ever reads.
+            Some(grouping) => grouping.groups().iter().map(Self::group_row_key).collect(),
+            None => {
+                let layout = self.tree_layout();
+                self.diff_files
+                    .iter()
+                    .flat_map(|file| layout.dir_rows(file.display_path()))
+                    .map(|row| row.path)
+                    .collect()
+            }
         };
         self.ensure_valid_tree_selection();
     }
@@ -367,6 +362,33 @@ impl App {
         }
     }
 
+    /// Expand whatever hides `file_idx` and put the tree cursor on its row.
+    ///
+    /// Under grouping the file's group id is the only key that reveals
+    /// anything — there are no in-group directory rows — and ungrouped it is
+    /// every directory row on the path. Every reveal site goes through here,
+    /// so the two key spaces cannot drift apart.
+    pub(in crate::app) fn reveal_file(&mut self, file_idx: usize) {
+        let Some(file) = self.diff_files.get(file_idx) else {
+            return;
+        };
+        let path = file.display_path().clone();
+        if self.grouping.is_some() {
+            if let Some(group) = self.group_of_file(&path) {
+                let key = Self::group_row_key(group);
+                self.expanded_dirs.insert(key);
+            }
+        } else {
+            for row in self.tree_layout().dir_rows(&path) {
+                self.expanded_dirs.insert(row.path);
+            }
+        }
+
+        if let Some(tree_idx) = self.file_idx_to_tree_idx(file_idx) {
+            self.file_list_state.select(tree_idx);
+        }
+    }
+
     fn ensure_valid_tree_selection(&mut self) {
         let visible_items = self.build_visible_items();
         if visible_items.is_empty() {
@@ -385,31 +407,32 @@ impl App {
             }
         } else {
             if let Some(file) = self.diff_files.get(current_file_idx) {
-                // Fall back to the innermost directory row still on screen,
-                // which is the collapsed ancestor that hid the file.
-                let group = self.group_of_file(file.display_path());
-                let group_id = group.map(|group| group.id.as_str());
-                let dir_rows = self.tree_layout().dir_rows(file.display_path());
-                for row in dir_rows.iter().rev() {
-                    let key = Self::dir_row_key(group_id, &row.path);
-                    for (tree_idx, item) in visible_items.iter().enumerate() {
-                        if let FileTreeItem::Directory { path, .. } = item
-                            && *path == key
-                        {
-                            self.file_list_state.select(tree_idx);
-                            return;
+                // Under grouping the only thing that can have hidden the file
+                // is its group row; ungrouped it is the innermost directory
+                // row still on screen. Same discriminant as `reveal_file`, so
+                // the two cannot disagree about which sidebar is on screen.
+                if self.grouping.is_some() {
+                    if let Some(group) = self.group_of_file(file.display_path()) {
+                        let key = Self::group_row_key(group);
+                        for (tree_idx, item) in visible_items.iter().enumerate() {
+                            if let FileTreeItem::Group { id, .. } = item
+                                && *id == key
+                            {
+                                self.file_list_state.select(tree_idx);
+                                return;
+                            }
                         }
                     }
-                }
-                // Under grouping the collapsed ancestor may be the group
-                // itself, which is above every directory row the file has.
-                if let Some(group) = group {
-                    for (tree_idx, item) in visible_items.iter().enumerate() {
-                        if let FileTreeItem::Group { id, .. } = item
-                            && id == group.id.as_str()
-                        {
-                            self.file_list_state.select(tree_idx);
-                            return;
+                } else {
+                    let dir_rows = self.tree_layout().dir_rows(file.display_path());
+                    for row in dir_rows.iter().rev() {
+                        for (tree_idx, item) in visible_items.iter().enumerate() {
+                            if let FileTreeItem::Directory { path, .. } = item
+                                && *path == row.path
+                            {
+                                self.file_list_state.select(tree_idx);
+                                return;
+                            }
                         }
                     }
                 }
@@ -426,10 +449,16 @@ impl App {
     }
 
     /// The grouped sidebar: the commit-message pseudo-file pinned above
-    /// everything, then a collapsible row per group with its directory subtree
-    /// scoped inside it (`docs/SIDEBAR_MODEL.md`).
+    /// everything, then a collapsible row per group with the group's files
+    /// listed directly beneath it (`docs/SIDEBAR_MODEL.md`).
+    ///
+    /// There are no directory rows inside a group. A group's members are
+    /// scattered across directories by construction, so directory chrome cost
+    /// 130 rows on the fixture to say what the full path already says, and it
+    /// cut across the within-group ordering (`gd-26r.31`). The tree mode
+    /// governs the ungrouped tree only: grouping renders as though `Flat` were
+    /// set, whatever the config says, and leaves the mode alone.
     fn build_grouped_items(&self, grouping: &crate::grouping::Grouping) -> Vec<FileTreeItem> {
-        let layout = self.tree_layout();
         let mut items = Vec::new();
 
         // Outside the partition, so it is emitted before the group loop and
@@ -438,7 +467,7 @@ impl App {
             if file.is_commit_message && self.file_passes_filter(file) {
                 items.push(FileTreeItem::File {
                     file_idx,
-                    label: self.file_tree_mode.file_label(file.display_path()),
+                    label: FileTreeMode::Flat.file_label(file.display_path()),
                     depth: 0,
                 });
             }
@@ -482,49 +511,36 @@ impl App {
                 continue;
             }
 
-            // Directory rows are emitted per **run**, not once per group. The
-            // within-group sort bands a group's files by central file, then
-            // mechanical and broad-test tails (`gd-26r.27`), so one directory
-            // can legitimately appear in two non-adjacent runs inside a single
-            // group. `docs/SIDEBAR_MODEL.md` assumed one run per group and
-            // reset `seen_dirs` only at group boundaries; that reset alone
-            // would drop the second run's files whenever the directory is
-            // collapsed, which is the very bug the record set out to fix. The
-            // handback is `gd-26r.31`.
-            let mut open_chain: Vec<String> = Vec::new();
+            // Every member at depth 1, in the engine's within-group order,
+            // labelled with its full relative path. The group row is the only
+            // thing that collapses, so there is nothing here that can hide a
+            // file the way a collapsed in-group directory row could.
             for file_idx in members {
-                let path = self.diff_files[file_idx].display_path();
-                let dir_rows = layout.dir_rows(path);
-
-                let mut visible = true;
-                for (depth, row) in dir_rows.iter().enumerate() {
-                    let key = Self::dir_row_key(Some(group.id.as_str()), &row.path);
-                    if open_chain.get(depth) != Some(&row.path) {
-                        open_chain.truncate(depth);
-                        open_chain.push(row.path.clone());
-                        if visible {
-                            items.push(FileTreeItem::Directory {
-                                path: key.clone(),
-                                label: row.label.clone(),
-                                depth: depth + 1,
-                                expanded: self.expanded_dirs.contains(&key),
-                            });
-                        }
-                    }
-                    if !self.expanded_dirs.contains(&key) {
-                        visible = false;
-                    }
-                }
-                open_chain.truncate(dir_rows.len());
-
-                if visible {
-                    items.push(FileTreeItem::File {
-                        file_idx,
-                        label: self.file_tree_mode.file_label(path),
-                        depth: dir_rows.len() + 1,
-                    });
-                }
+                items.push(FileTreeItem::File {
+                    file_idx,
+                    label: FileTreeMode::Flat.file_label(self.diff_files[file_idx].display_path()),
+                    depth: 1,
+                });
             }
+        }
+
+        // A file the grouping does not mention still gets a row, at top level
+        // after the groups — the same place `order_files_by_group` sorts it.
+        // The partition is total today, so this emits nothing; it is here
+        // because losing a file from the review is the worse failure, and a
+        // defence the renderer cancels is no defence.
+        for (file_idx, file) in self.diff_files.iter().enumerate() {
+            if file.is_commit_message
+                || grouping.group_of(file.display_path()).is_some()
+                || !self.file_passes_filter(file)
+            {
+                continue;
+            }
+            items.push(FileTreeItem::File {
+                file_idx,
+                label: FileTreeMode::Flat.file_label(file.display_path()),
+                depth: 0,
+            });
         }
 
         items

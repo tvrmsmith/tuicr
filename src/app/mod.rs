@@ -181,7 +181,8 @@ pub enum FileTreeItem {
         label: String,
         depth: usize,
     },
-    /// A group, always at depth 0. Directory rows live *inside* one
+    /// A group, always at depth 0. A group's members are listed directly
+    /// beneath it, at depth 1, with no directory rows
     /// (`docs/SIDEBAR_MODEL.md`); collapsed, the group rows alone are the
     /// overview of the whole changeset.
     Group {

@@ -4,13 +4,15 @@ Design record for `gd-26r.12` on the wayfinder map `gd-26r` (grouped review of
 large changesets in tuicr). **Mostly decision-only**: the one thing that lands
 as code with this ticket is the guard on the commit-message hoist
 (`src/app/tests/commit_message_hoist_tests.rs`), because that invariant exists
-in `src/` today and was unguarded. Everything else ships with the grouping
-engine, because there is no grouping engine in `src/` yet — the passes live in
-`tests/grouping/` as a scored prototype.
+in `src/` today and was unguarded. Everything else shipped with the grouping
+engine, whose passes now live in `src/grouping/passes.rs`; they were a scored
+prototype under `tests/grouping/` when this record was written, and
+`tests/grouping/` holds the scoring harness alone today.
 
 Assumed, settled elsewhere: grouping is file-level with a **strict partition**
-(`gd-26r.5`); groups are collapsible top-level sidebar nodes with directory
-nodes scoped inside (`gd-26r.7`, `docs/SIDEBAR_MODEL.md`); grouping is a
+(`gd-26r.5`); groups are collapsible top-level sidebar nodes whose
+members are listed directly beneath them, with no directory rows inside a
+group (`gd-26r.7`, `gd-26r.31`, `docs/SIDEBAR_MODEL.md`); grouping is a
 persisted session artefact keyed by a stable opaque `group_id`, incremental
 assignment is heuristics-only and never moves an unchanged file (`gd-26r.8`,
 `docs/REGROUPING_STATE.md`); refine blocks the TUI at startup, is cancellable,
@@ -21,7 +23,7 @@ and the heuristics-only fallback is a first-class human-causable outcome
 
 The ticket asked what happens to "files no heuristic pass claims". Run on both
 fixtures, the answer is **none** — the heuristic arm is already total by
-construction. `directory_fallback_pass` (`tests/grouping/passes.rs:491-499`)
+construction. `directory_fallback_pass` (`src/grouping/passes.rs:449-457`)
 is the sixth and last pass and claims unconditionally, so nothing can survive
 it unassigned.
 
@@ -106,7 +108,7 @@ every real file on **every** reorder, of which the seam map counts 17 non-test
 call sites.
 
 `src/app/tests/commit_message_hoist_tests.rs` covers both, and stands entirely
-on today's code with no grouping engine:
+on the hoist itself, touching no part of the grouping engine:
 
 1. `insert_commit_message_if_single` puts it at index 0, flagged, exactly once.
 2. `sort_files_by_directory(true)` keeps it at index 0. The discriminating case

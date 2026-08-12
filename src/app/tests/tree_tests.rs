@@ -1,6 +1,7 @@
 use crate::app::*;
 use crate::model::{DiffFile, DiffLine, FileStatus};
 use crate::vcs::traits::{VcsBackend, VcsInfo, VcsType};
+use std::collections::BTreeSet;
 
 /// The 161-file changeset the sidebar row costs in `docs/SIDEBAR_MODEL.md`
 /// were measured against. Lines are `<status>\t<path>`.
@@ -108,6 +109,20 @@ impl TreeTestHarness {
             .collect()
     }
 
+    fn file_idx(&self, path: &str) -> usize {
+        self.app
+            .diff_files
+            .iter()
+            .position(|file| file.display_path() == Path::new(path))
+            .expect("a file at that path")
+    }
+
+    fn selected_item(&self) -> Option<FileTreeItem> {
+        self.build_visible_items()
+            .get(self.app.file_list_state.selected())
+            .cloned()
+    }
+
     fn file_labels(&self) -> Vec<String> {
         self.build_visible_items()
             .iter()
@@ -140,7 +155,7 @@ fn row_cost_harness(mode: FileTreeMode) -> TreeTestHarness {
 
 /// The same fixture with the same hand grouping the mockups were drawn from,
 /// driven through the real grouped sidebar: the record's partition and reading
-/// order, the shipped within-group sort, and per-run directory emission.
+/// order, the shipped within-group sort, and the flat depth-1 member list.
 fn grouped_row_cost_app(mode: FileTreeMode) -> App {
     grouped_app_from(mode, row_cost_files(), ROW_COST_GROUPS)
 }
@@ -190,6 +205,17 @@ fn grouped_app_from(mode: FileTreeMode, files: Vec<DiffFile>, groups_text: &str)
     for file in &files {
         session.add_file(file.display_path().clone(), file.status, file.content_hash);
     }
+    // Membership as a set: the engine applies its own within-group sort on
+    // restore, so only the partition itself is the record's to pin.
+    let recorded: Vec<(String, BTreeSet<String>)> = presented
+        .iter()
+        .map(|group| {
+            (
+                group.name.clone(),
+                group.members.iter().cloned().collect::<BTreeSet<String>>(),
+            )
+        })
+        .collect();
     // Recorded on the session so `enable_grouping` restores it verbatim
     // instead of computing a heuristic one: the table measures the record's
     // grouping, not the engine's.
@@ -215,6 +241,29 @@ fn grouped_app_from(mode: FileTreeMode, files: Vec<DiffFile>, groups_text: &str)
     .expect("build app");
     app.file_tree_mode = mode;
     app.enable_grouping();
+    // The row costs only mean anything against the record's own partition. A
+    // grouping the session cannot restore falls back to the heuristic one
+    // silently, and a row count alone would not notice — nor would a name-only
+    // check, since it is the membership that decides how many rows a group
+    // costs.
+    let grouping = app.grouping.as_ref().expect("grouping restored");
+    let restored: Vec<(String, BTreeSet<String>)> = grouping
+        .groups()
+        .iter()
+        .map(|group| {
+            (
+                group.name.clone(),
+                grouping
+                    .files_in(&group.id)
+                    .map(|path| path.to_string_lossy().to_string())
+                    .collect(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        restored, recorded,
+        "the session restored the fixture's grouping, not a heuristic one"
+    );
     app.expand_all_dirs();
     app
 }
@@ -465,6 +514,86 @@ fn compact_chain_toggles_as_one_unit_keyed_by_the_joined_path() {
     assert_eq!(h.visible_file_count(), 0);
 }
 
+/// Revealing a hidden file expands the *rows* that hide it, not each path
+/// ancestor. Under `Compact` the chain is one row keyed by the joined path, so
+/// `z` and `z/y` are keys no row ever answers to and expanding them would
+/// leave the file hidden with the cursor parked.
+#[test]
+fn jumping_to_a_file_under_a_compact_chain_expands_the_joined_row() {
+    let mut h = TreeTestHarness::with_mode(
+        FileTreeMode::Compact,
+        &["z/y/x/file.rs", "src/main.rs", "src/other.rs"],
+    );
+    h.collapse_all();
+    assert_eq!(h.visible_file_count(), 0, "everything starts hidden");
+    let idx = h.file_idx("z/y/x/file.rs");
+
+    h.app.jump_to_file(idx);
+
+    assert_eq!(
+        h.file_labels(),
+        vec!["file.rs"],
+        "the jump reveals the file it named"
+    );
+    assert_eq!(
+        h.app.expanded_dirs,
+        ["z/y/x".to_string()].into_iter().collect(),
+        "and expands the joined row, nothing else"
+    );
+    assert!(
+        matches!(h.selected_item(), Some(FileTreeItem::File { file_idx, .. }) if file_idx == idx),
+        "with the cursor on the file's own row"
+    );
+}
+
+/// The tree search reveals through the same helper, so it inherits the joined
+/// key rather than re-deriving ancestors of its own.
+#[test]
+fn searching_onto_a_file_under_a_compact_chain_expands_the_joined_row() {
+    let mut h = TreeTestHarness::with_mode(
+        FileTreeMode::Compact,
+        &["z/y/x/file.rs", "src/main.rs", "src/other.rs"],
+    );
+    h.collapse_all();
+
+    h.app.begin_file_tree_prompt(FileTreePrompt::Search);
+    for ch in "x/file".chars() {
+        h.app.file_tree_prompt_insert_char(ch);
+    }
+    h.app.commit_file_tree_prompt();
+
+    assert_eq!(h.file_labels(), vec!["file.rs"]);
+    assert_eq!(
+        h.app.expanded_dirs,
+        ["z/y/x".to_string()].into_iter().collect()
+    );
+}
+
+/// And when the file goes the other way — hidden by a collapse rather than
+/// revealed — the cursor parks on the joined row that swallowed it, which is
+/// the only row still on screen that stands for it.
+#[test]
+fn collapsing_over_a_file_under_a_compact_chain_parks_the_cursor_on_the_joined_row() {
+    let mut h = TreeTestHarness::with_mode(
+        FileTreeMode::Compact,
+        &["z/y/x/file.rs", "src/main.rs", "src/other.rs"],
+    );
+    let idx = h.file_idx("z/y/x/file.rs");
+    h.app.jump_to_file(idx);
+
+    h.collapse_all();
+
+    let selected = h.selected_item();
+    assert!(
+        matches!(&selected, Some(FileTreeItem::Directory { path, .. }) if path == "z/y/x"),
+        "expected the joined row, got {selected:?}"
+    );
+    assert!(
+        h.app.file_list_state.selected() > 0,
+        "and not the row-0 fallback a missed lookup lands on"
+    );
+}
+
 #[test]
 fn flat_emits_no_directory_rows_and_labels_files_with_the_full_path() {
     let h = TreeTestHarness::with_mode(FileTreeMode::Flat, &["a/b/c/file.rs", "README.md"]);
@@ -542,33 +671,16 @@ fn every_group_collapses_to_a_thirteen_row_overview() {
 }
 
 #[test]
-fn per_run_directory_rows_cost_five_rows_over_one_row_per_directory() {
-    // The record published 300 for `groups + nested`, measured at one row per
-    // directory per group. That model still reproduces exactly — 126 distinct
-    // directories, 161 files, 13 groups — so the whole of the +5 is the
-    // per-run emission `gd-26r.28` slice A shipped, not an error in the
-    // original arithmetic.
-    let items = grouped_row_cost_app(FileTreeMode::Nested).build_visible_items();
-    let dir_rows: Vec<&String> = items
-        .iter()
-        .filter_map(|item| match item {
-            FileTreeItem::Directory { path, .. } => Some(path),
-            FileTreeItem::File { .. } | FileTreeItem::Group { .. } => None,
-        })
-        .collect();
-    let distinct: HashSet<&&String> = dir_rows.iter().collect();
-
-    assert_eq!(distinct.len(), 126, "distinct (group, directory) keys");
-    assert_eq!(distinct.len() + 161 + 13, 300, "the published cost model");
-    assert_eq!(dir_rows.len(), 131, "five directories span two runs");
-    assert_eq!(items.len(), 305);
-}
-
-#[test]
-fn grouped_compact_costs_285_rows_on_the_fixture() {
-    // Published as 251, which assumed chain joins decided against a group's
-    // own files. `TreeLayout` (`tree.rs:106`) decides them once over the whole
-    // of `diff_files`, so joins that pay inside a group are never made.
-    // `gd-26r.34` deletes the question with the rows.
-    assert_eq!(grouped_row_count(FileTreeMode::Compact), 285);
+fn the_tree_mode_does_not_reach_the_grouped_sidebar() {
+    // The mode governs the ungrouped tree only (`docs/SIDEBAR_MODEL.md`
+    // point 5), so all three land on the one grouped layout. This replaces the
+    // interim pins at 305 and 285, which measured the in-group directory rows
+    // `gd-26r.34` deleted.
+    for mode in [
+        FileTreeMode::Nested,
+        FileTreeMode::Compact,
+        FileTreeMode::Flat,
+    ] {
+        assert_eq!(grouped_row_count(mode), 174, "{mode:?}");
+    }
 }

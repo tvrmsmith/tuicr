@@ -341,7 +341,8 @@ impl App {
                 .unwrap_or(*candidates.last().expect("candidates is non-empty"))
         };
 
-        self.select_file_in_tree(target);
+        // Reveal and select the match without touching the diff viewport.
+        self.reveal_file(target);
         let path = self.diff_files[target].display_path().display().to_string();
         let position = candidates
             .iter()
@@ -360,28 +361,6 @@ impl App {
         match self.get_selected_tree_item() {
             Some(FileTreeItem::File { file_idx, .. }) => file_idx,
             _ => self.diff_state.current_file_idx,
-        }
-    }
-
-    /// Expand the ancestors of `file_idx` and select its row, without
-    /// touching the diff viewport.
-    pub(in crate::app) fn select_file_in_tree(&mut self, file_idx: usize) {
-        use std::path::Path;
-
-        let Some(file) = self.diff_files.get(file_idx) else {
-            return;
-        };
-        let path = file.display_path().clone();
-        let mut current = path.parent();
-        while let Some(parent) = current {
-            if parent != Path::new("") {
-                self.expanded_dirs
-                    .insert(parent.to_string_lossy().to_string());
-            }
-            current = parent.parent();
-        }
-        if let Some(tree_idx) = self.file_idx_to_tree_idx(file_idx) {
-            self.file_list_state.select(tree_idx);
         }
     }
 }
