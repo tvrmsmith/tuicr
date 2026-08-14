@@ -61,6 +61,7 @@ const COMMAND_SPECS: &[CommandSpec] = &[
     CommandSpec::new(&["set commits"], CommandKind::SetCommitsVisible(true)),
     CommandSpec::new(&["set nocommits"], CommandKind::SetCommitsVisible(false)),
     CommandSpec::new(&["set commits!"], CommandKind::ToggleCommits),
+    CommandSpec::new(&["set groups!"], CommandKind::ToggleGroups),
     CommandSpec::new(&["diff"], CommandKind::Diff),
     CommandSpec::new(&["focus", "f"], CommandKind::Focus),
     CommandSpec::new(&["stage"], CommandKind::Stage),
@@ -139,6 +140,7 @@ enum CommandKind {
     SetVim(bool),
     SetCommitsVisible(bool),
     ToggleCommits,
+    ToggleGroups,
     Diff,
     Focus,
     Stage,
@@ -927,6 +929,10 @@ fn dispatch_command(app: &mut App, kind: CommandKind) -> CommandAfterDispatch {
         }
         CommandKind::ToggleCommits => {
             app.toggle_commit_selector();
+            CommandAfterDispatch::ExitCommandMode
+        }
+        CommandKind::ToggleGroups => {
+            app.toggle_grouping();
             CommandAfterDispatch::ExitCommandMode
         }
         CommandKind::Diff => {

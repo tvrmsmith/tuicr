@@ -435,11 +435,26 @@ sound where it holds.**
    splits into two runs inside one group (`gd-26r.31`), and the layout it was
    protecting no longer exists.*
 
-3. **`expanded_dirs` holds group ids while grouping is on, and paths while it
-   is off.** `App::expanded_dirs: HashSet<String>` is a flat
-   string set, and with no in-group directory rows the two key spaces are never
-   populated at once — which also disposes of the group-id/directory-path
-   collision hazard the seam map flagged, rather than merely qualifying it away.
+3. **One key space per sidebar, one set each.** `App::expanded_dirs:
+   HashSet<String>` holds directory paths; `App::expanded_groups:
+   HashSet<String>` holds group ids. Neither ever holds the other's keys, so
+   the group-id/directory-path collision hazard the seam map flagged is
+   disposed of rather than merely qualified away.
+
+   *Amended by `gd-26r.35`.* This point originally read "`expanded_dirs` holds
+   group ids while grouping is on, and paths while it is off": one flat set,
+   safe because with no in-group directory rows the two key spaces were never
+   populated at once. `<leader>g` is what ends that. A session can now arrange
+   both sidebars in one lifetime, and one set can only serve the one on screen:
+   a toggle would have to either carry the outgoing keys into a sidebar that
+   cannot read them — leaving the map holding both key spaces at once, which is
+   exactly what the old point 3 promised could not happen — or reseed, throwing
+   away an arrangement the reader will be shown again on the next keypress.
+   Splitting the set is what makes a toggle need to do neither: it touches
+   neither set, so toggling twice is the identity and each sidebar comes back
+   as its reader left it. Nothing else about the point changes — group ids are
+   still opaque, still what survives a rename, and still the only key the
+   grouped sidebar reads.
 
    *Originally: keyed by `(group, directory)`. That was the right answer to the
    wrong layout — and note it would not have been sufficient on its own, since
@@ -479,8 +494,11 @@ Everything else the seam map lists still applies unchanged:
   (`render_file_list` in `src/ui/file_list.rs`) and stops appending `/` to it.
 - `App::expand_all_dirs` seeds `expanded_dirs` from path
   ancestors only, so it must also seed group ids or groups start collapsed and
-  their files hidden. Under grouping it seeds **only** group ids — there are no
-  in-group directory keys to seed.
+  their files hidden. It seeds **both** sets — every directory row and every
+  group row — because after `<leader>g` the sidebar it did not seed is one
+  keypress away, and a reader who never collapsed anything should not find it
+  shut (`gd-26r.35`). There are still no in-group directory keys: the two sets
+  stay disjoint.
 - `App::jump_to_file` (`src/app/navigation.rs`) inserts every path ancestor
   to reveal a target; under grouping the ancestors reveal nothing and the
   file's group id is the only key that does.
@@ -534,11 +552,12 @@ whole feature.
 directory rows, grouped files carry the full relative path at depth 1 in every
 tree mode, and `expanded_dirs` holds group ids only while grouping is on. The
 per-run regression test retired with the rows it guarded, as did the two
-interim row-cost pins (305 and 285); 174 and 13 are pinned and unchanged. One
-follow-up is left:
+interim row-cost pins (305 and 285); 174 and 13 are pinned and unchanged.
 
-- `gd-26r.35` — bind `<leader>g` and `:set groups!`, making grouping a
-  session toggle rather than a startup-only setting, and document both.
+**`gd-26r.35` shipped the toggle**: `<leader>g` and `:set groups!` switch
+between the two sidebars mid-session, the grouping survives the off state so
+toggling back never regroups, and the shared `expanded_dirs` split into two
+sets — see the amendment to point 3 above, which the toggle is what forced.
 
 ## Deliberately not decided here
 

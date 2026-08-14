@@ -318,22 +318,40 @@ impl App {
         }
     }
 
+    /// Opens everything in **both** sidebars: every directory row of the
+    /// ungrouped tree, and every group row when there is a grouping.
+    ///
+    /// Both, not just the one on screen, because this is the fresh-start seed —
+    /// startup and a load that answers a new target — and after `<leader>g` the
+    /// other sidebar is one keypress away. Seeding only the active one would
+    /// hand the first toggle a wholly collapsed tree that no reader collapsed.
+    /// The sets are disjoint by construction, so filling both costs nothing but
+    /// the walk.
     pub fn expand_all_dirs(&mut self) {
-        self.expanded_dirs = match self.grouping.as_ref() {
-            // Group rows are the only collapsible thing under grouping, so
-            // group ids are the whole key space — seeding a directory path
-            // here would put a key in the set that no row ever reads.
-            Some(grouping) => grouping.groups().iter().map(Self::group_row_key).collect(),
-            None => {
-                let layout = self.tree_layout();
-                self.diff_files
-                    .iter()
-                    .flat_map(|file| layout.dir_rows(file.display_path()))
-                    .map(|row| row.path)
-                    .collect()
-            }
-        };
+        self.expand_all_dir_keys();
+        self.expand_all_group_keys();
         self.ensure_valid_tree_selection();
+    }
+
+    /// The ungrouped tree's keys, seeded from the tree mode's directory rows.
+    fn expand_all_dir_keys(&mut self) {
+        let layout = self.tree_layout();
+        self.expanded_dirs = self
+            .diff_files
+            .iter()
+            .flat_map(|file| layout.dir_rows(file.display_path()))
+            .map(|row| row.path)
+            .collect();
+    }
+
+    /// The grouped sidebar's keys: one per group, and nothing else. Empty when
+    /// the session has no grouping to key on.
+    pub(in crate::app) fn expand_all_group_keys(&mut self) {
+        self.expanded_groups = self
+            .grouping
+            .as_ref()
+            .map(|grouping| grouping.groups().iter().map(Self::group_row_key).collect())
+            .unwrap_or_default();
     }
 
     /// The sidebar keys after a reload of the *same* review, as opposed to a
@@ -349,26 +367,44 @@ impl App {
     /// starts collapsed, like the unranked group at the bottom of the list
     /// that it is.
     ///
-    /// Ungrouped this is [`App::expand_all_dirs`] unchanged: directory keys are
-    /// path-derived, so there is no identity to preserve and nothing to lose.
+    /// Ungrouped this re-seeds the directory keys as [`App::expand_all_dirs`]
+    /// does: directory keys are path-derived, so there is no identity to
+    /// preserve and nothing to lose. Either way the *other* sidebar's keys are
+    /// left alone — a reload of the same review is no reason to rearrange a
+    /// view the reader is not even looking at.
     pub(in crate::app) fn reseed_expanded_dirs(&mut self) {
-        let Some(grouping) = self.grouping.as_ref() else {
-            self.expand_all_dirs();
-            return;
-        };
-        let live: HashSet<String> = grouping.groups().iter().map(Self::group_row_key).collect();
-        self.expanded_dirs.retain(|key| live.contains(key));
+        match self.active_grouping() {
+            Some(grouping) => {
+                let live: HashSet<String> =
+                    grouping.groups().iter().map(Self::group_row_key).collect();
+                self.expanded_groups.retain(|key| live.contains(key));
+            }
+            None => self.expand_all_dir_keys(),
+        }
         self.ensure_valid_tree_selection();
     }
 
+    /// Collapses every row of the sidebar on screen. The other sidebar's keys
+    /// stay: `O` collapses what the reader can see, and a `:regroup` landing
+    /// (`src/app/regroup.rs`) says nothing about the directory tree.
     pub fn collapse_all_dirs(&mut self) {
-        self.expanded_dirs.clear();
+        match self.active_grouping() {
+            Some(_) => self.expanded_groups.clear(),
+            None => self.expanded_dirs.clear(),
+        }
         self.ensure_valid_tree_selection();
     }
 
+    /// Toggles the row `dir_path` keys: a group id while grouping is on, a
+    /// directory path while it is off. The two never reach the same set.
     pub fn toggle_directory(&mut self, dir_path: &str) {
-        if self.expanded_dirs.contains(dir_path) {
-            self.expanded_dirs.remove(dir_path);
+        let grouped = self.active_grouping().is_some();
+        let keys = if grouped {
+            &mut self.expanded_groups
+        } else {
+            &mut self.expanded_dirs
+        };
+        if keys.remove(dir_path) {
             if let Some(tree_idx) = self
                 .build_visible_items()
                 .iter()
@@ -382,6 +418,8 @@ impl App {
             } else {
                 self.ensure_valid_tree_selection();
             }
+        } else if grouped {
+            self.expanded_groups.insert(dir_path.to_string());
         } else {
             self.expanded_dirs.insert(dir_path.to_string());
         }
@@ -398,9 +436,9 @@ impl App {
             return;
         };
         let path = file.display_path().clone();
-        if self.grouping.is_some() {
+        if self.active_grouping().is_some() {
             if let Some(key) = self.group_key_of_file(&path) {
-                self.expanded_dirs.insert(key);
+                self.expanded_groups.insert(key);
             }
         } else {
             for row in self.tree_layout().dir_rows(&path) {
@@ -413,7 +451,7 @@ impl App {
         }
     }
 
-    fn ensure_valid_tree_selection(&mut self) {
+    pub(in crate::app) fn ensure_valid_tree_selection(&mut self) {
         let visible_items = self.build_visible_items();
         if visible_items.is_empty() {
             self.file_list_state.select(0);
@@ -435,7 +473,7 @@ impl App {
                 // is its group row; ungrouped it is the innermost directory
                 // row still on screen. Same discriminant as `reveal_file`, so
                 // the two cannot disagree about which sidebar is on screen.
-                if self.grouping.is_some() {
+                if self.active_grouping().is_some() {
                     if let Some(key) = self.group_key_of_file(file.display_path()) {
                         for (tree_idx, item) in visible_items.iter().enumerate() {
                             if let FileTreeItem::Group { id, .. } = item
@@ -465,7 +503,7 @@ impl App {
     }
 
     pub fn build_visible_items(&self) -> Vec<FileTreeItem> {
-        match self.grouping.as_ref() {
+        match self.active_grouping() {
             Some(grouping) => self.build_grouped_items(grouping),
             None => self.build_directory_items(),
         }
@@ -532,7 +570,7 @@ impl App {
             };
 
             let group_key = Self::group_row_key(group);
-            let expanded = self.expanded_dirs.contains(&group_key);
+            let expanded = self.expanded_groups.contains(&group_key);
             items.push(FileTreeItem::Group {
                 id: group_key,
                 label: group.name.clone(),

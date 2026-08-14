@@ -267,6 +267,10 @@ Cancelling, timing out, missing credentials, a network failure, a response tuicr
 
 Grouping is off entirely with `--no-grouping`, which also skips refine.
 
+**The sidebar is a toggle, not a startup-only setting.** `<leader>g`, or `:set groups!`, switches between the grouped list and the plain directory tree at any point in a review. Whichever one you start in is the one `--no-grouping` decides; the other is a keypress away. Toggling off keeps the grouping, so toggling back is instant and never regroups — and never refines, whatever `refine` says. `:regroup` remains the only way to ask for a new grouping. Each sidebar also remembers its own expanded rows, so a trip through the other one leaves your arrangement exactly as you left it.
+
+Starting with `--no-grouping` and then pressing `<leader>g` computes the grouping there and then, with the heuristics alone.
+
 ### Credentials for refine
 
 Refine calls Vertex AI directly over HTTPS with your existing application default credentials. Run `gcloud auth application-default login` once, and set a project if `gcloud` has not:

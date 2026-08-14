@@ -6,8 +6,9 @@ The session-model change described here ships with the grouping engine itself,
 because there is no grouping engine in `src/` yet to attach it to.
 
 Assumed, settled elsewhere: grouping is file-level with a **strict partition**
-(`gd-26r.5`); groups are collapsible top-level sidebar nodes with `expanded_dirs`
-keyed on the group id (`gd-26r.7`, revised by `gd-26r.31`); the engine lives in
+(`gd-26r.5`); groups are collapsible top-level sidebar nodes with
+`expanded_groups` keyed on the group id (`gd-26r.7`, revised by `gd-26r.31` and
+`gd-26r.35`); the engine lives in
 tuicr with an
 optional async refine that shells out to an agent CLI (`gd-26r.4`); refine's
 run-to-run movement is measured in `docs/GROUPING_PASSES.md` (`gd-26r.11`).
@@ -155,7 +156,11 @@ refine after a session's first grouping.
 | `:regroup` | full | yes, if `[grouping].refine = true` |
 
 **Reopening a session never regroups and never refines.** Yesterday's review
-shows yesterday's groups. This is the largest cost lever in the whole grouping
+shows yesterday's groups. **Nor does the `<leader>g` toggle** (`gd-26r.35`):
+turning the grouped sidebar off keeps `App::grouping` populated, so turning it
+back on re-sorts from the grouping already in hand — no pass, no call. The one
+exception is a review that never had a grouping at all (`--no-grouping`), where
+the first toggle on computes one from the heuristics alone. This is the largest cost lever in the whole grouping
 feature: refine is now once per *review*, not once per *open* and never per
 `:reload`.
 
@@ -183,8 +188,9 @@ unusable on the measured numbers. At 3–12% group-mate stability a single
 The 13-row collapsed overview is the feature (`gd-26r.7`) — and it is precisely
 what a human wants to re-read immediately after asking for a new grouping. It is
 also deterministic, needs no remapping logic, and leaves no stale group keys in
-`expanded_dirs` (`(group, directory)` keys before `gd-26r.31` removed in-group
-directory rows). Best-effort carry-over is the most
+`expanded_groups` (keys in `expanded_dirs` before `gd-26r.35` split the two
+sets; `(group, directory)` keys before `gd-26r.31` removed in-group directory
+rows). Best-effort carry-over is the most
 machinery for the least benefit: under 3–12% stability it would mostly fail
 anyway.
 

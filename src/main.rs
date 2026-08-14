@@ -685,6 +685,14 @@ fn main() -> anyhow::Result<()> {
                                 app.toggle_single_file_view();
                                 continue;
                             }
+                            // `<leader>g` switches the sidebar between the
+                            // grouped list and the plain directory tree. The
+                            // grouping is kept while it is off, so toggling
+                            // back never regroups.
+                            crossterm::event::KeyCode::Char('g') => {
+                                app.toggle_grouping();
+                                continue;
+                            }
                             _ => {}
                         }
                         // Otherwise fall through to normal handling

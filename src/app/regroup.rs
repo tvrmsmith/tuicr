@@ -22,7 +22,7 @@
 //! What a landing does is `docs/MID_SESSION_REGROUP.md` verbatim: all groups
 //! collapse, the diff pane does not move, and sidebar selection lands on the
 //! collapsed group row holding the current file. Group-keyed sidebar state
-//! needs no remapping across it, and that is not luck — `expanded_dirs` is
+//! needs no remapping across it, and that is not luck — `expanded_groups` is
 //! cleared wholesale by the collapse, so the new grouping's ids are the only
 //! keys any row can be looking for.
 
@@ -70,7 +70,9 @@ impl App {
     /// supplied, and `None` for the review that is not refining at all.
     pub(crate) fn regroup_with(&mut self, call: Option<RefineCall>) {
         if !self.grouping_enabled {
-            self.set_error("Grouping is off for this review; nothing to regroup.");
+            self.set_error(
+                "Grouping is off for this review; turn it on with <leader>g or :set groups!.",
+            );
             return;
         }
         let changeset = Changeset::from_diff_files(&self.diff_files);
@@ -227,10 +229,12 @@ impl App {
     /// and what then leaves selection on the group row rather than on a file
     /// row that is no longer visible.
     ///
-    /// Nothing remaps `expanded_dirs`. The collapse empties it, so a group that
-    /// survived this grouping and one that did not are in exactly the same
+    /// Nothing remaps `expanded_groups`. The collapse empties it, so a group
+    /// that survived this grouping and one that did not are in exactly the same
     /// position — no stale group id can be left behind to expand a row that no
-    /// longer exists.
+    /// longer exists. `expanded_dirs` is untouched: the ungrouped tree is not
+    /// what the human asked to recompute, and `<leader>g` will show it to them
+    /// as they left it.
     fn land(&mut self, grouping: Grouping) {
         let was = self.diff_state.current_file_idx;
         let relative_line = self

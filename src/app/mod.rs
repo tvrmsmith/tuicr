@@ -1396,19 +1396,38 @@ pub struct App {
     /// Visual-row -> annotation-index map for the diff viewport. Wrapped
     /// logical lines repeat their annotation index across multiple rows.
     pub diff_row_to_annotation: Vec<usize>,
-    /// Expanded directory rows, keyed by the `path` of the row that emitted
-    /// them, which depends on `file_tree_mode`. Seed and query it through
-    /// [`App::tree_layout`] rather than from a raw parent chain.
+    /// Expanded directory rows of the **ungrouped** tree, keyed by the `path`
+    /// of the row that emitted them, which depends on `file_tree_mode`. Seed
+    /// and query it through [`App::tree_layout`] rather than from a raw parent
+    /// chain.
     pub expanded_dirs: HashSet<String>,
+    /// Expanded group rows of the **grouped** sidebar, keyed by the opaque
+    /// group id ([`App::group_row_key`]).
+    ///
+    /// A set of its own rather than more keys in `expanded_dirs`. The two key
+    /// spaces could share one set only while they were never populated at once
+    /// (`docs/SIDEBAR_MODEL.md` point 3), and `<leader>g` is the first thing in
+    /// tuicr that makes a session hold both in one lifetime: with one set, a
+    /// toggle either carries the outgoing view's keys into a sidebar that
+    /// cannot read them or throws away an arrangement the reader will be shown
+    /// again on the next toggle. Two sets make a toggle touch neither, so each
+    /// sidebar comes back exactly as it was left.
+    pub expanded_groups: HashSet<String>,
     /// Directory layout of the file list. Read from config at startup and
     /// fixed for the session.
     pub file_tree_mode: FileTreeMode,
     /// Whether the sidebar is grouped. Off in [`App::build`] — the binary
     /// turns it on with [`App::enable_grouping`] once config is read — so
     /// every other mode and every test keeps the plain directory tree.
+    /// [`App::toggle_grouping`] flips it mid-session (`<leader>g`).
     pub grouping_enabled: bool,
-    /// The session's grouping, when there is one. `None` with grouping off,
-    /// and on a changeset with no real files to group.
+    /// The session's grouping, when there is one. `None` until something
+    /// computes one, and on a changeset with no real files to group.
+    ///
+    /// **Survives grouping being toggled off**, so toggling back is free and
+    /// never regroups (`docs/REGROUPING_STATE.md`). Which means its presence no
+    /// longer answers "is the sidebar grouped": ask
+    /// [`App::active_grouping`] for the grouping the sidebar is rendering.
     pub grouping: Option<crate::grouping::Grouping>,
     /// A grouping computed out of band, parked for the next
     /// [`App::order_files_by_group`] to adopt in place of anything it would
