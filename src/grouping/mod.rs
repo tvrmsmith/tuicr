@@ -11,12 +11,15 @@
 //! [`refine`] is the model one, opt-in behind `[grouping].refine`, blocking at
 //! startup, and worth the block for its partition (`docs/GROUPING_PASSES.md`).
 //!
-//! What is **not** here yet, named rather than implied: `:regroup` with
-//! incremental assignment, decided in `docs/REGROUPING_STATE.md` and landing in
-//! a later slice of `gd-26r.28`. Until then no group is ever new since the last
-//! full pass.
+//! A third entry point *adds* to a grouping rather than producing one:
+//! [`assign_incrementally`] places the files that appeared or moved since the
+//! last full pass and leaves every other file where it was
+//! (`docs/REGROUPING_STATE.md`). It is heuristics-only and it is the only
+//! automatic change to a grouping; `:regroup` is the human's lever for a full
+//! recompute, and a full recompute is one of the two arms above.
 
 pub mod changeset;
+mod incremental;
 pub mod order;
 pub mod passes;
 pub mod refine;
@@ -309,4 +312,25 @@ impl Grouping {
 pub fn group_changeset(changeset: &Changeset, config: GroupingConfig) -> Grouping {
     let claims = passes::assign(changeset, config);
     Grouping::present(changeset, claims, GroupSource::Heuristics)
+}
+
+/// Incremental assignment: the groups that survived, plus the files that
+/// appeared or moved since the last full pass placed into them or into new
+/// groups appended last (`docs/REGROUPING_STATE.md`).
+///
+/// `kept` is in reading order and carries its persisted identities, which is
+/// the whole point: a full pass would mint a fresh id for every group and
+/// renumber the sidebar under a reader because one file appeared.
+///
+/// It funnels through [`Grouping::build`] like every other constructor, so the
+/// within-group sort applies to a group that gained a member exactly as it does
+/// to a freshly computed one, and the partition it returns is strict and total
+/// over `changeset` whatever `kept` held.
+pub fn assign_incrementally(
+    changeset: &Changeset,
+    kept: Vec<PresentedGroup>,
+    config: GroupingConfig,
+) -> Grouping {
+    let (groups, claims) = incremental::place(changeset, kept, config);
+    Grouping::build(changeset, groups, claims)
 }

@@ -8,7 +8,7 @@
 //!
 //! The refine arm meets the seam at four fields, and `crate::app::refine` runs
 //! on both sides of the TUI. Before the alternate screen exists it parks its
-//! answer in [`App::pending_refined`]; after it, the same wait parks it and
+//! answer in [`App::pending_grouping`]; after it, the same wait parks it and
 //! reorders immediately. Either way the seam treats a parked answer as one more
 //! source of a grouping, ranked ahead of the session's own. It does **not**
 //! re-sort what arrives: `Grouping::build` is the sole constructor and sorts
@@ -21,10 +21,11 @@
 //! [`App::refine_over_saved_grouping`], which tells the wait whether the
 //! grouping it is about to replace was the session's or this load's.
 //!
-//! What is **not** here, named rather than implied (`gd-26r.28` slice B):
-//! `:regroup` and incremental assignment. Until those land the grouping is
-//! recomputed by the heuristics whenever the persisted one no longer describes
-//! the changeset, which is deterministic, instant and free.
+//! Drift is not a fresh pass. When the persisted table no longer describes the
+//! changeset exactly, [`ReviewSession::grouping_for`] places what moved and
+//! keeps every group identity the reader has been working through
+//! (`docs/REGROUPING_STATE.md`); only a review the session never grouped, and
+//! `:regroup` itself (`crate::app::regroup`), start from the heuristics.
 
 use super::*;
 use crate::grouping::changeset::Changeset;
@@ -137,16 +138,23 @@ impl App {
         let changeset = Changeset::from_diff_files(&self.diff_files);
         if changeset.is_empty() {
             self.grouping = None;
-            self.pending_refined = None;
+            self.pending_grouping = None;
             self.refine_wanted = false;
             self.order_files_by_directory();
             return;
         }
 
-        let (grouping, from_saved_session) = match self.pending_refined.take() {
-            Some(refined) => (refined, false),
+        // Asked before the grouping is built, and asked of the *session* rather
+        // than of what gets installed: `grouping_for` now answers for any drift
+        // by placing the files that moved, so "the session had a table" no
+        // longer means "this review was already grouped". A target the session
+        // never grouped has to be refinable, and a reopened one must not be.
+        let covered = self.session.covers(&changeset);
+
+        let (grouping, from_saved_session) = match self.pending_grouping.take() {
+            Some(parked) => (parked, false),
             None => match self.session.grouping_for(&changeset) {
-                Some(saved) => (saved, true),
+                Some(saved) => (saved, covered),
                 None => (
                     crate::grouping::group_changeset(&changeset, GroupingConfig::default()),
                     false,
