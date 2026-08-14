@@ -375,27 +375,31 @@ impl ReviewSession {
             let group_id = review.group_id.as_deref()?;
             members.entry(group_id).or_default().push(file.path.clone());
         }
-        if members.len() != self.groups.len() {
+        // Every file has to name a group the table holds. The reverse is not
+        // required: a group can legitimately hold no files — the refine arm
+        // keeps the order slot of a group whose paths all went elsewhere — and
+        // regrouping the whole changeset over that would throw away the
+        // grouping the human curated.
+        if members
+            .keys()
+            .any(|id| !self.groups.iter().any(|group| group.id == *id))
+        {
             return None;
         }
 
         let mut table: Vec<&SessionGroup> = self.groups.iter().collect();
         table.sort_by_key(|group| group.order);
 
-        let restored = table
+        let restored: Vec<PresentedGroup> = table
             .into_iter()
-            .map(|group| {
-                members
-                    .remove(group.id.as_str())
-                    .map(|members| PresentedGroup {
-                        id: GroupId::from_persisted(group.id.clone()),
-                        name: group.name.clone(),
-                        source: GroupSource::from_persisted(&group.source),
-                        new_since_full_pass: group.new_since_full_pass,
-                        members,
-                    })
+            .map(|group| PresentedGroup {
+                id: GroupId::from_persisted(group.id.clone()),
+                name: group.name.clone(),
+                source: GroupSource::from_persisted(&group.source),
+                new_since_full_pass: group.new_since_full_pass,
+                members: members.remove(group.id.as_str()).unwrap_or_default(),
             })
-            .collect::<Option<Vec<_>>>()?;
+            .collect();
 
         Some(Grouping::restore(changeset, restored))
     }

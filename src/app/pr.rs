@@ -3,10 +3,15 @@ use super::*;
 impl App {
     /// Re-enter PR mode after we've already opened a PR via the selector.
     /// Used by the selector → PR open path and by `:reload` in PR mode.
-    pub fn enter_pr_diff_mode(
+    ///
+    /// `pick` separates the two: choosing a PR in the picker is a review target
+    /// being picked, while a re-fetch of the PR already under review is not and
+    /// must not dispatch a second blocking call.
+    pub(crate) fn enter_pr_diff_mode(
         &mut self,
         backend: Box<dyn ForgeBackend>,
         opened: crate::forge::pr_open::OpenedPullRequest,
+        pick: TargetPick,
     ) -> Result<()> {
         let crate::forge::pr_open::OpenedPullRequest {
             details,
@@ -75,8 +80,21 @@ impl App {
             Self::is_strict_commit_selection(self.commit_selection_range, self.pr_commits.len());
         Self::register_diff_files(&mut self.session, &self.diff_files, preserve_hunks);
 
-        self.sort_files_by_directory(true);
-        self.expand_all_dirs();
+        // A restored strict selection means the file set below is about to be
+        // thrown away and re-fetched. The pick travels with that re-fetch
+        // instead, so the one refine it buys is spent on the files the human
+        // ends up reviewing rather than on the full PR.
+        let narrowing = matches!(&self.diff_source, DiffSource::PullRequest(_))
+            && self
+                .commit_selection_range
+                .is_some_and(|range| range.0 > 0 || range.1 + 1 < self.pr_commits.len())
+            && !self.pr_commits.is_empty();
+
+        self.reorder_for_load(if narrowing {
+            TargetPick::SameReview
+        } else {
+            pick
+        });
         self.rebuild_annotations();
 
         if let Some(reason) = read_only_reason {
@@ -85,14 +103,8 @@ impl App {
             self.set_message(message);
         }
 
-        // If the restored selection is a strict subset, fire an initial
-        // range re-fetch so the diff matches the persisted scope.
-        if matches!(&self.diff_source, DiffSource::PullRequest(_))
-            && let Some(range) = self.commit_selection_range
-            && !self.pr_commits.is_empty()
-            && (range.0 > 0 || range.1 + 1 < self.pr_commits.len())
-        {
-            self.spawn_pr_range_reload();
+        if narrowing {
+            self.spawn_pr_range_reload(pick);
         }
 
         Ok(())
@@ -262,7 +274,7 @@ impl App {
         }
 
         // Strict subset → range re-fetch on a background thread.
-        self.spawn_pr_range_reload();
+        self.spawn_pr_range_reload(TargetPick::SameReview);
     }
 
     /// Restore the cached cumulative PR diff into the diff view. Used when
@@ -277,8 +289,7 @@ impl App {
         for file in &self.diff_files {
             self.session.add_diff_file(file);
         }
-        self.sort_files_by_directory(true);
-        self.expand_all_dirs();
+        self.reorder_for_load(TargetPick::SameReview);
         self.rebuild_annotations();
         if let Some(anchor) = anchor {
             self.restore_pr_cursor_to_anchor(&anchor);
@@ -288,7 +299,10 @@ impl App {
     /// Kick off a background fetch of `compare/<start>...<end>` and apply
     /// it on the main thread. Cancels any in-flight range reload (a fresh
     /// toggle invalidates the previous request).
-    pub fn spawn_pr_range_reload(&mut self) {
+    /// `pick` is [`TargetPick::NewTarget`] only when this fetch answers a PR
+    /// the human just opened, which is the one case where the narrowed file set
+    /// it lands is worth a refine.
+    pub(crate) fn spawn_pr_range_reload(&mut self, pick: TargetPick) {
         let DiffSource::PullRequest(current) = self.diff_source.clone() else {
             return;
         };
@@ -309,6 +323,7 @@ impl App {
             range,
             started_at: Instant::now(),
             anchor,
+            pick,
         };
         // A fresh toggle supersedes any in-flight fetch.
         self.pr_range_reload_state = Some(request.clone());
@@ -433,8 +448,7 @@ impl App {
         // Range diffs can hide hunks that are still reviewed in the broader
         // PR session, so registration must not prune them.
         Self::register_diff_files(&mut self.session, &self.diff_files, true);
-        self.sort_files_by_directory(true);
-        self.expand_all_dirs();
+        self.reorder_for_load(request.pick);
         self.rebuild_annotations();
 
         if let Some(anchor) = &request.anchor {
@@ -584,7 +598,7 @@ impl App {
                 self.show_pr_comments,
             );
             let previous_message = self.message.clone();
-            self.enter_pr_diff_mode(backend, opened)?;
+            self.enter_pr_diff_mode(backend, opened, TargetPick::SameReview)?;
             self.spawn_pr_threads_fetch(&details_for_threads, local_checkout);
             if self.message == previous_message {
                 self.set_message("Reloaded PR at new head".to_string());
@@ -600,8 +614,7 @@ impl App {
             for file in &self.diff_files {
                 self.session.add_diff_file(file);
             }
-            self.sort_files_by_directory(true);
-            self.expand_all_dirs();
+            self.reorder_for_load(TargetPick::SameReview);
             self.rebuild_annotations();
             self.refetch_pr_threads();
             self.set_message("Reloaded PR (no new commits)".to_string());
@@ -680,7 +693,7 @@ impl App {
             // Save the old-head session before switching so drafts persist.
             let details_for_threads = opened.details.clone();
             let opened = self.opened_pr_with_new_head_session(opened)?;
-            self.enter_pr_diff_mode(backend, opened)?;
+            self.enter_pr_diff_mode(backend, opened, TargetPick::SameReview)?;
             // Fetch threads against the new head; old-head threads stay
             // tied to the old session and are dropped here.
             self.spawn_pr_threads_fetch(&details_for_threads, local_checkout.clone());
@@ -697,8 +710,7 @@ impl App {
             for file in &self.diff_files {
                 self.session.add_diff_file(file);
             }
-            self.sort_files_by_directory(true);
-            self.expand_all_dirs();
+            self.reorder_for_load(TargetPick::SameReview);
             self.rebuild_annotations();
         }
 
@@ -1004,7 +1016,10 @@ impl App {
             self.show_pr_comments,
         );
         let previous_message = self.message.clone();
-        self.enter_pr_diff_mode(backend, opened)?;
+        // A PR chosen from the picker is a review target being picked, and the
+        // only PR path that is: the reload arms above re-fetch a PR already
+        // under review.
+        self.enter_pr_diff_mode(backend, opened, TargetPick::NewTarget)?;
         // Kick the remote-thread fetch off on a fresh background thread.
         // The diff view is already up; threads fade in once they land.
         self.spawn_pr_threads_fetch(&details, local_checkout);
@@ -1239,7 +1254,7 @@ impl App {
         let summaries = backend
             .list_review_summaries(&opened.details)
             .unwrap_or_default();
-        self.enter_pr_diff_mode(backend, opened)?;
+        self.enter_pr_diff_mode(backend, opened, TargetPick::NewTarget)?;
         self.forge_review_threads = crate::forge::remote_comments::dedupe_threads(threads);
         self.forge_review_summaries = summaries;
         self.prune_locked_comments();

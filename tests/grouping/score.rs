@@ -3,19 +3,12 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-/// The first of `base`, `base-2`, `base-3`, … that `used` does not already
-/// hold. [`Partition`] buckets by name, so anything that files two distinct
-/// groups under one name unions them silently; every producer of group names
-/// resolves collisions the same way, from here.
-pub fn free_name(base: &str, used: &BTreeSet<String>) -> String {
-    if !used.contains(base) {
-        return base.to_string();
-    }
-    (2..)
-        .map(|suffix| format!("{base}-{suffix}"))
-        .find(|candidate| !used.contains(candidate))
-        .expect("a free name exists")
-}
+/// [`Partition`] buckets by name, so anything that files two distinct groups
+/// under one name unions them silently. The shipped engine resolves the same
+/// collision, and a second copy of the rule here could drift — scoring the
+/// published corpus under names no user would ever see — so the harness uses
+/// the engine's.
+pub use tuicr::grouping::refine::free_name;
 
 /// The bucket [`Partition::parse`] opens for paths that precede the first
 /// `[group]` header. A fixture that lands anything here is malformed, and the

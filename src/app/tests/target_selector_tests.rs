@@ -957,6 +957,7 @@ fn should_preserve_hunk_marks_hidden_by_pr_range_diff() {
         range: (1, 1),
         started_at: Instant::now(),
         anchor: None,
+        pick: TargetPick::SameReview,
     };
     app.finish_pr_range_reload(&request, first_hunk_patch())
         .unwrap();
@@ -2694,4 +2695,121 @@ fn should_discard_stale_remote_threads_event_after_switching_pr() {
     app.poll_pr_threads_events();
     // then — stale result was dropped
     assert!(app.forge_review_threads.is_empty());
+}
+
+/// A configured refine arm on a PR review, so the flags below mean "a wait was
+/// asked for" rather than "the config is off".
+fn refine_configured(app: &mut App) {
+    app.refine_config = Some(crate::app::refine::RefineConfig {
+        timeout: std::time::Duration::from_secs(30),
+        settings: crate::grouping::vertex::Settings::default(),
+    });
+    app.enable_grouping();
+}
+
+#[test]
+fn should_arm_the_refine_gate_when_a_pull_request_is_opened() {
+    let _reviews = TestReviewsDir::new();
+    let mut app = build_app();
+    refine_configured(&mut app);
+    let summary = sample_pr(42, "opened");
+    let backend = FakeForgeBackend::open_pr_details(
+        test_pr_details(42, "opened"),
+        crate::forge::github::gh::tests_fixture::SIMPLE_PATCH.to_string(),
+    );
+
+    app.open_pr_with_backend(&summary, Box::new(backend), None)
+        .unwrap();
+
+    assert!(
+        app.refine_wanted,
+        "choosing a PR in the picker is a review target being picked"
+    );
+}
+
+#[test]
+fn should_not_arm_the_refine_gate_when_the_open_pull_request_is_refetched() {
+    let _reviews = TestReviewsDir::new();
+    let mut app = build_app();
+    refine_configured(&mut app);
+    let summary = sample_pr(42, "refetched");
+    let backend = FakeForgeBackend::open_pr_details(
+        test_pr_details(42, "refetched"),
+        crate::forge::github::gh::tests_fixture::SIMPLE_PATCH.to_string(),
+    );
+    app.open_pr_with_backend(&summary, Box::new(backend), None)
+        .unwrap();
+    app.refine_wanted = false;
+
+    let backend = FakeForgeBackend::open_pr_details(
+        test_pr_details(42, "refetched"),
+        crate::forge::github::gh::tests_fixture::SIMPLE_PATCH.to_string(),
+    );
+    app.reload_pull_request_with_backend(Box::new(backend), None)
+        .unwrap();
+
+    assert!(
+        !app.refine_wanted,
+        "a re-fetch of the PR already under review is not a new target"
+    );
+}
+
+/// A PR reopened with a persisted commit subrange throws its full-PR diff away
+/// and re-fetches the narrowed one. The pick has to travel with that fetch:
+/// spending it on the full PR would refine files the human never sees, and
+/// dropping it would leave a picked target with no refine at all.
+#[test]
+fn should_refine_a_reopened_pull_request_over_the_narrowed_range() {
+    let _reviews = TestReviewsDir::new();
+    let mut app = build_app();
+    refine_configured(&mut app);
+    let summary = sample_pr(42, "narrowed");
+    let mut backend = FakeForgeBackend::open_pr_details(
+        test_pr_details(42, "narrowed"),
+        two_hunk_patch().to_string(),
+    );
+    backend.commits = vec![
+        sample_pr_commit("aaa1111", "first"),
+        sample_pr_commit("bbb2222", "second"),
+    ];
+    backend.range_patch = Some(first_hunk_patch().to_string());
+    app.open_pr_with_backend(&summary, Box::new(backend), None)
+        .unwrap();
+
+    // Narrow to the older commit and persist it, which is the state the next
+    // open of this PR restores.
+    app.commit_selection_range = Some((1, 1));
+    app.persist_pr_commit_selection_range();
+    app.refine_wanted = false;
+
+    let mut backend = FakeForgeBackend::open_pr_details(
+        test_pr_details(42, "narrowed"),
+        two_hunk_patch().to_string(),
+    );
+    backend.commits = vec![
+        sample_pr_commit("aaa1111", "first"),
+        sample_pr_commit("bbb2222", "second"),
+    ];
+    backend.range_patch = Some(first_hunk_patch().to_string());
+    app.open_pr_with_backend(&summary, Box::new(backend), None)
+        .unwrap();
+
+    assert_eq!(app.commit_selection_range, Some((1, 1)));
+    assert!(
+        !app.refine_wanted,
+        "the full-PR diff this open produced is about to be discarded"
+    );
+    let request = app
+        .pr_range_reload_state
+        .clone()
+        .expect("a restored subrange re-fetches the narrowed diff");
+    assert_eq!(request.pick, TargetPick::NewTarget);
+
+    app.finish_pr_range_reload(&request, first_hunk_patch())
+        .unwrap();
+
+    assert!(
+        app.refine_wanted,
+        "the refine the pick bought is spent on the files the human ends up reviewing"
+    );
 }

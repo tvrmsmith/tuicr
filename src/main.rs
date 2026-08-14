@@ -277,16 +277,45 @@ fn main() -> anyhow::Result<()> {
     // read the tree mode — the grouped sidebar renders the same in all three
     // (`docs/SIDEBAR_MODEL.md` point 5) — so only `expand_all_dirs` below has
     // to come after both.
+    //
+    // The refine arm runs first and blocks, because its answer *is* the
+    // grouping the sidebar is then built from and there is no async startup
+    // path to hand a late answer to (`docs/MID_SESSION_REGROUP.md`). It is off
+    // unless `[grouping].refine` says otherwise, and cancel, timeout and every
+    // failure mode land on the heuristic partition, so the worst case is the
+    // session that ships today.
+    //
+    // The arm is parked on the app rather than passed in because bare `tuicr`
+    // has no changeset to refine here: it opens on the target selector, and its
+    // wait runs from the main loop when the diff loads.
     if !cli_args.no_grouping {
+        if let Some(grouping) = config_outcome
+            .config
+            .as_ref()
+            .and_then(|cfg| cfg.grouping.as_ref())
+            .filter(|grouping| grouping.refine)
+        {
+            app.refine_config = Some(tuicr::app::refine::RefineConfig {
+                timeout: Duration::from_millis(grouping.refine_timeout_ms as u64),
+                settings: tuicr::grouping::vertex::Settings {
+                    model: grouping.refine_model.clone(),
+                    project: grouping.vertex_project.clone(),
+                    location: grouping.vertex_location.clone(),
+                },
+            });
+            startup_warnings.extend(app.refine_grouping_at_startup().warning());
+        }
         app.enable_grouping();
     }
     app.expand_all_dirs();
 
-    let mut session_registered = true;
-    match app.ensure_ephemeral_session_file() {
-        Ok(_) => session_registered = app.has_persisted_session_file(),
-        Err(e) => startup_warnings.push(format!("Failed to initialize review session file: {e}")),
-    }
+    let session_registered = match app.ensure_ephemeral_session_file() {
+        Ok(_) => app.has_persisted_session_file(),
+        Err(e) => {
+            startup_warnings.push(format!("Failed to initialize review session file: {e}"));
+            true
+        }
+    };
 
     // Announce the slug for the active session so agents and wrapper scripts
     // can discover it without parsing the markdown export. This is emitted to
@@ -431,6 +460,31 @@ fn main() -> anyhow::Result<()> {
         needs_redraw |= app.poll_persisted_session_changes();
         needs_redraw |= app.poll_diff_watch_changes();
         needs_redraw |= pr_pending;
+
+        // A diff that loaded after the alternate screen went up — bare `tuicr`
+        // picking a target, `tuicr pr` picking a PR — gets the same blocking
+        // refine a target named up front gets before the screen opens. Same
+        // semantics: it blocks, the cancel keys abandon it, a timeout falls
+        // back to the heuristic partition. The flag is set only by the load
+        // that answers a target the human just picked, so no reshuffle inside
+        // an open review — an inline commit toggle, a reload, a PR re-fetch —
+        // can dispatch one.
+        if app.refine_wanted {
+            let style = ui::WaitStyle {
+                body: ui::styles::popup_style(&app.theme),
+                border: ui::styles::border_style(&app.theme, true),
+            };
+            // Only the frames are drawn here. The end of the wait is not: the
+            // overlay comes down with the full repaint `needs_redraw` forces
+            // below, which is also the frame that shows the refined grouping.
+            let outcome = app.refine_loaded_diff(&mut |text: &str| {
+                let _ = terminal.draw(|frame| ui::render_refine_wait(frame, style, text));
+            });
+            if let Some(message) = outcome.warning() {
+                app.set_warning(message);
+            }
+            needs_redraw = true;
+        }
 
         if needs_redraw {
             // Bracket the frame in a synchronized-output pair (CSI ?2026h/l)

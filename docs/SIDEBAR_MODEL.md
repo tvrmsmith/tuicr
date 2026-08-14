@@ -369,8 +369,8 @@ it applies inside a group". That half is gone.*
 
 One config key governs it, defaulting to `nested` so nothing changes for
 anyone who does not opt in. There is no group-specific override. Adding the key
-means adding it to `KNOWN_KEYS` (`src/config/mod.rs:169-198`) or startup emits
-an unknown-key warning; config is read exactly once, at `src/main.rs:73`, and
+means adding it to `KNOWN_KEYS` (`src/config/mod.rs`) or startup emits
+an unknown-key warning; config is read exactly once, by `main`, and
 never re-read during a session.
 
 ## Two signals the sidebar has to carry
@@ -404,7 +404,7 @@ file, the marker offers nothing to do.
 ## What this demands of `build_visible_items`
 
 The seam map's Correction 1 is the binding constraint. `build_visible_items`
-(`src/app/tree.rs:271-316`) carries a single **global** `seen_dirs` set across
+(`src/app/tree.rs`) carries a single **global** `seen_dirs` set across
 the whole file loop and therefore silently requires `diff_files` to be
 contiguous by directory. A directory appearing in two non-adjacent runs emits
 its header once; if it is collapsed, the later files vanish from the sidebar
@@ -436,7 +436,7 @@ sound where it holds.**
    protecting no longer exists.*
 
 3. **`expanded_dirs` holds group ids while grouping is on, and paths while it
-   is off.** `expanded_dirs: HashSet<String>` (`src/app/mod.rs:1233`) is a flat
+   is off.** `App::expanded_dirs: HashSet<String>` is a flat
    string set, and with no in-group directory rows the two key spaces are never
    populated at once — which also disposes of the group-id/directory-path
    collision hazard the seam map flagged, rather than merely qualifying it away.
@@ -476,21 +476,21 @@ Everything else the seam map lists still applies unchanged:
 
 - `FileTreeItem` needs a group variant, or a `label` distinct from `path`, so
   the renderer stops deriving the display name via `Path::file_name()`
-  (`src/ui/file_list.rs:41-44, 105-108`) and stops appending `/` to it
-  (`file_list.rs:112`).
-- `expand_all_dirs` (`tree.rs:187-203`) seeds `expanded_dirs` from path
+  (`render_file_list` in `src/ui/file_list.rs`) and stops appending `/` to it.
+- `App::expand_all_dirs` seeds `expanded_dirs` from path
   ancestors only, so it must also seed group ids or groups start collapsed and
   their files hidden. Under grouping it seeds **only** group ids — there are no
   in-group directory keys to seed.
-- `jump_to_file` (`src/app/navigation.rs:754-762`) inserts every path ancestor
+- `App::jump_to_file` (`src/app/navigation.rs`) inserts every path ancestor
   to reveal a target; under grouping the ancestors reveal nothing and the
   file's group id is the only key that does.
-- `ensure_valid_tree_selection` (`tree.rs:249-266`) walks the parent chain to
+- `App::ensure_valid_tree_selection` walks the parent chain to
   recover selection and must fall back to the group node rather than
   `select(0)`.
-- The unguarded `&app.diff_files[*file_idx]` at `file_list.rs:48` and `116`
+- The unguarded `&app.diff_files[*file_idx]` in `render_file_list`
   still panics on a stale index.
-- The commit-message pseudo-file is hoisted to index 0 (`tree.rs:144-150`) and
+- The commit-message pseudo-file is hoisted to index 0 by
+  `App::sort_files_by_directory` and
   has no real path. Where it sits relative to the groups is `gd-26r.12`.
 
 ## Revision (`gd-26r.31`): no directory rows inside a group

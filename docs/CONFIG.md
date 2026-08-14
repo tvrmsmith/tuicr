@@ -56,6 +56,13 @@ comment_types = [
   { id = "nit", label = "nitpick", definition = "small optional tweaks", color = "#d19a66" },
 ]
 
+[grouping]
+refine = false
+refine_timeout_ms = 180000
+refine_model = "claude-opus-5"
+# vertex_project = "my-project"   # defaults to your credentials' project
+vertex_location = "global"
+
 [forge]
 comment_type_prefix = true
 
@@ -219,6 +226,72 @@ comment_types = [
   { id = "blocker", color = "red", definition = "must be fixed before merge" },
 ]
 ```
+
+## Grouping
+
+The sidebar groups a review's files by concern instead of by directory. The groups are computed by local heuristics, instantly and offline, and that is the default. The `[grouping]` section turns on a second arm: one model call that revises the heuristic grouping before you see it.
+
+```toml
+[grouping]
+refine = true
+refine_timeout_ms = 180000
+refine_model = "claude-opus-5"
+vertex_project = "my-project"
+vertex_location = "global"
+```
+
+| Key                 | Default            | Description                                                                                                                                                        |
+| ------------------- | ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `refine`            | `false`            | Revise the heuristic grouping with one model call at startup. Requires Google Cloud credentials (see below). Off by default: it costs money and it blocks the review until the grouping is final. |
+| `refine_timeout_ms` | `180000`           | How long to wait for **one** attempt before giving up and opening with the heuristic grouping. A response tuicr cannot read is retried once with its own full budget, so the worst case is twice this. Must be greater than zero; values above `86400000` (one day) are clamped to it with a warning. |
+| `refine_model`      | `claude-opus-5`    | Publisher model id. Anthropic (`claude-*`) and Google (`gemini-*`) models are both understood.                                                                     |
+| `vertex_project`    | (from credentials) | Google Cloud project billed for the call. Falls back to `GOOGLE_CLOUD_PROJECT`, then to the `quota_project_id` in your credentials file.                           |
+| `vertex_location`   | `global`           | Vertex region.                                                                                                                                                     |
+
+How much the model thinks is not configurable. Low effort is what the shipped model was measured at; the alternative is slower, dearer, and better on only some changesets, which is not a setting anyone can be advised on.
+
+**Refine blocks.** The grouping is not shown until it is final, and the call typically takes 30–70 seconds on a large changeset — sometimes longer. Press `esc`, `q` or `Ctrl-C` to stop waiting and continue with the heuristic grouping immediately.
+
+Where the wait appears depends on how the diff was chosen, because refine runs as soon as there is a changeset to group:
+
+- **A target given on the command line** — `tuicr -r`, `--revisions`, `--working-tree`, `--all-files`, `tuicr pr <n>`. The changeset exists before the review opens, so the wait is a progress line on stderr showing the file count and the elapsed time, and the review opens when it ends.
+- **A target picked inside tuicr** — bare `tuicr`, or bare `tuicr pr`, which opens the picker. The screen is already up, so the same wait is drawn as a panel over it once the diff loads, and the review is behind it when it ends.
+
+Either way the wait happens once per target you pick, and again each time you pick another one. Only picking refines: leaving the target selector with `esc` restores what was on screen without a call, even when that means going back to the working tree. Changing what is *in* an open review — toggling which commits of the range you are looking at, `:reload`, a PR re-fetch — does not refine again: the target is the same one, and each reshuffle would otherwise cost another blocking call. Reopening a session that already has a saved grouping keeps that grouping rather than refining over it, and says so in a warning rather than passing silently.
+
+The cancel keys need a terminal on stdin. When there is not one — a run with no controlling terminal, such as CI or a detached process — the wait keeps its timeout but loses its cancel key, and `Ctrl-C` ends tuicr as usual instead of opening the heuristic session.
+
+Cancelling, timing out, missing credentials, a network failure, a response tuicr cannot read — all land in the same place: the review opens with the heuristic grouping, which never fails and always covers every file. Refine can only improve the grouping or leave it alone; it can never leave you without one.
+
+**A repaired answer says so.** An answer that invents a path, places one twice, or omits one is not rejected: the offending placement is repaired against the heuristic grouping and counted, and the count is shown as a startup warning (`docs/GROUPS_CONTRACT.md`). A warning there means the grouping you are reading is partly tuicr's, not the model's.
+
+Grouping is off entirely with `--no-grouping`, which also skips refine.
+
+### Credentials for refine
+
+Refine calls Vertex AI directly over HTTPS with your existing application default credentials. Run `gcloud auth application-default login` once, and set a project if `gcloud` has not:
+
+```sh
+export GOOGLE_CLOUD_PROJECT=my-project
+```
+
+Only user credentials are supported. A service account key is not, and refine falls back to the heuristics rather than failing the startup.
+
+### Overriding the arm for one run
+
+Each of the three Vertex settings also reads an environment variable, **and the variable wins over the config file**. Use the file for what this machine normally does, and a variable for one run that does something else — trying another model, or billing a different project — without editing a file and remembering to edit it back:
+
+```sh
+TUICR_REFINE_MODEL=gemini-3-flash-preview tuicr
+```
+
+| Variable                | Overrides         |
+| ----------------------- | ----------------- |
+| `TUICR_REFINE_MODEL`    | `refine_model`    |
+| `TUICR_VERTEX_PROJECT`  | `vertex_project`  |
+| `TUICR_VERTEX_LOCATION` | `vertex_location` |
+
+In full, the project resolves as `TUICR_VERTEX_PROJECT`, then `vertex_project`, then `GOOGLE_CLOUD_PROJECT`, then the `quota_project_id` in the credentials file.
 
 ## Forge
 

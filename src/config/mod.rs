@@ -34,6 +34,73 @@ impl Default for ForgeConfig {
     }
 }
 
+/// Generous on purpose, and well beyond the measured 30–70s
+/// (`docs/GROUPING_PASSES.md`). The money is spent at dispatch, so a premature
+/// timeout throws away a paid-for result and gets the unordered heuristic
+/// grouping anyway — the same thing waiting longer risks, minus the answer.
+///
+/// It bounds **one attempt**. A body that comes back unparseable is retried
+/// once with its own full budget (`docs/GROUPS_CONTRACT.md`), so the worst case
+/// is twice this.
+pub const DEFAULT_REFINE_TIMEOUT_MS: usize = 180_000;
+
+/// The largest timeout a config file can ask for: one day, which is four
+/// hundred times the wait the arm was measured at and far beyond any value a
+/// human means.
+///
+/// It exists because the value is not only large but *unsound* past a point:
+/// each attempt adds it to an `Instant`, and a duration near `usize::MAX`
+/// overflows that addition — a panic mid-wait, on a typo. Clamping keeps the
+/// failure a warning.
+pub const MAX_REFINE_TIMEOUT_MS: usize = 86_400_000;
+
+/// `[grouping]` section settings: whether startup blocks on a refine call, how
+/// long it may block for, and which Vertex arm answers it.
+///
+/// Each of the three Vertex keys has an environment variable of the same
+/// meaning, and **the environment wins**. The config file says what this machine
+/// normally does; the variable is for one run that does something else — trying
+/// the runner-up model, or billing a different project — without editing a file
+/// and remembering to edit it back.
+///
+/// Reasoning effort is the one setting with no knob at all, in the file or out
+/// of it: the other value is slower, dearer, and better on one measured fixture
+/// of two, which is a knob nobody can be told how to set.
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct GroupingConfig {
+    /// Block startup on a model refine of the heuristic grouping. Off by
+    /// default: it costs money, takes 30–70 seconds on a ~160-file changeset,
+    /// and on one of the two measured fixtures buys a group order
+    /// indistinguishable from chance. What it reliably buys is the partition —
+    /// F1 0.427 and 0.711 against 0.394 and 0.378.
+    pub refine: bool,
+    /// How long one refine attempt may block startup, in milliseconds.
+    pub refine_timeout_ms: usize,
+    /// Publisher model id. `None` ships `claude-opus-5`; `TUICR_REFINE_MODEL`
+    /// overrides both.
+    pub refine_model: Option<String>,
+    /// Google Cloud project billed for the call. `None` falls back to
+    /// `GOOGLE_CLOUD_PROJECT` and then to the credentials' own
+    /// `quota_project_id`; `TUICR_VERTEX_PROJECT` overrides all three.
+    pub vertex_project: Option<String>,
+    /// Vertex region. `None` ships `global`; `TUICR_VERTEX_LOCATION` overrides
+    /// both.
+    pub vertex_location: Option<String>,
+}
+
+impl Default for GroupingConfig {
+    fn default() -> Self {
+        Self {
+            refine: false,
+            refine_timeout_ms: DEFAULT_REFINE_TIMEOUT_MS,
+            refine_model: None,
+            vertex_project: None,
+            vertex_location: None,
+        }
+    }
+}
+
 const DEFAULT_EXPORT_INTRO: &str =
     "I reviewed your code and have the following comments. Please address them.";
 const DEFAULT_EXPORT_COMMENTS_HEADER: &str = "## Local tuicr Comments";
@@ -161,6 +228,10 @@ pub struct AppConfig {
     /// `[export]` section settings. `None` means "no override"; downstream
     /// code should treat it as `ExportConfig::default()`.
     pub export: Option<ExportConfig>,
+    /// `[grouping]` section settings. `None` means "no override"; downstream
+    /// code should treat it as `GroupingConfig::default()`, which is refine
+    /// off.
+    pub grouping: Option<GroupingConfig>,
 }
 
 impl AppConfig {
@@ -214,9 +285,18 @@ const KNOWN_KEYS: &[&str] = &[
     "username",
     "forge",
     "export",
+    "grouping",
 ];
 
 const FORGE_KNOWN_KEYS: &[&str] = &["comment_type_prefix"];
+
+const GROUPING_KNOWN_KEYS: &[&str] = &[
+    "refine",
+    "refine_timeout_ms",
+    "refine_model",
+    "vertex_project",
+    "vertex_location",
+];
 
 const EXPORT_KNOWN_KEYS: &[&str] = &[
     "intro",
@@ -463,6 +543,9 @@ fn load_config_from_path(path: &Path) -> Result<ConfigLoadOutcome> {
         export: table
             .get("export")
             .and_then(|v| parse_export(v, &mut warnings)),
+        grouping: table
+            .get("grouping")
+            .and_then(|v| parse_grouping(v, &mut warnings)),
     };
 
     for key in table.keys() {
@@ -502,6 +585,87 @@ fn parse_forge(value: &Value, warnings: &mut Vec<String>) -> Option<ForgeConfig>
         cfg.comment_type_prefix = v;
         any_override = true;
     }
+
+    if any_override { Some(cfg) } else { None }
+}
+
+/// Parse the `[grouping]` section, returning `Some` when any key is set and
+/// `None` for an absent or empty section, so a config that never mentions
+/// grouping leaves refine off and everything else at its default.
+fn parse_grouping(value: &Value, warnings: &mut Vec<String>) -> Option<GroupingConfig> {
+    let Some(table) = value.as_table() else {
+        warnings.push("Warning: Config key 'grouping' must be a table; ignoring value".to_string());
+        return None;
+    };
+
+    for key in table.keys() {
+        if !GROUPING_KNOWN_KEYS.contains(&key.as_str()) {
+            warnings.push(format!(
+                "Warning: Unknown config key 'grouping.{key}', ignoring"
+            ));
+        }
+    }
+
+    let mut cfg = GroupingConfig::default();
+    let mut any_override = false;
+
+    if let Some(refine) = read_section_bool(table, "grouping", "refine", warnings) {
+        cfg.refine = refine;
+        any_override = true;
+    }
+    if let Some(timeout) = read_section_usize(table, "grouping", "refine_timeout_ms", warnings) {
+        // Zero would time out before the request left the machine and read as
+        // "refine is broken" rather than "refine is off", which is what
+        // `refine = false` is for.
+        if timeout == 0 {
+            warnings.push(
+                "Warning: Config key 'grouping.refine_timeout_ms' must be greater than zero; \
+                 ignoring value"
+                    .to_string(),
+            );
+        } else if timeout > MAX_REFINE_TIMEOUT_MS {
+            // A value past a day is a typo, and the arithmetic downstream is
+            // not total: each attempt adds the timeout to an `Instant`, which
+            // panics on a value near `usize::MAX`. Clamping keeps a stray extra
+            // digit a warning rather than a startup crash, while still waiting
+            // as long as anyone could have meant.
+            warnings.push(format!(
+                "Warning: Config key 'grouping.refine_timeout_ms' is above the {MAX_REFINE_TIMEOUT_MS} ms \
+                 maximum; using the maximum"
+            ));
+            cfg.refine_timeout_ms = MAX_REFINE_TIMEOUT_MS;
+            any_override = true;
+        } else {
+            cfg.refine_timeout_ms = timeout;
+            any_override = true;
+        }
+    }
+
+    // A blank string is not "unset": it is a value that would build a URL with a
+    // hole in it, so it is refused where it was written rather than at the
+    // request. Each of these also comes from the environment, which wins, so a
+    // config naming one that a variable then overrides is not a mistake.
+    //
+    // What is kept is the trimmed value, not what was written. Every one of
+    // these becomes part of a URL, where a stray space is refused as an illegal
+    // character — reporting `" my-project"` as a bad project rather than
+    // silently using `my-project` is a puzzle nobody needs.
+    let mut name = |key: &str| -> Option<String> {
+        let value = read_section_string(table, "grouping", key, warnings)?;
+        let value = value.trim();
+        if value.is_empty() {
+            warnings.push(format!(
+                "Warning: Config key 'grouping.{key}' must not be empty; ignoring value"
+            ));
+            return None;
+        }
+        Some(value.to_string())
+    };
+    cfg.refine_model = name("refine_model");
+    cfg.vertex_project = name("vertex_project");
+    cfg.vertex_location = name("vertex_location");
+    any_override |=
+        cfg.refine_model.is_some() || cfg.vertex_project.is_some() || cfg.vertex_location.is_some();
 
     if any_override { Some(cfg) } else { None }
 }
@@ -560,6 +724,32 @@ fn read_section_bool(
             "Warning: Config key '{section}.{key}' must be a boolean; ignoring value"
         ));
         None
+    }
+}
+
+/// Like `read_usize`, but emits a `<section>.<key>` qualified warning.
+fn read_section_usize(
+    table: &toml::Table,
+    section: &str,
+    key: &str,
+    warnings: &mut Vec<String>,
+) -> Option<usize> {
+    let val = table.get(key)?;
+    match val.as_integer() {
+        Some(n) if n >= 0 => Some(n as usize),
+        Some(_) => {
+            warnings.push(format!(
+                "Warning: Config key '{section}.{key}' must be a non-negative integer; ignoring \
+                 value"
+            ));
+            None
+        }
+        None => {
+            warnings.push(format!(
+                "Warning: Config key '{section}.{key}' must be an integer; got '{val}', ignoring"
+            ));
+            None
+        }
     }
 }
 
@@ -1888,6 +2078,222 @@ scope_line = "no"
         let export = cfg.resolved_export();
         assert!(!export.legend());
         assert_eq!(export.intro(), "");
+    }
+
+    // [grouping]
+
+    #[test]
+    fn should_leave_refine_off_when_no_grouping_section_is_present() {
+        let cfg = parse_config("mouse = true\n")
+            .config
+            .expect("config should parse");
+        assert!(cfg.grouping.is_none());
+        // The default is what a user who has never heard of refine gets: no
+        // model call, no blocking startup, no credentials required.
+        assert!(!GroupingConfig::default().refine);
+    }
+
+    #[test]
+    fn should_read_refine_and_its_timeout() {
+        let cfg = parse_config("[grouping]\nrefine = true\nrefine_timeout_ms = 240000\n")
+            .config
+            .expect("config should parse");
+        let grouping = cfg.grouping.expect("the section is set");
+        assert!(grouping.refine);
+        assert_eq!(grouping.refine_timeout_ms, 240_000);
+    }
+
+    #[test]
+    fn should_keep_the_default_timeout_when_only_refine_is_set() {
+        let cfg = parse_config("[grouping]\nrefine = true\n")
+            .config
+            .expect("config should parse");
+        let grouping = cfg.grouping.expect("the section is set");
+        assert!(grouping.refine);
+        assert_eq!(grouping.refine_timeout_ms, DEFAULT_REFINE_TIMEOUT_MS);
+    }
+
+    #[test]
+    fn should_reject_a_zero_refine_timeout() {
+        // Zero would expire before the request left the machine and read as
+        // "refine is broken" rather than "refine is off", which `refine = false`
+        // already says.
+        let outcome = parse_config("[grouping]\nrefine = true\nrefine_timeout_ms = 0\n");
+        assert!(
+            outcome
+                .warnings
+                .iter()
+                .any(|warning| warning.contains("grouping.refine_timeout_ms"))
+        );
+        let grouping = outcome
+            .config
+            .expect("config should parse")
+            .grouping
+            .expect("refine = true still set the section");
+        assert_eq!(grouping.refine_timeout_ms, DEFAULT_REFINE_TIMEOUT_MS);
+    }
+
+    #[test]
+    fn should_clamp_a_refine_timeout_past_the_maximum() {
+        // A value this size is a typo, and one the wait cannot even hold: it is
+        // added to an `Instant`, which overflows and panics at startup. The
+        // clamp turns a crash into a warning.
+        let outcome = parse_config(&format!(
+            "[grouping]\nrefine = true\nrefine_timeout_ms = {}\n",
+            i64::MAX
+        ));
+        assert!(
+            outcome
+                .warnings
+                .iter()
+                .any(|warning| warning.contains("grouping.refine_timeout_ms")),
+            "{:?}",
+            outcome.warnings
+        );
+        let grouping = outcome
+            .config
+            .expect("config should parse")
+            .grouping
+            .expect("refine = true still set the section");
+        assert_eq!(grouping.refine_timeout_ms, MAX_REFINE_TIMEOUT_MS);
+    }
+
+    #[test]
+    fn should_ignore_a_grouping_key_that_is_not_a_table() {
+        let outcome = parse_config("grouping = true\nmouse = true\n");
+        assert!(
+            outcome
+                .warnings
+                .iter()
+                .any(|warning| warning.contains("'grouping' must be a table")),
+            "{:?}",
+            outcome.warnings
+        );
+        let cfg = outcome.config.expect("the rest of the config still parses");
+        assert!(cfg.grouping.is_none(), "refine stays off");
+        assert_eq!(cfg.mouse, Some(true));
+    }
+
+    #[test]
+    fn should_reject_a_negative_refine_timeout() {
+        let outcome = parse_config("[grouping]\nrefine = true\nrefine_timeout_ms = -1\n");
+        assert!(
+            outcome
+                .warnings
+                .iter()
+                .any(|warning| warning.contains("must be a non-negative integer")),
+            "{:?}",
+            outcome.warnings
+        );
+        let grouping = outcome
+            .config
+            .expect("config should parse")
+            .grouping
+            .expect("refine = true still set the section");
+        assert_eq!(grouping.refine_timeout_ms, DEFAULT_REFINE_TIMEOUT_MS);
+    }
+
+    #[test]
+    fn should_reject_a_refine_timeout_that_is_not_an_integer() {
+        let outcome = parse_config("[grouping]\nrefine = true\nrefine_timeout_ms = \"180000\"\n");
+        assert!(
+            outcome
+                .warnings
+                .iter()
+                .any(|warning| warning.contains("must be an integer")),
+            "{:?}",
+            outcome.warnings
+        );
+        let grouping = outcome
+            .config
+            .expect("config should parse")
+            .grouping
+            .expect("refine = true still set the section");
+        assert_eq!(grouping.refine_timeout_ms, DEFAULT_REFINE_TIMEOUT_MS);
+    }
+
+    #[test]
+    fn should_store_vertex_settings_without_their_surrounding_space() {
+        // Stray space around a value is a typo, not part of the project id; it
+        // would otherwise reach the URL builder and be rejected there, far from
+        // the line that wrote it.
+        let cfg = parse_config(
+            "[grouping]\nvertex_project = \" my-project \"\nvertex_location = \"\tus-east5\\n\"\n",
+        )
+        .config
+        .expect("config should parse");
+        let grouping = cfg.grouping.expect("naming the arm alone sets the section");
+        assert_eq!(grouping.vertex_project.as_deref(), Some("my-project"));
+        assert_eq!(grouping.vertex_location.as_deref(), Some("us-east5"));
+    }
+
+    #[test]
+    fn should_read_the_vertex_arm_from_the_section() {
+        let cfg = parse_config(
+            "[grouping]\nrefine_model = \"gemini-3-flash-preview\"\n\
+             vertex_project = \"my-project\"\nvertex_location = \"us-east5\"\n",
+        )
+        .config
+        .expect("config should parse");
+        let grouping = cfg.grouping.expect("naming the arm alone sets the section");
+        assert_eq!(
+            grouping.refine_model.as_deref(),
+            Some("gemini-3-flash-preview")
+        );
+        assert_eq!(grouping.vertex_project.as_deref(), Some("my-project"));
+        assert_eq!(grouping.vertex_location.as_deref(), Some("us-east5"));
+        // Naming the arm does not turn refine on. Configuring which model would
+        // answer is not asking for it to be called.
+        assert!(!grouping.refine);
+    }
+
+    #[test]
+    fn should_reject_a_blank_vertex_setting() {
+        // Not "unset": a value that would build a URL with a hole in it, caught
+        // where it was written rather than at the request.
+        let outcome = parse_config("[grouping]\nrefine = true\nvertex_project = \"  \"\n");
+        assert!(
+            outcome
+                .warnings
+                .iter()
+                .any(|warning| warning.contains("grouping.vertex_project")),
+            "{:?}",
+            outcome.warnings
+        );
+        let grouping = outcome
+            .config
+            .expect("config should parse")
+            .grouping
+            .expect("refine = true still set the section");
+        assert!(grouping.vertex_project.is_none());
+    }
+
+    #[test]
+    fn should_warn_about_an_unknown_grouping_key() {
+        // A key that reaches neither `KNOWN_KEYS` nor this list is silently
+        // dead, which is the failure mode the warning exists to prevent.
+        let outcome = parse_config("[grouping]\nrefine = true\neffort = \"high\"\n");
+        assert!(
+            outcome
+                .warnings
+                .iter()
+                .any(|warning| warning.contains("grouping.effort")),
+            "{:?}",
+            outcome.warnings
+        );
+    }
+
+    #[test]
+    fn should_not_warn_about_the_grouping_section_itself() {
+        let outcome = parse_config("[grouping]\nrefine = false\n");
+        assert!(
+            !outcome
+                .warnings
+                .iter()
+                .any(|warning| warning.contains("Unknown config key 'grouping'")),
+            "{:?}",
+            outcome.warnings
+        );
     }
 
     // config path resolution

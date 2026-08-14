@@ -218,6 +218,14 @@ impl App {
         Ok(())
     }
 
+    /// Leave the target selector without choosing anything.
+    ///
+    /// Neither branch below is a target pick, deliberately, including the one
+    /// that falls back to the working tree: Esc means cancel everywhere else in
+    /// the TUI, so an accidental Esc must never cost a blocking refine. Both
+    /// reorders therefore pass [`TargetPick::SameReview`], and returning to the
+    /// working tree is a restoration of what was on screen before the selector
+    /// opened rather than a new answer to "review this".
     pub fn exit_commit_select_mode(&mut self) -> Result<()> {
         self.input_mode = InputMode::Normal;
 
@@ -259,8 +267,7 @@ impl App {
                         self.session.add_diff_file(file);
                     }
 
-                    self.sort_files_by_directory(true);
-                    self.expand_all_dirs();
+                    self.reorder_for_load(TargetPick::SameReview);
                 }
                 Err(_) => {
                     self.set_message("No staged or unstaged changes");
@@ -790,10 +797,9 @@ impl App {
         // the loaded diff to it. Otherwise finalize the full-range diff.
         if Self::is_strict_commit_selection(self.commit_selection_range, self.review_commits.len())
         {
-            self.reload_inline_selection()?;
+            self.reload_inline_selection_as(TargetPick::NewTarget)?;
         } else {
-            self.sort_files_by_directory(true);
-            self.expand_all_dirs();
+            self.reorder_for_load(TargetPick::NewTarget);
             self.rebuild_annotations();
         }
 
@@ -817,7 +823,16 @@ impl App {
     }
 
     /// Reload the diff for the currently selected inline commit subrange.
+    ///
+    /// Always a reshuffle inside the review already open: the inline selector
+    /// only exists once a target has been picked. The one caller that is a
+    /// target pick — the confirm above, opening scoped to a single commit —
+    /// goes through [`Self::reload_inline_selection_as`] instead.
     pub fn reload_inline_selection(&mut self) -> Result<()> {
+        self.reload_inline_selection_as(TargetPick::SameReview)
+    }
+
+    pub(in crate::app) fn reload_inline_selection_as(&mut self, pick: TargetPick) -> Result<()> {
         let Some((start, end)) = self.commit_selection_range else {
             self.set_message("Select at least one commit");
             return Ok(());
@@ -873,8 +888,7 @@ impl App {
         self.expanded_top.clear();
         self.expanded_bottom.clear();
         self.insert_commit_message_if_single();
-        self.sort_files_by_directory(true);
-        self.expand_all_dirs();
+        self.reorder_for_load(pick);
         self.rebuild_annotations();
 
         Ok(())

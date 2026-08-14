@@ -451,7 +451,7 @@ fn directory_fallback_pass<'a>(
     assigned: &mut BTreeMap<&'a str, PassClaim>,
 ) {
     for file in files {
-        let group = format!("dir:{}", file.dir());
+        let group = format!("{}{}", super::order::FALLBACK_PREFIX, file.dir());
         claim(assigned, file, &group, "directory-fallback");
     }
 }

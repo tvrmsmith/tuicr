@@ -934,6 +934,10 @@ pub struct PrRangeReloadRequest {
     pub range: (usize, usize),
     pub started_at: Instant,
     pub anchor: Option<PrCursorAnchor>,
+    /// Whether the load this fetch replaces answered a freshly picked review
+    /// target. Carried here because the narrowing throws that load's file set
+    /// away, so the refine gate has to be armed by the fetch that survives.
+    pub(crate) pick: TargetPick,
 }
 
 /// Result delivered from the PR range re-fetch background thread.
@@ -1406,6 +1410,49 @@ pub struct App {
     /// The session's grouping, when there is one. `None` with grouping off,
     /// and on a changeset with no real files to group.
     pub grouping: Option<crate::grouping::Grouping>,
+    /// A refined grouping a blocking wait produced, parked for the next
+    /// [`App::order_files_by_group`] to adopt.
+    ///
+    /// Written by both arms — the pre-TUI wait parks its answer here for
+    /// [`App::enable_grouping`] to pick up, and the in-TUI wait parks it and
+    /// immediately reorders — and **taken** rather than read, so a later
+    /// reorder of a changed changeset re-derives its grouping instead of
+    /// re-applying a stale answer. Every failure mode — cancel, timeout, auth,
+    /// an unreadable body twice — simply leaves it `None`, which is the
+    /// heuristic arm.
+    pub(crate) pending_refined: Option<crate::grouping::Grouping>,
+    /// What `[grouping]` settled about the refine arm, or `None` when refine is
+    /// off. Set by the binary once config is read; both dispatch points read it
+    /// from here, because the one that fires when a diff loads runs long after
+    /// the startup code that could have passed it in.
+    pub refine_config: Option<crate::app::refine::RefineConfig>,
+    /// Set by [`App::reorder_for_load`] when a load answering a review target
+    /// the human just picked finishes, and consumed by the next
+    /// [`App::order_files_by_group`], which turns it into [`Self::refine_wanted`].
+    ///
+    /// A separate field from `refine_wanted` because the pick and the load that
+    /// answers it are two events: a commit range is confirmed, and only then is
+    /// its diff read and grouped.
+    pub(crate) refine_target_picked: bool,
+    /// Set when [`App::order_files_by_group`] grouped the diff of a target the
+    /// human just picked. The main loop reads it, runs the wait in the
+    /// alternate screen, and clears it.
+    ///
+    /// It is **not** set by a reshuffle inside a review already open — an
+    /// inline commit-selection toggle, a `:reload`, a PR re-fetch. Those change
+    /// the file set without changing what is under review, and each one would
+    /// otherwise cost a blocking billed call (`docs/REGROUPING_STATE.md`).
+    pub refine_wanted: bool,
+    /// Whether the grouping the last [`App::order_files_by_group`] installed
+    /// came out of the session rather than the heuristics.
+    ///
+    /// The in-TUI wait cannot ask the session itself: `order_files_by_group`
+    /// records whatever it installed, so by the time the wait runs the session
+    /// always holds a grouping. This is that question answered before the
+    /// recording, and it is what turns a reopened review into the
+    /// [`crate::app::refine::Skipped::AlreadyGrouped`] warning instead of a
+    /// second refine.
+    pub(crate) refine_over_saved_grouping: bool,
     /// Stores lines expanded downward from the upper boundary of each gap
     pub expanded_top: HashMap<GapId, Vec<DiffLine>>,
     /// Stores lines expanded upward from the lower boundary of each gap (in ascending line order)
@@ -1781,6 +1828,7 @@ mod init;
 mod modes;
 mod navigation;
 mod pr;
+pub mod refine;
 mod reviewed;
 mod search;
 mod session;
@@ -1788,5 +1836,7 @@ mod submit;
 mod tree;
 mod visual;
 
+pub(crate) use grouping::TargetPick;
+
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;

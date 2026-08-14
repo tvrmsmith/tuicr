@@ -427,8 +427,7 @@ impl App {
         self.diff_state = DiffState::default();
         self.file_list_state = FileListState::default();
         self.clear_expanded_gaps();
-        self.sort_files_by_directory(true);
-        self.expand_all_dirs();
+        self.reorder_for_load(TargetPick::NewTarget);
         self.rebuild_annotations();
 
         Ok(())
@@ -462,8 +461,7 @@ impl App {
         self.diff_state = DiffState::default();
         self.file_list_state = FileListState::default();
         self.clear_expanded_gaps();
-        self.sort_files_by_directory(true);
-        self.expand_all_dirs();
+        self.reorder_for_load(TargetPick::NewTarget);
         self.rebuild_annotations();
 
         Ok(())
@@ -497,8 +495,7 @@ impl App {
         self.diff_state = DiffState::default();
         self.file_list_state = FileListState::default();
         self.clear_expanded_gaps();
-        self.sort_files_by_directory(true);
-        self.expand_all_dirs();
+        self.reorder_for_load(TargetPick::NewTarget);
         self.rebuild_annotations();
 
         Ok(())
@@ -916,11 +913,10 @@ impl App {
         // the loaded diff to it. Otherwise finalize the full-range diff.
         if Self::is_strict_commit_selection(self.commit_selection_range, self.review_commits.len())
         {
-            self.reload_inline_selection()?;
+            self.reload_inline_selection_as(TargetPick::NewTarget)?;
         } else {
             self.insert_commit_message_if_single();
-            self.sort_files_by_directory(true);
-            self.expand_all_dirs();
+            self.reorder_for_load(TargetPick::NewTarget);
             self.rebuild_annotations();
         }
         Ok(())

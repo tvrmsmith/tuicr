@@ -9,6 +9,7 @@ pub mod file_list;
 pub mod help_popup;
 pub mod inline_commit_selector;
 pub mod pr_info_panel;
+pub mod refine_wait;
 pub mod row_height;
 pub mod selector;
 pub mod status_bar;
@@ -17,3 +18,4 @@ pub mod submit_modals;
 pub mod text_utils;
 
 pub use app_layout::render;
+pub use refine_wait::{WaitStyle, render_refine_wait};

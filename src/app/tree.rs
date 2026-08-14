@@ -374,8 +374,7 @@ impl App {
         };
         let path = file.display_path().clone();
         if self.grouping.is_some() {
-            if let Some(group) = self.group_of_file(&path) {
-                let key = Self::group_row_key(group);
+            if let Some(key) = self.group_key_of_file(&path) {
                 self.expanded_dirs.insert(key);
             }
         } else {
@@ -412,8 +411,7 @@ impl App {
                 // row still on screen. Same discriminant as `reveal_file`, so
                 // the two cannot disagree about which sidebar is on screen.
                 if self.grouping.is_some() {
-                    if let Some(group) = self.group_of_file(file.display_path()) {
-                        let key = Self::group_row_key(group);
+                    if let Some(key) = self.group_key_of_file(file.display_path()) {
                         for (tree_idx, item) in visible_items.iter().enumerate() {
                             if let FileTreeItem::Group { id, .. } = item
                                 && *id == key
@@ -480,17 +478,33 @@ impl App {
              group as one run and a split group loses rows"
         );
 
-        for group in grouping.groups() {
-            let members: Vec<usize> = grouping
-                .files_in(&group.id)
-                .filter_map(|path| by_path.get(path).copied())
-                .filter(|file_idx| self.file_passes_filter(&self.diff_files[*file_idx]))
-                .collect();
-            // A group whose every file the filter hides disappears with them,
-            // exactly as a directory does.
-            if members.is_empty() {
+        // One pass over the assignments rather than a scan of them per group
+        // and another per file: this runs on every frame, and the scans are
+        // each `groups × files`. Assignments are in file reading order, which
+        // is the order `Grouping::files_in` would have yielded.
+        let mut members_by_group: HashMap<&crate::grouping::GroupId, Vec<usize>> = HashMap::new();
+        let mut assigned: HashSet<&Path> = HashSet::new();
+        for assignment in grouping.assignments() {
+            let path = assignment.path.as_path();
+            assigned.insert(path);
+            let Some(&file_idx) = by_path.get(path) else {
+                continue;
+            };
+            if !self.file_passes_filter(&self.diff_files[file_idx]) {
                 continue;
             }
+            members_by_group
+                .entry(&assignment.group_id)
+                .or_default()
+                .push(file_idx);
+        }
+
+        for group in grouping.groups() {
+            // A group whose every file the filter hides disappears with them,
+            // exactly as a directory does.
+            let Some(members) = members_by_group.get(&group.id) else {
+                continue;
+            };
 
             let group_key = Self::group_row_key(group);
             let expanded = self.expanded_dirs.contains(&group_key);
@@ -515,7 +529,7 @@ impl App {
             // labelled with its full relative path. The group row is the only
             // thing that collapses, so there is nothing here that can hide a
             // file the way a collapsed in-group directory row could.
-            for file_idx in members {
+            for &file_idx in members {
                 items.push(FileTreeItem::File {
                     file_idx,
                     label: FileTreeMode::Flat.file_label(self.diff_files[file_idx].display_path()),
@@ -531,7 +545,7 @@ impl App {
         // defence the renderer cancels is no defence.
         for (file_idx, file) in self.diff_files.iter().enumerate() {
             if file.is_commit_message
-                || grouping.group_of(file.display_path()).is_some()
+                || assigned.contains(file.display_path().as_path())
                 || !self.file_passes_filter(file)
             {
                 continue;
@@ -564,6 +578,9 @@ impl App {
                 continue;
             }
             let Some(id) = grouping.group_of(file.display_path()) else {
+                // An ungrouped file breaks the run it sits in: the group cannot
+                // resume after it without the rows being split.
+                current = None;
                 continue;
             };
             if current == Some(id.as_str()) {

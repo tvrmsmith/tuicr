@@ -577,6 +577,11 @@ impl App {
             file_tree_mode: FileTreeMode::default(),
             grouping_enabled: false,
             grouping: None,
+            pending_refined: None,
+            refine_config: None,
+            refine_target_picked: false,
+            refine_wanted: false,
+            refine_over_saved_grouping: false,
             expanded_top: HashMap::new(),
             expanded_bottom: HashMap::new(),
             file_line_count_cache: HashMap::new(),
@@ -950,7 +955,7 @@ impl App {
             && !app.pr_commits.is_empty()
             && (range.0 > 0 || range.1 + 1 < app.pr_commits.len())
         {
-            app.spawn_pr_range_reload();
+            app.spawn_pr_range_reload(TargetPick::SameReview);
         }
         if let DiffSource::PullRequest(pr) = &app.diff_source.clone()
             && pr.is_read_only()

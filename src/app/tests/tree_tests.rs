@@ -1,25 +1,12 @@
+use super::grouping_tests::{build_app_over, empty_session, make_file, stub_vcs_info};
 use crate::app::*;
-use crate::model::{DiffFile, DiffLine, FileStatus};
-use crate::vcs::traits::{VcsBackend, VcsInfo, VcsType};
+use crate::model::DiffFile;
 use std::collections::BTreeSet;
 
 /// The 161-file changeset the sidebar row costs in `docs/SIDEBAR_MODEL.md`
 /// were measured against. Lines are `<status>\t<path>`.
 const ROW_COST_FIXTURE: &str =
     include_str!("../../../tests/fixtures/grouping/orca-971b16754.files");
-
-fn make_file(path: &str) -> DiffFile {
-    DiffFile {
-        old_path: None,
-        new_path: Some(PathBuf::from(path)),
-        status: FileStatus::Modified,
-        hunks: vec![],
-        is_binary: false,
-        is_too_large: false,
-        is_commit_message: false,
-        content_hash: 0,
-    }
-}
 
 /// Drives the real tree code on a throwaway `App`, so what the tests assert
 /// is what the sidebar ships.
@@ -37,33 +24,8 @@ impl TreeTestHarness {
     }
 
     fn from_files(mode: FileTreeMode, files: Vec<DiffFile>) -> Self {
-        let vcs_info = VcsInfo {
-            root_path: PathBuf::from("/tmp"),
-            head_commit: "head".into(),
-            branch_name: Some("main".into()),
-            vcs_type: VcsType::Git,
-        };
-        let session = ReviewSession::new(
-            vcs_info.root_path.clone(),
-            vcs_info.head_commit.clone(),
-            vcs_info.branch_name.clone(),
-            SessionDiffSource::WorkingTree,
-        );
-        let mut app = App::build(
-            Box::new(StubVcs(vcs_info.clone())),
-            vcs_info,
-            crate::theme::Theme::dark(),
-            None,
-            false,
-            files,
-            session,
-            DiffSource::WorkingTree,
-            InputMode::Normal,
-            Vec::new(),
-            None,
-            None,
-        )
-        .expect("build app");
+        let session = empty_session(&stub_vcs_info());
+        let mut app = build_app_over(files, session);
         app.file_tree_mode = mode;
         app.expand_all_dirs();
         Self { app }
@@ -190,18 +152,7 @@ fn grouped_app_from(mode: FileTreeMode, files: Vec<DiffFile>, groups_text: &str)
     }
     assert!(!presented.is_empty(), "no [group] header in the fixture");
 
-    let vcs_info = VcsInfo {
-        root_path: PathBuf::from("/tmp"),
-        head_commit: "head".into(),
-        branch_name: Some("main".into()),
-        vcs_type: VcsType::Git,
-    };
-    let mut session = ReviewSession::new(
-        vcs_info.root_path.clone(),
-        vcs_info.head_commit.clone(),
-        vcs_info.branch_name.clone(),
-        SessionDiffSource::WorkingTree,
-    );
+    let mut session = empty_session(&stub_vcs_info());
     for file in &files {
         session.add_file(file.display_path().clone(), file.status, file.content_hash);
     }
@@ -224,21 +175,7 @@ fn grouped_app_from(mode: FileTreeMode, files: Vec<DiffFile>, groups_text: &str)
         presented,
     ));
 
-    let mut app = App::build(
-        Box::new(StubVcs(vcs_info.clone())),
-        vcs_info,
-        crate::theme::Theme::dark(),
-        None,
-        false,
-        files,
-        session,
-        DiffSource::WorkingTree,
-        InputMode::Normal,
-        Vec::new(),
-        None,
-        None,
-    )
-    .expect("build app");
+    let mut app = build_app_over(files, session);
     app.file_tree_mode = mode;
     app.enable_grouping();
     // The row costs only mean anything against the record's own partition. A
@@ -343,65 +280,8 @@ fn test_sibling_dirs_independent() {
     assert_eq!(h.visible_file_count(), 1); // only tests/test.rs
 }
 
-struct StubVcs(VcsInfo);
-impl VcsBackend for StubVcs {
-    fn info(&self) -> &VcsInfo {
-        &self.0
-    }
-    fn get_working_tree_diff(
-        &self,
-        _hl: &crate::syntax::SyntaxHighlighter,
-    ) -> crate::error::Result<Vec<DiffFile>> {
-        Ok(Vec::new())
-    }
-    fn fetch_context_lines(
-        &self,
-        _path: &std::path::Path,
-        _status: FileStatus,
-        _ref_commit: Option<&str>,
-        _start: u32,
-        _end: u32,
-    ) -> crate::error::Result<Vec<DiffLine>> {
-        Ok(Vec::new())
-    }
-    fn file_line_count(
-        &self,
-        _path: &std::path::Path,
-        _status: FileStatus,
-        _ref_commit: Option<&str>,
-    ) -> crate::error::Result<u32> {
-        Ok(0)
-    }
-}
-
 fn app_with(paths: &[&str]) -> App {
-    let vcs_info = VcsInfo {
-        root_path: PathBuf::from("/tmp"),
-        head_commit: "head".into(),
-        branch_name: Some("main".into()),
-        vcs_type: VcsType::Git,
-    };
-    let session = ReviewSession::new(
-        vcs_info.root_path.clone(),
-        vcs_info.head_commit.clone(),
-        vcs_info.branch_name.clone(),
-        SessionDiffSource::WorkingTree,
-    );
-    App::build(
-        Box::new(StubVcs(vcs_info.clone())),
-        vcs_info,
-        crate::theme::Theme::dark(),
-        None,
-        false,
-        paths.iter().map(|p| make_file(p)).collect(),
-        session,
-        DiffSource::WorkingTree,
-        InputMode::Normal,
-        Vec::new(),
-        None,
-        None,
-    )
-    .expect("build app")
+    super::grouping_tests::ungrouped_app(paths.iter().map(|p| make_file(p)).collect())
 }
 
 /// Renders the visible tree as (label, depth) pairs, with directories
@@ -647,13 +527,6 @@ fn grouped_row_count(mode: FileTreeMode) -> usize {
 }
 
 #[test]
-fn the_chosen_grouped_layout_costs_174_rows_on_the_fixture() {
-    // 161 files plus 13 group rows, no directory rows. `gd-26r.34` makes this
-    // the only grouped layout; today it is what `flat` already produces.
-    assert_eq!(grouped_row_count(FileTreeMode::Flat), 174);
-}
-
-#[test]
 fn every_group_collapses_to_a_thirteen_row_overview() {
     // The strongest claim in `docs/SIDEBAR_MODEL.md`, and the one the whole
     // sidebar case rests on. A collapsed group emits nothing beneath it, so no
@@ -673,9 +546,9 @@ fn every_group_collapses_to_a_thirteen_row_overview() {
 #[test]
 fn the_tree_mode_does_not_reach_the_grouped_sidebar() {
     // The mode governs the ungrouped tree only (`docs/SIDEBAR_MODEL.md`
-    // point 5), so all three land on the one grouped layout. This replaces the
-    // interim pins at 305 and 285, which measured the in-group directory rows
-    // `gd-26r.34` deleted.
+    // point 5), so all three land on the one grouped layout: 161 files plus 13
+    // group rows and no directory rows. This replaces the interim pins at 305
+    // and 285, which measured the in-group directory rows `gd-26r.34` deleted.
     for mode in [
         FileTreeMode::Nested,
         FileTreeMode::Compact,

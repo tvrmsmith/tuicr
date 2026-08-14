@@ -385,7 +385,7 @@ pub fn render_help(frame: &mut Frame, app: &mut App) {
                 "  Space     ",
                 Style::default().add_modifier(Modifier::BOLD),
             ),
-            Span::raw("Toggle expand directory"),
+            Span::raw("Toggle expand directory (group row while grouping is on)"),
         ]),
         Line::from(vec![
             Span::styled(
@@ -399,14 +399,14 @@ pub fn render_help(frame: &mut Frame, app: &mut App) {
                 "  o         ",
                 Style::default().add_modifier(Modifier::BOLD),
             ),
-            Span::raw("Expand all directories"),
+            Span::raw("Expand all directories or groups"),
         ]),
         Line::from(vec![
             Span::styled(
                 "  O         ",
                 Style::default().add_modifier(Modifier::BOLD),
             ),
-            Span::raw("Collapse all directories"),
+            Span::raw("Collapse all directories or groups"),
         ]),
         Line::from(vec![
             Span::styled(

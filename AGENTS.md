@@ -18,7 +18,10 @@ src/
 ├── config/
 │   └── mod.rs           # User config loading (XDG on Unix, %APPDATA% on Windows)
 ├── app.rs               # Application state (App struct, InputMode, etc.)
-│   └── file_filter.rs   # File-tree include/exclude regex filters + `/` path search
+│   ├── file_filter.rs   # File-tree include/exclude regex filters + `/` path search
+│   ├── grouping.rs      # enable_grouping(), the grouping source ranking, group row state
+│   ├── tree.rs          # Sidebar rows: the grouped and ungrouped file trees
+│   └── refine.rs        # Blocking refine: stderr wait, in-TUI wait, cancel keys, outcome
 ├── error.rs             # Error types (TuicrError enum)
 ├── editor.rs            # External $EDITOR command construction and launch helpers
 ├── review_store.rs      # Library API for session listing/loading and shared comment insertion
@@ -82,7 +85,9 @@ src/
 │   ├── mod.rs           # Grouping, Group, group ids, the strict file-level partition
 │   ├── changeset.rs     # Tokenised view of the changeset the passes score
 │   ├── passes.rs        # Heuristic grouping passes
-│   └── order.rs         # Group and within-group ordering
+│   ├── order.rs         # Group and within-group ordering
+│   ├── refine.rs        # Refine pass: prompt, response parsing, contract repairs
+│   └── vertex.rs        # One blocking Vertex AI call behind the refine pass
 │
 ├── model/
 │   ├── mod.rs
@@ -111,6 +116,7 @@ src/
     ├── status_bar.rs    # Header, status bar, command line rendering
     ├── help_popup.rs    # Help overlay (? key)
     ├── comment_panel.rs # Comment input dialog, confirm dialog
+    ├── refine_wait.rs   # The refine wait drawn over the alt screen, for a diff picked in-TUI
     └── styles.rs        # Color constants and style helper functions
 ```
 
@@ -120,10 +126,12 @@ Repository-managed agent integrations:
 
 ### Key Types
 
-**App** (`src/app.rs`):
+**App** (`src/app/mod.rs`, impls split across the rest of `src/app/`):
 
 - Central application state
 - Contains: `vcs` (Box<dyn VcsBackend>), `vcs_info`, `session`, `diff_files`, `input_mode`, scroll/cursor state
+- Sidebar shape: `file_tree_mode` (`FileTreeMode`) and `expanded_dirs`
+- Grouping: `grouping: Option<Grouping>` and `grouping_enabled`, plus the refine arm's `refine_config`, `refine_target_picked`, `refine_wanted`, `refine_over_saved_grouping` and `pending_refined` (see `src/app/grouping.rs` and `src/app/refine.rs`)
 - PR mode also carries `pr_info: Option<PullRequestInfo>` and `viewing_pr_info: bool` for the file-tree "PR Description" panel
 - Methods: `scroll_down/up`, `next/prev_file`, `next/prev_hunk`, `go_to_source_line`, `toggle_reviewed`, `save_comment`, `jump_to_pr_info`
 - Diff search state lives on `App` (`search_matches`, `search_highlight_visible`, see `app/search.rs`); rendering patches `theme.search_match_bg` over content spans via `ui::text_utils::apply_search_highlight_*`
@@ -149,7 +157,12 @@ Repository-managed agent integrations:
 - Keys are focus-scoped via `map_file_tree_mode`: the tree claims `i`/`e`/`I`/`E`/`/`, the
   diff keeps `i` = edit comment and `/` = search diff
 
-**InputMode** (`src/app.rs`):
+**FileTreeMode** and **FileTreeItem** (`src/app/mod.rs`):
+
+- `FileTreeMode` is how the sidebar lays out the directories above each file: `Nested` (default, one row per ancestor), `Compact` (a single-child chain collapses into one row), `Flat` (no directory rows, each file labelled with its full path). Set once by the binary from config
+- `FileTreeItem` is one sidebar row: `Directory`, `File`, or `Group`. `Group` rows sit at depth 0 with their members directly beneath them at depth 1 and no directory rows between (`docs/SIDEBAR_MODEL.md`); the row's `expanded_dirs` key is the opaque group id
+
+**InputMode** (`src/app/mod.rs`):
 
 - `Normal` - default navigation mode
 - `Command` - after pressing `:`, vim-style commands
@@ -164,7 +177,8 @@ Repository-managed agent integrations:
 **ReviewSession** (`src/model/review.rs`):
 
 - Persisted review state with `files: HashMap<PathBuf, FileReview>`
-- Each `FileReview` has: `reviewed: bool`, `reviewed_hunks: BTreeSet<String>`, `file_comments: Vec<Comment>`, `line_comments: HashMap<u32, Vec<Comment>>`
+- Each `FileReview` has: `reviewed: bool`, `reviewed_hunks: BTreeSet<String>`, `file_comments: Vec<Comment>`, `line_comments: HashMap<u32, Vec<Comment>>`, `group_id: Option<String>`
+- The grouping is persisted state, not a derived view: `groups: Vec<SessionGroup>` (`id`, `name`, `order`, `source`, `new_since_full_pass`) holds the table in reading order. `record_grouping()` writes it plus each file's `group_id`; `grouping_for(changeset)` rebuilds a `Grouping` from it, so reopening restores yesterday's groups instead of regrouping
 - Release boundary: `release_count` (monotonic, bumped by `:send`), `released_at`, and per-comment `released_in: Option<u32>`. `ReviewSession::release()` stamps every unreleased comment with the new batch. `Comment::apply_edit()` clears `released_in` so an edited comment republishes. All three fields are `#[serde(default)]` for old session JSON.
 
 **ReviewStore** (`src/review_store.rs`):
@@ -173,6 +187,21 @@ Repository-managed agent integrations:
 - Methods: `list_sessions_for_repo()`, `get_review()`, `add_comment()`, `save_review()`
 - Shared primitive: `add_comment_to_session()` is used by both the library facade and `App::save_comment()`
 
+**Grouping** (`src/grouping/mod.rs`):
+
+- The sidebar's partition of one changeset: `groups: Vec<Group>` in reading order plus `assignments` from path to `GroupId`. Every changeset file is in exactly one group (`docs/TOTAL_COVERAGE.md`)
+- `Grouping::build` is the sole constructor and sorts within each group by construction (`src/grouping/order.rs`), so no caller re-sorts what it hands back — including the refine arm, whose response carries group order only
+- `Group`: `id: GroupId`, `name`, `source: GroupSource`, `new_since_full_pass: bool`. Membership lives in `assignments`, not on the group; read it with `Grouping::files_in(&group.id)`. `GroupId` is an opaque uuid minted by `GroupId::new()` or rehydrated by `GroupId::from_persisted` from the session, so a restored grouping keeps yesterday's ids. It is the sidebar's row key under grouping (`docs/SIDEBAR_MODEL.md`)
+- `GroupSource::{Heuristics, Refined, Incremental}`: which arm placed the group, per group rather than per grouping — a refined answer that only restated the heuristics presents as `Heuristics`, and a group opened by incremental assignment presents as `Incremental`
+- `PresentedGroup`: one group flattened for the renderer
+- `Changeset` (`src/grouping/changeset.rs`): the engine's read-only view of a diff — `ChangedFile` paths and change kinds, with the commit-message pseudo-file excluded
+
+**RefineOutcome** (`src/app/refine.rs`):
+
+- What one blocking refine wait ended as: `Refined { repairs }`, `Cancelled`, `TimedOut`, `Failed(String)`, or `Skipped(Skipped)`. Every variant but `Refined` leaves the heuristic grouping standing
+- `warning()` is the whole human-facing surface — the repair count, or why nothing was refined. `Refined { repairs: 0 }` and `Skipped(NoChangeset | NotConfigured)` are quiet
+- `RefineConfig`: the timeout and the Vertex `Settings` `[grouping]` settled, parked on `App::refine_config`. `None` means the arm is off
+
 **Action** (`src/input/keybindings.rs`):
 
 - All possible user actions (ScrollDown, NextFile, ToggleReviewed, AddLineComment, etc.)
@@ -180,7 +209,7 @@ Repository-managed agent integrations:
 
 ### Data Flow
 
-1. **Startup**: Parse CLI args (invalid `--theme` exits non-zero). `tuicr update` exits before TUI setup: Homebrew, Cargo, Mise, and Nix profile installs delegate to their package manager; direct binaries fetch the matching GitHub release asset, verify its GitHub-provided SHA-256 digest, and replace the executable. `tuicr update <version>` installs an exact Cargo or direct-binary release for rollback and release testing; managers without a safe generic pin command return an error. With no subcommand, or with explicit `tuicr tui`, load config from `$XDG_CONFIG_HOME/tuicr/config.toml` (default `~/.config/tuicr/config.toml`, or `%APPDATA%\tuicr\config.toml` on Windows), ignore unknown config keys with startup warnings, resolve theme precedence (`--theme` > config > dark), then call `App::new()`. Theme selection first checks bundled names, then local theme files from `$XDG_CONFIG_HOME/tuicr/themes/` (default `~/.config/tuicr/themes/`, or `%APPDATA%\tuicr\themes\` on Windows). Local theme files may reference a local `.tmTheme` syntax theme. Some bat-compatible Base16 `.tmTheme` files encode ANSI palette slots as placeholders, and `src/syntax/mod.rs` translates those at render time. `App::new()` calls `detect_vcs()` (Jujutsu first, then Git, then Mercurial), using config `backend = "libgit2"` or `backend = "cli"` for Git. Normal Git repos default to libgit2; sparse checkout repos automatically use the Git CLI backend and show a startup warning when that overrides the default. It filters diff files via repo-root `.tuicrignore`, then enters commit selection mode by default. If staged/unstaged changes exist, the first selection rows are "Staged changes" and/or "Unstaged changes". The Pull Requests tab can toggle between all open PRs and forge PRs/MRs requesting the current user's review with `r`, which refetches page 1 using `gh pr list --search "review-requested:@me"` on GitHub, `glab mr list --reviewer=@me` on GitLab, or a `q=state="OPEN" AND reviewers.uuid="…"` filter on Bitbucket (the state clause must live inside `q`; Cloud ignores a standalone `state` parameter once `q` is present). With `-r/--revisions`, it opens the requested commit range directly. Config `show_file_list = false` hides the file list panel on startup (toggleable with `<leader>e`, where `leader` defaults to `;`). Config `file_tree` picks the file list's directory layout — `nested` (default, one row per path ancestor), `compact` (single-child chains joined into one row) or `flat` (no directory rows; files labelled with their full path) — and is fixed for the session. **Ungrouped tree only** — the grouped sidebar has no directory rows in any mode. After the tree mode is applied, `main.rs` calls `App::enable_grouping()` unless `--no-grouping` was passed, so the sidebar defaults to one collapsible row per group with its files listed beneath it by full relative path (`docs/SIDEBAR_MODEL.md`); `expand_all_dirs` then seeds group ids under grouping and path ancestors without it. Config `diff_view = "side-by-side"` sets the default diff layout (toggleable with `:diff`). Config `wrap = true` enables line wrapping (toggleable with `:set wrap!`). Config `review_watch_interval_ms = 1000` controls persisted-session polling; set it to `0` to disable. Config `diff_watch_interval_ms` (default `0`, disabled) periodically re-runs the local diff reload so uncommitted changes appear without `:e`; ignored for pull-request and `--all-files` reviews. The same tick refreshes the inline commit pane, so a commit written mid-review appears, and the "Staged changes" and "Unstaged changes" rows follow the tree as files are staged and unstaged.
+1. **Startup**: Parse CLI args (invalid `--theme` exits non-zero). `tuicr update` exits before TUI setup: Homebrew, Cargo, Mise, and Nix profile installs delegate to their package manager; direct binaries fetch the matching GitHub release asset, verify its GitHub-provided SHA-256 digest, and replace the executable. `tuicr update <version>` installs an exact Cargo or direct-binary release for rollback and release testing; managers without a safe generic pin command return an error. With no subcommand, or with explicit `tuicr tui`, load config from `$XDG_CONFIG_HOME/tuicr/config.toml` (default `~/.config/tuicr/config.toml`, or `%APPDATA%\tuicr\config.toml` on Windows), ignore unknown config keys with startup warnings, resolve theme precedence (`--theme` > config > dark), then call `App::new()`. Theme selection first checks bundled names, then local theme files from `$XDG_CONFIG_HOME/tuicr/themes/` (default `~/.config/tuicr/themes/`, or `%APPDATA%\tuicr\themes\` on Windows). Local theme files may reference a local `.tmTheme` syntax theme. Some bat-compatible Base16 `.tmTheme` files encode ANSI palette slots as placeholders, and `src/syntax/mod.rs` translates those at render time. `App::new()` calls `detect_vcs()` (Jujutsu first, then Git, then Mercurial), using config `backend = "libgit2"` or `backend = "cli"` for Git. Normal Git repos default to libgit2; sparse checkout repos automatically use the Git CLI backend and show a startup warning when that overrides the default. It filters diff files via repo-root `.tuicrignore`, then enters commit selection mode by default. If staged/unstaged changes exist, the first selection rows are "Staged changes" and/or "Unstaged changes". The Pull Requests tab can toggle between all open PRs and forge PRs/MRs requesting the current user's review with `r`, which refetches page 1 using `gh pr list --search "review-requested:@me"` on GitHub, `glab mr list --reviewer=@me` on GitLab, or a `q=state="OPEN" AND reviewers.uuid="…"` filter on Bitbucket (the state clause must live inside `q`; Cloud ignores a standalone `state` parameter once `q` is present). With `-r/--revisions`, it opens the requested commit range directly. Config `show_file_list = false` hides the file list panel on startup (toggleable with `<leader>e`, where `leader` defaults to `;`). Config `file_tree` picks the file list's directory layout — `nested` (default, one row per path ancestor), `compact` (single-child chains joined into one row) or `flat` (no directory rows; files labelled with their full path) — and is fixed for the session. **Ungrouped tree only** — the grouped sidebar has no directory rows in any mode. After the tree mode is applied and before `App::enable_grouping()`, config `[grouping].refine = true` parks the arm on the app and blocks startup: `App::refine_grouping_at_startup()` prints a status line to stderr and makes one synchronous Vertex AI call, cancellable with `Esc`/`q`/`Ctrl-C`. Bare `tuicr` and `tuicr pr` have no changeset yet at that point, so their wait runs from the main loop when the diff loads, drawn as a panel over the alt screen with the same cancel keys and the same timeout (`docs/CONFIG.md`, Grouping). Either way the wait happens once per review target the human picks — confirming a commit selection, picking the staged/unstaged/working-tree rows, or opening a PR from the picker — and not on the reshuffles inside a review already open (an inline commit toggle, `:reload`, a PR re-fetch), which change the file set without changing what is under review (`docs/REGROUPING_STATE.md`). A reopened session keeps the grouping it saved and says so. Every failure — timeout, cancel, unreadable answer — keeps the heuristic grouping instead, and contract violations in a usable answer are repaired and counted into a warning (`docs/GROUPS_CONTRACT.md`). `main.rs` then calls `App::enable_grouping()` unless `--no-grouping` was passed, so the sidebar defaults to one collapsible row per group with its files listed beneath it by full relative path (`docs/SIDEBAR_MODEL.md`); `expand_all_dirs` then seeds group ids under grouping and path ancestors without it. Config `diff_view = "side-by-side"` sets the default diff layout (toggleable with `:diff`). Config `wrap = true` enables line wrapping (toggleable with `:set wrap!`). Config `review_watch_interval_ms = 1000` controls persisted-session polling; set it to `0` to disable. Config `diff_watch_interval_ms` (default `0`, disabled) periodically re-runs the local diff reload so uncommitted changes appear without `:e`; ignored for pull-request and `--all-files` reviews. The same tick refreshes the inline commit pane, so a commit written mid-review appears, and the "Staged changes" and "Unstaged changes" rows follow the tree as files are staged and unstaged.
 2. **Render**: `ui::render()` draws the TUI based on `App` state. When rendered comments exist, the left sidebar splits vertically into file tree and comment navigator; the navigator is hidden when there are no rendered comment rows.
 3. **Input**: `crossterm` events → `map_key_to_action` → match on Action in main loop
 4. **Comments**: `App::save_comment()` builds an `AddCommentRequest` and calls `add_comment_to_session()` so TUI and library callers share insertion behavior. The TUI creates a persisted session file as soon as a review session becomes active, so `tuicr review add` can target it immediately. Successful comment submits autosave the session using a locked, atomic write that merges externally added comments first.
@@ -227,6 +256,9 @@ Repository-managed agent integrations:
 - `arboard`: Clipboard access
 - `ignore`: Gitignore-style matcher for `.tuicrignore`
 - `chrono`: Timestamps
+- `unicode-segmentation`: Grapheme-aware truncation of file-list labels (`src/ui/file_list.rs`)
+- `uuid`: Mints the id of every new group (`GroupId::new`), so a regrouping never reuses a stale sidebar row key; a session's persisted ids are rehydrated as-is by `GroupId::from_persisted`
+- `ureq`: The single blocking HTTPS call the refine pass makes to Vertex AI
 - `thiserror` + `anyhow`: Error handling
 
 ## Forge integration
