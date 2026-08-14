@@ -1410,17 +1410,27 @@ pub struct App {
     /// The session's grouping, when there is one. `None` with grouping off,
     /// and on a changeset with no real files to group.
     pub grouping: Option<crate::grouping::Grouping>,
-    /// A refined grouping a blocking wait produced, parked for the next
-    /// [`App::order_files_by_group`] to adopt.
+    /// A grouping computed out of band, parked for the next
+    /// [`App::order_files_by_group`] to adopt in place of anything it would
+    /// have derived itself.
     ///
-    /// Written by both arms — the pre-TUI wait parks its answer here for
-    /// [`App::enable_grouping`] to pick up, and the in-TUI wait parks it and
-    /// immediately reorders — and **taken** rather than read, so a later
+    /// Three writers, one discipline. The pre-TUI refine wait parks its answer
+    /// here for [`App::enable_grouping`] to pick up; the in-TUI wait parks it
+    /// and immediately reorders; and `:regroup` parks the full pass it just
+    /// ran (`src/app/regroup.rs`). It is **taken** rather than read, so a later
     /// reorder of a changed changeset re-derives its grouping instead of
-    /// re-applying a stale answer. Every failure mode — cancel, timeout, auth,
-    /// an unreadable body twice — simply leaves it `None`, which is the
+    /// re-applying a stale answer. Every refine failure mode — cancel, timeout,
+    /// auth, an unreadable body twice — simply leaves it `None`, which is the
     /// heuristic arm.
-    pub(crate) pending_refined: Option<crate::grouping::Grouping>,
+    pub(crate) pending_grouping: Option<crate::grouping::Grouping>,
+    /// A `:regroup` whose refine call is still in flight, collected by
+    /// [`App::poll_regroup`] from the main loop.
+    ///
+    /// Mid-review the wait is **not** blocking (`docs/MID_SESSION_REGROUP.md`),
+    /// so unlike the startup arm this is a parked call rather than a parked
+    /// answer: the review stays open and navigable while it runs, and a second
+    /// `:regroup` replaces it outright.
+    pub(crate) pending_regroup: Option<crate::app::regroup::PendingRegroup>,
     /// What `[grouping]` settled about the refine arm, or `None` when refine is
     /// off. Set by the binary once config is read; both dispatch points read it
     /// from here, because the one that fires when a diff loads runs long after
@@ -1829,6 +1839,7 @@ mod modes;
 mod navigation;
 mod pr;
 pub mod refine;
+mod regroup;
 mod reviewed;
 mod search;
 mod session;

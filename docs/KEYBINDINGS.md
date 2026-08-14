@@ -173,6 +173,7 @@ In command mode,
 | `:w` | Save session |
 | `:send` (`:release`) | Release this batch of comments to a polling agent |
 | `:e` (`:reload`) | Reload diff files |
+| `:regroup` | Recompute the groups for this review (refines when configured) |
 | `:edit` | Open focused file in `$EDITOR` |
 | `:clip` (`:export`) | Copy review to clipboard |
 | `:copy-url` | Copy the open PR URL to clipboard (PR mode) |

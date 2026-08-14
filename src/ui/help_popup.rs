@@ -701,6 +701,13 @@ pub fn render_help(frame: &mut Frame, app: &mut App) {
         ]),
         Line::from(vec![
             Span::styled(
+                "  :regroup  ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("Recompute the groups for this review (refines when configured)"),
+        ]),
+        Line::from(vec![
+            Span::styled(
                 "  :edit     ",
                 Style::default().add_modifier(Modifier::BOLD),
             ),

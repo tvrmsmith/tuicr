@@ -27,6 +27,7 @@ const COMMAND_SPECS: &[CommandSpec] = &[
     CommandSpec::new(&["x", "wq"], CommandKind::WriteQuit),
     CommandSpec::new(&["send", "release"], CommandKind::Release),
     CommandSpec::new(&["e", "reload"], CommandKind::Reload),
+    CommandSpec::new(&["regroup"], CommandKind::Regroup),
     CommandSpec::new(&["edit"], CommandKind::Edit),
     CommandSpec::new(&["clip", "export"], CommandKind::Export),
     CommandSpec::new(&["copy-url"], CommandKind::CopyUrl),
@@ -121,6 +122,7 @@ enum CommandKind {
     WriteQuit,
     Release,
     Reload,
+    Regroup,
     Edit,
     Export,
     CopyUrl,
@@ -853,6 +855,10 @@ fn dispatch_command(app: &mut App, kind: CommandKind) -> CommandAfterDispatch {
         }
         CommandKind::Reload => {
             reload_review(app);
+            CommandAfterDispatch::ExitCommandMode
+        }
+        CommandKind::Regroup => {
+            app.regroup();
             CommandAfterDispatch::ExitCommandMode
         }
         CommandKind::Edit => {

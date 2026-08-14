@@ -53,7 +53,7 @@ const TICK: Duration = Duration::from_millis(200);
 /// own full timeout (`docs/GROUPS_CONTRACT.md`). Two independent one-shot calls,
 /// so the single-shot ruling holds literally — there is no conversation and no
 /// error fed back.
-const ATTEMPTS: u32 = 2;
+pub(crate) const ATTEMPTS: u32 = 2;
 
 /// How the blocking wait ended.
 #[derive(Debug)]
@@ -289,7 +289,7 @@ impl App {
             keys,
         );
         if matches!(outcome, RefineOutcome::Refined { .. }) {
-            // Takes `pending_refined`, which outranks the heuristic grouping
+            // Takes `pending_grouping`, which outranks the heuristic grouping
             // the load already recorded into the session.
             //
             // `false`, so the reorder re-finds the file the human is on by
@@ -315,7 +315,7 @@ impl App {
     /// that already holds a grouping of it is a reopened review and refuses.
     fn refinable_over_a_new_session(&self) -> Result<Changeset, Skipped> {
         let changeset = self.refinable_over_fresh_heuristics()?;
-        if self.session.grouping_for(&changeset).is_some() {
+        if self.session.covers(&changeset) {
             return Err(Skipped::AlreadyGrouped);
         }
         Ok(changeset)
@@ -350,7 +350,7 @@ impl App {
         match outcome {
             Waited::Refined(refined) => {
                 let repairs = refined.repairs.len();
-                self.pending_refined = Some(refined.grouping);
+                self.pending_grouping = Some(refined.grouping);
                 RefineOutcome::Refined { repairs }
             }
             Waited::Cancelled => RefineOutcome::Cancelled,
@@ -361,7 +361,7 @@ impl App {
 }
 
 /// The shipped call, bound to the arm `[grouping]` resolved.
-fn live_call(settings: vertex::Settings) -> RefineCall {
+pub(crate) fn live_call(settings: vertex::Settings) -> RefineCall {
     Arc::new(move |prompt: &str, timeout| vertex::call(prompt, timeout, &settings))
 }
 

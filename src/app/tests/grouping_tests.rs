@@ -98,7 +98,7 @@ impl VcsBackend for StubVcs {
 }
 
 /// A real `App` with grouping on, exactly as the binary starts it.
-fn grouped_app(files: Vec<DiffFile>) -> App {
+pub(super) fn grouped_app(files: Vec<DiffFile>) -> App {
     let mut app = ungrouped_app(files);
     app.enable_grouping();
     app.expand_all_dirs();
@@ -221,7 +221,7 @@ fn file_order(app: &App) -> Vec<String> {
         .collect()
 }
 
-fn visible_files(app: &App) -> Vec<String> {
+pub(super) fn visible_files(app: &App) -> Vec<String> {
     app.build_visible_items()
         .iter()
         .filter_map(|item| match item {
@@ -857,16 +857,49 @@ fn a_session_reopened_shows_yesterdays_groups() {
     assert_eq!(after, before, "identities and order survive the round trip");
 }
 
+/// The stopgap this replaces returned `None` for any drift at all, so one new
+/// file recomputed the whole partition and renumbered every group. What it must
+/// do instead is place the one file and leave the rest alone (`gd-26r.33`).
 #[test]
-fn a_changed_changeset_falls_back_to_a_fresh_pass() {
+fn a_file_that_appears_is_placed_without_disturbing_the_groups() {
     let app = grouped_paths(PATHS);
+    let before: Vec<(String, String)> = app
+        .grouping
+        .as_ref()
+        .unwrap()
+        .groups()
+        .iter()
+        .map(|group| (group.id.as_str().to_string(), group.name.clone()))
+        .collect();
+
     let mut files: Vec<DiffFile> = app.diff_files.clone();
     files.push(make_file("src/auth/refresh.rs"));
     let changeset = crate::grouping::changeset::Changeset::from_diff_files(&files);
+    let extended = app
+        .session
+        .grouping_for(&changeset)
+        .expect("drift is placed, not regrouped");
 
+    let after: Vec<(String, String)> = extended
+        .groups()
+        .iter()
+        .map(|group| (group.id.as_str().to_string(), group.name.clone()))
+        .collect();
+    assert_eq!(
+        &after[..before.len()],
+        &before[..],
+        "every group that was there keeps its identity, its name and its slot"
+    );
     assert!(
-        app.session.grouping_for(&changeset).is_none(),
-        "a table that does not cover the changeset is not a grouping of it"
+        extended
+            .group_of(std::path::Path::new("src/auth/refresh.rs"))
+            .is_some(),
+        "and the new file is in exactly one of them"
+    );
+    assert_eq!(
+        extended.assignments().len(),
+        files.len(),
+        "the partition stays total"
     );
 }
 

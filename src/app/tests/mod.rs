@@ -14,6 +14,7 @@ pub(crate) mod grouping_tests;
 mod persistence_merge_tests;
 mod pr_info_tests;
 mod refine_tests;
+mod regroup_tests;
 mod release_boundary_tests;
 mod scroll_behavior_tests;
 mod scroll_tests;

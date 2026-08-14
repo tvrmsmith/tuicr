@@ -200,7 +200,7 @@ fn assert_heuristic_session(app: &App) {
         );
     }
     assert_eq!(app.diff_files.len(), PATHS.len());
-    assert!(app.pending_refined.is_none(), "nothing stale is parked");
+    assert!(app.pending_grouping.is_none(), "nothing stale is parked");
 }
 
 fn group_names(app: &App) -> Vec<String> {
@@ -242,7 +242,7 @@ fn a_clean_answer_is_adopted_in_the_order_the_model_returned_it() {
     );
     assert_eq!(grouping.assignments().len(), PATHS.len());
     assert!(
-        app.pending_refined.is_none(),
+        app.pending_grouping.is_none(),
         "the parked answer is taken, not copied: a later reorder must not \
          re-apply it over a changed changeset"
     );
@@ -696,7 +696,7 @@ fn a_diff_that_loads_after_the_screen_is_up_is_refined_in_the_tui() {
         group_names(&app),
         ["auth-token-rotation", "session-plumbing"]
     );
-    assert!(app.pending_refined.is_none());
+    assert!(app.pending_grouping.is_none());
     let grouping = app.grouping.as_ref().expect("a grouping exists");
     assert!(
         grouping

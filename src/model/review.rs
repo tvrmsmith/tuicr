@@ -217,6 +217,18 @@ impl ReviewSession {
         if let Some(review) = self.files.get_mut(&path) {
             let old_hash = review.content_hash;
             review.content_hash = Some(content_hash);
+            let rehashed = old_hash.is_some_and(|old| old != content_hash);
+            if rehashed {
+                // A content-changed file is reassigned by incremental
+                // assignment (`docs/REGROUPING_STATE.md`), and dropping its id
+                // here is how it becomes unplaced. Nothing is lost by moving
+                // it: the `reviewed` flag it carried is cleared below for the
+                // same reason, so a reassignment never relocates something the
+                // human had approved. A session saved before hashes existed
+                // (`old_hash` unset) is not a content change and keeps its
+                // grouping.
+                review.group_id = None;
+            }
             if review.reviewed && old_hash != Some(content_hash) {
                 review.reviewed = false;
                 return true;
@@ -351,47 +363,103 @@ impl ReviewSession {
         }
     }
 
-    /// The grouping this session was last saved with, rebuilt over `changeset`.
+    /// Whether the session's grouping already describes *this* changeset, which
+    /// is the question "has this review been grouped already?" and therefore the
+    /// question "would a refine be a second one?".
     ///
-    /// `None` unless the table covers the changeset's paths **exactly**.
-    /// Reopening a session never regroups (`docs/REGROUPING_STATE.md`), so a
-    /// grouping that still describes the working tree is restored verbatim,
-    /// group ids and all; anything else is not a grouping of *this* changeset
-    /// and the caller computes a fresh one. Placing the files that moved is
-    /// incremental assignment, which this slice does not ship.
+    /// A **majority** of the paths, not all of them and not one of them, and it
+    /// has to be tolerant in one direction and strict in the other. Reopening a
+    /// session whose working tree moved a little under it must not refine again
+    /// (`docs/REGROUPING_STATE.md`: the wait is once per review), so a few
+    /// unplaced files cannot make the answer `false`. Switching to a target the
+    /// session never grouped must refine, so a couple of paths in common cannot
+    /// make it `true`.
+    ///
+    /// Distinct from [`Self::grouping_for`], which now answers for any drift at
+    /// all by placing the files that moved. This is the gate; that is the work.
+    pub fn covers(&self, changeset: &crate::grouping::changeset::Changeset) -> bool {
+        if self.groups.is_empty() || changeset.is_empty() {
+            return false;
+        }
+        let known: BTreeSet<&str> = self.groups.iter().map(|group| group.id.as_str()).collect();
+        let placed = changeset
+            .files
+            .iter()
+            .filter(|file| {
+                self.files
+                    .get(&PathBuf::from(&file.path))
+                    .and_then(|review| review.group_id.as_deref())
+                    .is_some_and(|id| known.contains(id))
+            })
+            .count();
+        placed * 2 > changeset.len()
+    }
+
+    /// The grouping this session was last saved with, carried onto `changeset`.
+    ///
+    /// `None` only when the session has never been grouped. Reopening a session
+    /// never regroups (`docs/REGROUPING_STATE.md`): a grouping that still
+    /// describes the working tree comes back verbatim, group ids and all, and
+    /// drift below that level is **incremental assignment**, not a reason to
+    /// recompute. Every file that kept its group id stays exactly where it was;
+    /// the files that appeared, moved or lost their id to a content change are
+    /// placed by [`crate::grouping::assign_incrementally`].
+    ///
+    /// Recomputing the whole partition over any drift at all — which is what
+    /// this did before `gd-26r.33` — is deterministic and free, and it throws
+    /// away the one thing incremental assignment exists to keep: a reader who
+    /// is working through the groups must not have them renamed and renumbered
+    /// because one file appeared.
     pub fn grouping_for(
         &self,
         changeset: &crate::grouping::changeset::Changeset,
     ) -> Option<crate::grouping::Grouping> {
-        use crate::grouping::{GroupId, GroupSource, Grouping, PresentedGroup};
+        use crate::grouping::passes::GroupingConfig;
+        use crate::grouping::{GroupId, GroupSource, PresentedGroup, assign_incrementally};
 
         if self.groups.is_empty() {
             return None;
         }
 
+        let known: HashMap<&str, &SessionGroup> = self
+            .groups
+            .iter()
+            .map(|group| (group.id.as_str(), group))
+            .collect();
+
         let mut members: HashMap<&str, Vec<String>> = HashMap::new();
         for file in &changeset.files {
-            let review = self.files.get(&PathBuf::from(&file.path))?;
-            let group_id = review.group_id.as_deref()?;
+            // A file with no review record, no id, or an id the table no longer
+            // holds is simply unplaced. It reaches incremental assignment
+            // below, which is the one rule that covers every non-regroup path.
+            let Some(group_id) = self
+                .files
+                .get(&PathBuf::from(&file.path))
+                .and_then(|review| review.group_id.as_deref())
+                .filter(|id| known.contains_key(id))
+            else {
+                continue;
+            };
             members.entry(group_id).or_default().push(file.path.clone());
-        }
-        // Every file has to name a group the table holds. The reverse is not
-        // required: a group can legitimately hold no files — the refine arm
-        // keeps the order slot of a group whose paths all went elsewhere — and
-        // regrouping the whole changeset over that would throw away the
-        // grouping the human curated.
-        if members
-            .keys()
-            .any(|id| !self.groups.iter().any(|group| group.id == *id))
-        {
-            return None;
         }
 
         let mut table: Vec<&SessionGroup> = self.groups.iter().collect();
         table.sort_by_key(|group| group.order);
 
-        let restored: Vec<PresentedGroup> = table
+        // A group holding nothing in *this* changeset keeps its order slot and
+        // its id while any file in the session still names it — a narrowed
+        // commit range must not lose the group its files return to. A group
+        // nothing names at all is dead and is dropped, so switching between
+        // unrelated ranges cannot silt the table up.
+        let named: BTreeSet<&str> = self
+            .files
+            .values()
+            .filter_map(|review| review.group_id.as_deref())
+            .collect();
+
+        let kept: Vec<PresentedGroup> = table
             .into_iter()
+            .filter(|group| named.contains(group.id.as_str()))
             .map(|group| PresentedGroup {
                 id: GroupId::from_persisted(group.id.clone()),
                 name: group.name.clone(),
@@ -401,7 +469,11 @@ impl ReviewSession {
             })
             .collect();
 
-        Some(Grouping::restore(changeset, restored))
+        Some(assign_incrementally(
+            changeset,
+            kept,
+            GroupingConfig::default(),
+        ))
     }
 
     pub fn is_file_reviewed(&self, path: &PathBuf) -> bool {

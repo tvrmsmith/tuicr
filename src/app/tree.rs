@@ -336,6 +336,31 @@ impl App {
         self.ensure_valid_tree_selection();
     }
 
+    /// The sidebar keys after a reload of the *same* review, as opposed to a
+    /// load that answers a new target.
+    ///
+    /// Grouped, the keys are kept: incremental assignment leaves every group a
+    /// reader had open exactly where it was, and re-expanding everything would
+    /// throw away the collapsed overview they had arranged for the sake of one
+    /// file appearing. Keys naming a group that no longer exists are dropped
+    /// here rather than remapped — `expanded_dirs` is keyed on the opaque
+    /// group id precisely so that a group which did not survive is simply gone
+    /// (`docs/REGROUPING_STATE.md`). A group opened by incremental assignment
+    /// starts collapsed, like the unranked group at the bottom of the list
+    /// that it is.
+    ///
+    /// Ungrouped this is [`App::expand_all_dirs`] unchanged: directory keys are
+    /// path-derived, so there is no identity to preserve and nothing to lose.
+    pub(in crate::app) fn reseed_expanded_dirs(&mut self) {
+        let Some(grouping) = self.grouping.as_ref() else {
+            self.expand_all_dirs();
+            return;
+        };
+        let live: HashSet<String> = grouping.groups().iter().map(Self::group_row_key).collect();
+        self.expanded_dirs.retain(|key| live.contains(key));
+        self.ensure_valid_tree_selection();
+    }
+
     pub fn collapse_all_dirs(&mut self) {
         self.expanded_dirs.clear();
         self.ensure_valid_tree_selection();

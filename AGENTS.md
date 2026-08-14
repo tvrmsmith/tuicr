@@ -131,7 +131,7 @@ Repository-managed agent integrations:
 - Central application state
 - Contains: `vcs` (Box<dyn VcsBackend>), `vcs_info`, `session`, `diff_files`, `input_mode`, scroll/cursor state
 - Sidebar shape: `file_tree_mode` (`FileTreeMode`) and `expanded_dirs`
-- Grouping: `grouping: Option<Grouping>` and `grouping_enabled`, plus the refine arm's `refine_config`, `refine_target_picked`, `refine_wanted`, `refine_over_saved_grouping` and `pending_refined` (see `src/app/grouping.rs` and `src/app/refine.rs`)
+- Grouping: `grouping: Option<Grouping>` and `grouping_enabled`, plus the refine arm's `refine_config`, `refine_target_picked`, `refine_wanted`, `refine_over_saved_grouping`, `pending_grouping` and `pending_regroup` (see `src/app/grouping.rs`, `src/app/refine.rs` and `src/app/regroup.rs`)
 - PR mode also carries `pr_info: Option<PullRequestInfo>` and `viewing_pr_info: bool` for the file-tree "PR Description" panel
 - Methods: `scroll_down/up`, `next/prev_file`, `next/prev_hunk`, `go_to_source_line`, `toggle_reviewed`, `save_comment`, `jump_to_pr_info`
 - Diff search state lives on `App` (`search_matches`, `search_highlight_visible`, see `app/search.rs`); rendering patches `theme.search_match_bg` over content spans via `ui::text_utils::apply_search_highlight_*`
