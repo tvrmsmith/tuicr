@@ -59,6 +59,69 @@ impl App {
         self.sort_files_by_directory(true);
     }
 
+    /// Turns grouping off and back on mid-session (`<leader>g`,
+    /// `:set groups!`), switching between the grouped list and the plain
+    /// directory tree.
+    ///
+    /// **The grouping is kept across the off state.** Toggling off is a change
+    /// of sidebar, not a discard: `App::grouping` stays populated, so toggling
+    /// back re-sorts `diff_files` from the grouping already in hand and never
+    /// costs a pass, let alone a refine (`docs/REGROUPING_STATE.md`).
+    ///
+    /// Neither `expanded_dirs` nor `expanded_groups` comes out changed. They are
+    /// separate sets precisely so that a toggle needs no remapping and no
+    /// reseeding: each sidebar comes back arranged the way its reader left it,
+    /// and toggling twice is the identity. The one exception is the first
+    /// toggle *on* of a session that never had a grouping — `--no-grouping`, or
+    /// a changeset that had nothing to group — where the grouping computed here
+    /// has no sidebar state at all yet and is seeded expanded, exactly as
+    /// startup would have seeded it.
+    ///
+    /// Selection is carried by the reorder itself, with `reset_position =
+    /// false`: the file under the cursor is re-found by path in the new order,
+    /// or `ensure_valid_tree_selection` falls back the way it already does for
+    /// a file no row shows. Expanded hunk gaps go, as they do on every reorder
+    /// (`gd-26r.26`).
+    pub fn toggle_grouping(&mut self) {
+        let first_grouped_view = self.grouping.is_none();
+        // Both sets are put back byte for byte after the reorder, because the
+        // reorder itself opens rows: it re-finds the reader's file by path and
+        // `jump_to_file` reveals it, which would silently re-expand the very
+        // group or directory the reader had collapsed around it. `:regroup`
+        // has the same problem and answers it by collapsing everything
+        // afterwards (`src/app/regroup.rs`); a toggle answers it by restoring,
+        // because a toggle is not a new grouping and has nothing to re-read.
+        // Selection then falls back to the collapsed container, which is what
+        // `ensure_valid_tree_selection` is for.
+        let dirs = self.expanded_dirs.clone();
+        let groups = self.expanded_groups.clone();
+        self.grouping_enabled = !self.grouping_enabled;
+        self.sort_files_by_directory(false);
+        self.expanded_dirs = dirs;
+        self.expanded_groups = groups;
+        if self.grouping_enabled && first_grouped_view {
+            self.expand_all_group_keys();
+        }
+        self.ensure_valid_tree_selection();
+
+        let status = match self.active_grouping() {
+            Some(grouping) => format!("on ({} groups)", grouping.groups().len()),
+            None if self.grouping_enabled => "on (nothing to group)".to_string(),
+            None => "off".to_string(),
+        };
+        self.set_message(format!("Grouping: {status}"));
+    }
+
+    /// The grouping the sidebar is rendering, which is the session's grouping
+    /// only while grouping is switched on.
+    ///
+    /// Every site that used to ask `self.grouping.is_some()` asks this instead.
+    /// The two stopped meaning the same thing when `<leader>g` started leaving
+    /// a grouping populated behind a directory tree.
+    pub(in crate::app) fn active_grouping(&self) -> Option<&crate::grouping::Grouping> {
+        self.grouping.as_ref().filter(|_| self.grouping_enabled)
+    }
+
     /// Reorders the sidebar for a diff that has just finished loading, arming
     /// the refine gate when that load answers a review target the human picked.
     ///
@@ -83,30 +146,30 @@ impl App {
         self.expand_all_dirs();
     }
 
-    /// The `expanded_dirs` key of a group row. The group id doubles as the key
-    /// so nothing has to be remapped when a regroup renames a group.
+    /// The `expanded_groups` key of a group row. The group id doubles as the
+    /// key so nothing has to be remapped when a regroup renames a group.
     ///
-    /// Group ids are the *only* keys `expanded_dirs` holds while grouping is
-    /// on, and directory paths the only ones it holds while grouping is off
-    /// (`docs/SIDEBAR_MODEL.md` point 3), so the two key spaces are never
-    /// populated at once and cannot collide.
+    /// Group ids are the *only* keys `expanded_groups` holds, and directory
+    /// paths the only ones `expanded_dirs` holds (`docs/SIDEBAR_MODEL.md`
+    /// point 3). One set each rather than one set between them, since
+    /// `<leader>g` lets both sidebars be arranged within one session.
     pub(in crate::app) fn group_row_key(group: &crate::grouping::Group) -> String {
         group.id.as_str().to_string()
     }
 
-    /// The group a path belongs to, when there is a grouping. The
+    /// The group a path belongs to, when the sidebar is grouped. The
     /// commit-message pseudo-file has none: it sits outside the partition.
     #[cfg(test)]
     pub(in crate::app) fn group_of_file(&self, path: &Path) -> Option<&crate::grouping::Group> {
-        let grouping = self.grouping.as_ref()?;
+        let grouping = self.active_grouping()?;
         grouping.group(grouping.group_of(path)?)
     }
 
-    /// The `expanded_dirs` key of the group a path belongs to. The assignment
+    /// The `expanded_groups` key of the group a path belongs to. The assignment
     /// already names the id the key is made of, so the sidebar sites ask for
     /// the key rather than scanning the group list back out of it.
     pub(in crate::app) fn group_key_of_file(&self, path: &Path) -> Option<String> {
-        let grouping = self.grouping.as_ref()?;
+        let grouping = self.active_grouping()?;
         Some(grouping.group_of(path)?.as_str().to_string())
     }
 

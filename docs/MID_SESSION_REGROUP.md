@@ -7,8 +7,8 @@ grouping engine in `src/` yet to attach it to — the passes live in
 `tests/grouping/` as a scored prototype.
 
 Assumed, settled elsewhere: grouping is file-level with a **strict partition**
-(`gd-26r.5`); groups are collapsible top-level sidebar nodes with `expanded_dirs`
-keyed on the group id (`gd-26r.7`, revised by `gd-26r.31`,
+(`gd-26r.5`); groups are collapsible top-level sidebar nodes with `expanded_groups`
+keyed on the group id (`gd-26r.7`, revised by `gd-26r.31` and `gd-26r.35`,
 `docs/SIDEBAR_MODEL.md`); grouping is
 a **persisted session artefact** with a stable opaque `group_id`, reopening never
 regroups and never refines, incremental assignment is heuristics-only and never
@@ -170,8 +170,10 @@ the new shape of the changeset, not the row you were on. You have lost nothing
 opens the group back to it.
 
 This resolves, rather than dodges, the hazard the earlier session recorded:
-`jump_to_file` (`src/app/navigation.rs`) inserts only *path* ancestors
-into `expanded_dirs`, so it does not expand a group node, and the current file
+`jump_to_file` (`src/app/navigation.rs`) inserted only *path* ancestors
+into `expanded_dirs` when this was written, so it did not expand a group node
+— `gd-26r.28` has since routed it through `reveal_file`, which inserts the
+group key while grouping is on — and the current file
 would otherwise have **no visible sidebar row at all** after a landing. The
 answer is not to teach `jump_to_file` about groups for this path. It is that
 selection after a landing targets the **group row**, not the file row — which

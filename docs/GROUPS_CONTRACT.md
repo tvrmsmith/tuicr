@@ -195,7 +195,7 @@ strongest measured move: `gd-26r.11` found naming-only refine cheap
 ($0.12–0.22), fast (20–40s) and perfectly stable, and plausibly the largest
 user-visible benefit. Under name-only matching that exact case reads as every
 file in the group moving to a new group, discarding the group-keyed
-`expanded_dirs` state `group_id` was created to preserve.
+`expanded_groups` state `group_id` was created to preserve.
 
 Dominant-membership matching (inherit from whichever group contributes the most
 files, above a threshold) was rejected: it needs an uncalibrated constant, and
