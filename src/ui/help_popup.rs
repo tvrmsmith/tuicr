@@ -258,6 +258,13 @@ pub fn render_help(frame: &mut Frame, app: &mut App) {
         ]),
         Line::from(vec![
             Span::styled(
+                format!("  {}g        ", app.leader_key),
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("Toggle grouped sidebar / directory tree (also `:set groups!`)"),
+        ]),
+        Line::from(vec![
+            Span::styled(
                 "  h/l       ",
                 Style::default().add_modifier(Modifier::BOLD),
             ),
@@ -876,6 +883,13 @@ pub fn render_help(frame: &mut Frame, app: &mut App) {
                 Style::default().add_modifier(Modifier::BOLD),
             ),
             Span::raw("  Show files marked reviewed (noreviewed hides, reviewed! toggles)"),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                "  :set groups!",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("  Toggle the grouped sidebar (keeps the grouping)"),
         ]),
         Line::from(vec![
             Span::styled(

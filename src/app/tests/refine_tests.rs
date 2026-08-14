@@ -721,7 +721,7 @@ fn a_diff_that_loads_after_the_screen_is_up_is_refined_in_the_tui() {
         .iter()
         .map(App::group_row_key)
         .collect::<std::collections::HashSet<_>>();
-    assert_eq!(app.expanded_dirs, ids, "every adopted group renders open");
+    assert_eq!(app.expanded_groups, ids, "every adopted group renders open");
 
     // Reading order is the model's array order, and each group is one run:
     // a file interleaved between two groups is a group the eye has to hunt for.

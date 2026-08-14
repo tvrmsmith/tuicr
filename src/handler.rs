@@ -71,6 +71,7 @@ const COMMAND_SPECS: &[CommandSpec] = &[
         &["reviewed", "set reviewed!"],
         CommandKind::ToggleShowReviewed,
     ),
+    CommandSpec::new(&["set groups!"], CommandKind::ToggleGroups),
     CommandSpec::new(&["diff"], CommandKind::Diff),
     CommandSpec::new(&["focus", "f"], CommandKind::Focus),
     CommandSpec::new(&["stage"], CommandKind::Stage),
@@ -157,6 +158,7 @@ enum CommandKind {
     ToggleCommits,
     SetShowReviewed(bool),
     ToggleShowReviewed,
+    ToggleGroups,
     Diff,
     Focus,
     Stage,
@@ -999,6 +1001,10 @@ fn dispatch_command(app: &mut App, kind: CommandKind) -> CommandAfterDispatch {
         }
         CommandKind::ToggleShowReviewed => {
             app.toggle_show_reviewed();
+            CommandAfterDispatch::ExitCommandMode
+        }
+        CommandKind::ToggleGroups => {
+            app.toggle_grouping();
             CommandAfterDispatch::ExitCommandMode
         }
         CommandKind::Diff => {

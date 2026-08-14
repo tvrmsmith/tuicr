@@ -117,7 +117,7 @@ fn assert_landed_on_group_of_current_file(app: &App) {
         other => panic!("selection landed on {other:?}, not the group row"),
     }
     assert!(
-        app.expanded_dirs.is_empty(),
+        app.expanded_groups.is_empty(),
         "every group collapses on a landing"
     );
 }
@@ -339,18 +339,18 @@ fn a_file_whose_content_changed_can_move_between_groups() {
 }
 
 /// The brief's standing question, asked rather than assumed: after a regroup,
-/// group ids are still the only keys `expanded_dirs` holds.
+/// group ids are still the only keys `expanded_groups` holds.
 #[test]
-fn expanded_dirs_holds_group_ids_and_nothing_else_after_a_regroup() {
+fn expanded_groups_holds_group_ids_and_nothing_else_after_a_regroup() {
     let mut app = app();
     put_reader_inside(&mut app, "src/auth/session.rs");
 
     app.regroup_with(None);
-    assert!(app.expanded_dirs.is_empty(), "the landing collapsed it");
+    assert!(app.expanded_groups.is_empty(), "the landing collapsed it");
 
     app.expand_all_dirs();
     let live = group_ids_of(&app);
-    let mut keys: Vec<String> = app.expanded_dirs.iter().cloned().collect();
+    let mut keys: Vec<String> = app.expanded_groups.iter().cloned().collect();
     keys.sort();
     let mut ids = live;
     ids.sort();

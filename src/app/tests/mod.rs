@@ -11,6 +11,7 @@ mod expand_gap_tests;
 mod file_filter_tests;
 mod find_source_line_tests;
 pub(crate) mod grouping_tests;
+mod grouping_toggle_tests;
 mod persistence_merge_tests;
 mod pr_info_tests;
 mod refine_tests;

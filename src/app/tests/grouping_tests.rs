@@ -18,7 +18,7 @@ pub(crate) fn make_file(path: &str) -> DiffFile {
     }
 }
 
-fn commit_message_file() -> DiffFile {
+pub(super) fn commit_message_file() -> DiffFile {
     DiffFile {
         is_commit_message: true,
         ..make_file("COMMIT_MSG")
@@ -202,19 +202,19 @@ pub(crate) fn build_app_over(files: Vec<DiffFile>, session: ReviewSession) -> Ap
     )
 }
 
-fn grouped_paths(paths: &[&str]) -> App {
+pub(super) fn grouped_paths(paths: &[&str]) -> App {
     grouped_app(paths.iter().map(|path| make_file(path)).collect())
 }
 
 /// The same changeset with the commit-message pseudo-file in it, which is the
 /// only row that lives outside the partition.
-fn grouped_paths_with_commit_message(paths: &[&str]) -> App {
+pub(super) fn grouped_paths_with_commit_message(paths: &[&str]) -> App {
     let mut files: Vec<DiffFile> = paths.iter().map(|path| make_file(path)).collect();
     files.push(commit_message_file());
     grouped_app(files)
 }
 
-fn file_order(app: &App) -> Vec<String> {
+pub(super) fn file_order(app: &App) -> Vec<String> {
     app.diff_files
         .iter()
         .map(|file| file.display_path().to_string_lossy().to_string())
@@ -261,7 +261,7 @@ fn group_ids(app: &App) -> Vec<String> {
         .collect()
 }
 
-const PATHS: &[&str] = &[
+pub(super) const PATHS: &[&str] = &[
     "src/auth/login.rs",
     "src/auth/session.rs",
     "src/auth/token.rs",
@@ -446,8 +446,9 @@ fn a_group_lists_its_files_flat_at_depth_one_by_full_path() {
 
 #[test]
 fn expanding_seeds_group_ids_and_nothing_else() {
-    // `expanded_dirs` holds group ids only while grouping is on, which is what
-    // lets one flat string set serve both sidebars without colliding.
+    // `expanded_groups` holds group ids and nothing else; the directory keys
+    // the same seed produces live in a set of their own, waiting for the
+    // sidebar `<leader>g` switches to.
     let app = grouped_paths(PATHS);
     let ids: HashSet<String> = app
         .grouping
@@ -458,7 +459,11 @@ fn expanding_seeds_group_ids_and_nothing_else() {
         .map(|group| group.id.as_str().to_string())
         .collect();
 
-    assert_eq!(app.expanded_dirs, ids);
+    assert_eq!(app.expanded_groups, ids);
+    assert!(
+        app.expanded_dirs.iter().all(|key| !ids.contains(key)),
+        "no group id leaked into the directory tree's keys"
+    );
 }
 
 #[test]
@@ -487,7 +492,7 @@ fn jumping_to_a_hidden_file_reveals_it_by_opening_its_group_alone() {
 
     assert!(visible_files(&app).contains(&path));
     assert_eq!(
-        app.expanded_dirs,
+        app.expanded_groups,
         HashSet::from([group_id]),
         "the group id is the only key that reveals anything"
     );

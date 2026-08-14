@@ -2910,7 +2910,7 @@ fn should_refine_a_reopened_pull_request_over_the_narrowed_range() {
         .expect("a restored subrange re-fetches the narrowed diff");
     assert_eq!(request.pick, TargetPick::NewTarget);
 
-    app.finish_pr_range_reload(&request, first_hunk_patch())
+    app.finish_pr_range_reload(&request, structured_patch(first_hunk_patch()))
         .unwrap();
 
     assert!(

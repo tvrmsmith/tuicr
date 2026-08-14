@@ -115,6 +115,7 @@ considers files that pass the active filters.
 | `<leader>j` | Move focus down (files to comments when visible, otherwise diff) |
 | `<leader>e` | Toggle file list visibility |
 | `<leader>s` | Toggle commit selector visibility (also `:set commits!`) |
+| `<leader>g` | Toggle grouped sidebar / directory tree (also `:set groups!`) |
 | `Enter` | Select file (when file list is focused) |
 
 ## Comment navigator
@@ -233,6 +234,7 @@ In command mode,
 | `:set reviewed` | Show files already marked reviewed |
 | `:set noreviewed` | Hide files already marked reviewed |
 | `:set reviewed!` / `:reviewed` | Toggle files already marked reviewed |
+| `:set groups!` | Toggle the grouped sidebar; the grouping is kept, so toggling back never regroups |
 | `:clear` | Clear all comments |
 | `:clearc` | Clear comments without clearing reviewed marks |
 | `:help` (`:h`) | Open the help screen |
