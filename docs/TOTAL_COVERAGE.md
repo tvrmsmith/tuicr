@@ -102,8 +102,8 @@ Rejected alternatives:
 `gd-26r.12` was warned that nothing guarded the index-0 hoist, and that was
 correct: `rg is_commit_message src/app/tests/` found only struct-literal
 `false`s. Two independent places put the pseudo-file at index 0 —
-`insert_commit_message_if_single` (`src/app/diff_load.rs:34-97`) inserts it, and
-`sort_files_by_directory` (`src/app/tree.rs:144-150,165`) hoists it back ahead of
+`insert_commit_message_if_single` (`src/app/diff_load.rs`) inserts it, and
+`sort_files_by_directory` (`src/app/tree.rs`) hoists it back ahead of
 every real file on **every** reorder, of which the seam map counts 17 non-test
 call sites.
 

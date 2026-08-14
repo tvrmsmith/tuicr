@@ -223,7 +223,7 @@ Stated here rather than absorbed.
   regroup lands under the user — including the async refine result arriving
   after the TUI opened — the sidebar resets to all groups collapsed. It also
   still owns the `GapId { file_idx, hunk_idx }` hazard (seam map §2):
-  `sort_files_by_directory` clears only `file_line_count_cache` (`tree.rs:135`),
+  `sort_files_by_directory` clears only `file_line_count_cache`,
   not the gap maps.
 - **`gd-26r.15` (status indicator)** gains a group-granular input:
   `new_since_full_pass` on the group record, alongside the global

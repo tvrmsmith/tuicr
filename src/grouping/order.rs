@@ -95,25 +95,17 @@ pub fn sort_group_files(
         CentralFirst::On => central_file(name, &files).map(|file| file.path.clone()),
         CentralFirst::Off => None,
     };
-    members.sort_by_key(|path| match by_path.get(path.as_str()) {
-        Some(file) => (
-            central.as_deref() != Some(path.as_str()),
-            file.is_mechanical(),
-            file.is_broad_test(),
-            file.dir().to_string(),
-            file.stem(),
-            file.is_test(),
+    members.sort_by_key(|path| {
+        let file = by_path.get(path.as_str()).copied();
+        (
+            file.is_none() || central.as_deref() != Some(path.as_str()),
+            file.is_some_and(|file| file.is_mechanical()),
+            file.is_some_and(|file| file.is_broad_test()),
+            file.map(|file| file.dir().to_string()).unwrap_or_default(),
+            file.map(|file| file.stem()).unwrap_or_default(),
+            file.is_some_and(|file| file.is_test()),
             path.clone(),
-        ),
-        None => (
-            true,
-            false,
-            false,
-            String::new(),
-            String::new(),
-            false,
-            path.clone(),
-        ),
+        )
     });
 }
 
@@ -162,5 +154,212 @@ pub fn central_file<'a>(name: &str, files: &[&'a ChangedFile]) -> Option<&'a Cha
     match winners.next() {
         Some(_) => None,
         None => Some(winner),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// One group sorted, from paths alone.
+    ///
+    /// The members go in reversed, so a case that passes because the input was
+    /// already in the wanted order cannot pass. Every case below is a pair that
+    /// the *next* key out would order the other way, which is what makes each
+    /// one about the key it names rather than about the sort in general.
+    fn ordered(name: &str, paths: &[&str], central_first: CentralFirst) -> Vec<String> {
+        let text: String = paths
+            .iter()
+            .map(|path| format!("M\t{path}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let changeset = Changeset::parse(&text);
+        let by_path = files_by_path(&changeset);
+        let mut members: Vec<String> = paths.iter().rev().map(|path| path.to_string()).collect();
+        sort_group_files(name, &mut members, &by_path, central_first);
+        members
+    }
+
+    /// A group name sharing no token with any member, so rule 13 stands down
+    /// and the key under test is the outermost one left.
+    const UNRELATED: &str = "quux";
+
+    #[test]
+    fn a_mechanical_straggler_sorts_last_however_early_its_directory_is() {
+        assert_eq!(
+            ordered(
+                UNRELATED,
+                &["src/auth/login.rs", "Cargo.lock"],
+                CentralFirst::On
+            ),
+            ["src/auth/login.rs", "Cargo.lock"],
+            "rule 14 outranks the directory key, which would lead with the repo root"
+        );
+    }
+
+    #[test]
+    fn a_broad_test_follows_the_narrow_ones_whatever_its_stem_sorts_as() {
+        assert_eq!(
+            ordered(
+                UNRELATED,
+                &["tests/auth_unit.rs", "tests/auth_integration.rs"],
+                CentralFirst::On,
+            ),
+            ["tests/auth_unit.rs", "tests/auth_integration.rs"],
+            "rule 12 outranks the stem key, which would lead with `integration`"
+        );
+    }
+
+    #[test]
+    fn directory_orders_before_stem_and_stem_before_the_rest() {
+        assert_eq!(
+            ordered(UNRELATED, &["a/beta.rs", "b/alpha.rs"], CentralFirst::On),
+            ["a/beta.rs", "b/alpha.rs"],
+            "the directory is the outer of the two"
+        );
+        // `x` sorts before `x-y` by stem and after it by path, so only the stem
+        // key can produce this order.
+        assert_eq!(
+            ordered(UNRELATED, &["a/x.rs", "a/x-y.rs"], CentralFirst::On),
+            ["a/x.rs", "a/x-y.rs"],
+            "the stem is the inner of the two"
+        );
+    }
+
+    /// Rule 4, and the reason the sort exists at all: a plain path sort puts
+    /// `token.test.rs` ahead of `token.rs`, because `.` sorts below `r`.
+    #[test]
+    fn a_production_file_leads_its_own_test() {
+        assert_eq!(
+            ordered(
+                UNRELATED,
+                &["src/auth/token.rs", "src/auth/token.test.rs"],
+                CentralFirst::On,
+            ),
+            ["src/auth/token.rs", "src/auth/token.test.rs"],
+        );
+    }
+
+    #[test]
+    fn the_path_settles_what_no_rule_speaks_to() {
+        assert_eq!(
+            ordered(UNRELATED, &["a/x.rs", "a/x.ts"], CentralFirst::On),
+            ["a/x.rs", "a/x.ts"],
+            "same directory, same stem, neither a test: only the path is left"
+        );
+    }
+
+    /// Rule 13 is the outermost key and the only one the knob turns off, so the
+    /// same group is sorted both ways: with it on the central file leads, with
+    /// it off the directory-and-stem order it displaced comes back.
+    #[test]
+    fn the_central_file_leads_its_group_only_while_rule_13_is_on() {
+        let group = [
+            "src/auth/token.rs",
+            "src/auth/aaa.rs",
+            "src/auth/session.rs",
+        ];
+        assert_eq!(
+            ordered("token-rotation", &group, CentralFirst::On),
+            [
+                "src/auth/token.rs",
+                "src/auth/aaa.rs",
+                "src/auth/session.rs"
+            ],
+        );
+        assert_eq!(
+            ordered("token-rotation", &group, CentralFirst::Off),
+            [
+                "src/auth/aaa.rs",
+                "src/auth/session.rs",
+                "src/auth/token.rs"
+            ],
+        );
+    }
+
+    /// A name two members match equally well names neither of them, so nothing
+    /// leads and the sort is the one rule 13 would have produced turned off.
+    #[test]
+    fn a_name_that_fits_two_members_equally_promotes_neither() {
+        let group = ["src/a/token.rs", "src/b/token.rs"];
+        assert_eq!(
+            ordered("token", &group, CentralFirst::On),
+            ordered("token", &group, CentralFirst::Off),
+        );
+        assert_eq!(
+            ordered("token", &group, CentralFirst::On),
+            ["src/a/token.rs", "src/b/token.rs"],
+        );
+    }
+
+    /// A test file is never the central one even when it is the best token
+    /// match: rule 13 promotes the file the concern is *implemented* in.
+    #[test]
+    fn a_test_or_a_lockfile_is_never_the_central_file() {
+        assert_eq!(
+            ordered(
+                "rotation",
+                &["src/auth/aaa.rs", "src/auth/rotation.test.rs"],
+                CentralFirst::On,
+            ),
+            ["src/auth/aaa.rs", "src/auth/rotation.test.rs"],
+        );
+    }
+
+    #[test]
+    fn groups_run_largest_first_with_the_directory_fallback_pinned_last() {
+        let groups: BTreeMap<String, Vec<String>> = [
+            ("dir:src/big", vec!["a", "b", "c", "d"]),
+            ("small-concern", vec!["e"]),
+            ("large-concern", vec!["f", "g"]),
+            ("dir:src/small", vec!["h"]),
+        ]
+        .into_iter()
+        .map(|(name, files)| {
+            (
+                name.to_string(),
+                files.into_iter().map(str::to_string).collect(),
+            )
+        })
+        .collect();
+
+        assert_eq!(
+            heuristic_group_order(&groups),
+            [
+                "large-concern",
+                "small-concern",
+                "dir:src/big",
+                "dir:src/small"
+            ],
+            "a four-file fallback still sorts below a one-file concern"
+        );
+    }
+
+    /// Size is the only key this entry point can show at work on a tie: the
+    /// parameter is a `BTreeMap`, so a tied pair reaches the sort in name order
+    /// whatever the caller did, and the name component of the key cannot be
+    /// observed from here. What is checked is what is checkable — the order is
+    /// total, size-descending, and the same every time.
+    #[test]
+    fn a_size_tie_between_groups_still_reads_in_one_settled_order() {
+        let groups: BTreeMap<String, Vec<String>> = [
+            ("zulu", vec!["a", "b"]),
+            ("alpha", vec!["c", "d"]),
+            ("mike", vec!["e", "f", "g"]),
+        ]
+        .into_iter()
+        .map(|(name, files)| {
+            (
+                name.to_string(),
+                files.into_iter().map(str::to_string).collect(),
+            )
+        })
+        .collect();
+
+        assert_eq!(
+            heuristic_group_order(&groups),
+            ["mike", "alpha", "zulu"],
+            "size decides first; the tied pair reads in name order"
+        );
     }
 }

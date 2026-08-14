@@ -5,7 +5,7 @@ use crate::app::*;
 use crate::model::{DiffFile, FileStatus};
 use crate::vcs::traits::{VcsBackend, VcsInfo, VcsType};
 
-fn make_file(path: &str) -> DiffFile {
+pub(crate) fn make_file(path: &str) -> DiffFile {
     DiffFile {
         old_path: None,
         new_path: Some(PathBuf::from(path)),
@@ -25,17 +25,50 @@ fn commit_message_file() -> DiffFile {
     }
 }
 
-struct StubVcs(VcsInfo);
+/// A backend with no history. `working_tree` is what the working-tree loaders
+/// see, so a test can drive a real target pick (a load that finds changes) or a
+/// real empty one (a load that returns `NoChanges`) through the same seam the
+/// selector uses.
+pub(crate) struct StubVcs {
+    info: VcsInfo,
+    working_tree: Vec<DiffFile>,
+    commit_range: Vec<DiffFile>,
+}
+
+impl StubVcs {
+    pub(crate) fn new(info: VcsInfo) -> Self {
+        Self {
+            info,
+            working_tree: Vec::new(),
+            commit_range: Vec::new(),
+        }
+    }
+
+    pub(super) fn with_working_tree(info: VcsInfo, working_tree: Vec<DiffFile>) -> Self {
+        Self {
+            info,
+            working_tree,
+            commit_range: Vec::new(),
+        }
+    }
+
+    /// What every commit-range request answers with, so a test can confirm a
+    /// commit selection without a repository behind it.
+    pub(super) fn serving_commit_range(mut self, files: Vec<DiffFile>) -> Self {
+        self.commit_range = files;
+        self
+    }
+}
 
 impl VcsBackend for StubVcs {
     fn info(&self) -> &VcsInfo {
-        &self.0
+        &self.info
     }
     fn get_working_tree_diff(
         &self,
         _hl: &crate::syntax::SyntaxHighlighter,
     ) -> crate::error::Result<Vec<DiffFile>> {
-        Ok(Vec::new())
+        Ok(self.working_tree.clone())
     }
     fn fetch_context_lines(
         &self,
@@ -55,27 +88,93 @@ impl VcsBackend for StubVcs {
     ) -> crate::error::Result<u32> {
         Ok(0)
     }
+    fn get_commit_range_diff(
+        &self,
+        _revision_range: &crate::vcs::traits::ResolvedRevisionRange<'_>,
+        _hl: &crate::syntax::SyntaxHighlighter,
+    ) -> crate::error::Result<Vec<DiffFile>> {
+        Ok(self.commit_range.clone())
+    }
 }
 
 /// A real `App` with grouping on, exactly as the binary starts it.
 fn grouped_app(files: Vec<DiffFile>) -> App {
-    let vcs_info = VcsInfo {
+    let mut app = ungrouped_app(files);
+    app.enable_grouping();
+    app.expand_all_dirs();
+    app
+}
+
+/// The same app one step earlier: built, but with grouping not yet turned on.
+/// The refine arm runs in that gap, so its tests start here.
+pub(super) fn ungrouped_app(files: Vec<DiffFile>) -> App {
+    ungrouped_app_with_working_tree(files, Vec::new())
+}
+
+/// [`ungrouped_app`] whose backend also serves `working_tree` to the
+/// working-tree loaders, so a test can reach the arming seam the way the target
+/// selector does instead of setting the flag by hand.
+pub(super) fn ungrouped_app_with_working_tree(
+    files: Vec<DiffFile>,
+    working_tree: Vec<DiffFile>,
+) -> App {
+    ungrouped_app_serving(files, working_tree, Vec::new())
+}
+
+/// [`ungrouped_app_with_working_tree`] whose backend also answers every
+/// commit-range request with `commit_range`, which is what confirming a
+/// selection in the commit picker asks for.
+pub(super) fn ungrouped_app_serving(
+    files: Vec<DiffFile>,
+    working_tree: Vec<DiffFile>,
+    commit_range: Vec<DiffFile>,
+) -> App {
+    let vcs_info = stub_vcs_info();
+    let mut session = empty_session(&vcs_info);
+    for file in &files {
+        session.add_file(file.display_path().clone(), file.status, file.content_hash);
+    }
+    build_app_on(
+        Box::new(
+            StubVcs::with_working_tree(vcs_info.clone(), working_tree)
+                .serving_commit_range(commit_range),
+        ),
+        vcs_info,
+        files,
+        session,
+    )
+}
+
+/// The `VcsInfo` every test app is built over.
+pub(crate) fn stub_vcs_info() -> VcsInfo {
+    VcsInfo {
         root_path: PathBuf::from("/tmp"),
         head_commit: "head".into(),
         branch_name: Some("main".into()),
         vcs_type: VcsType::Git,
-    };
-    let mut session = ReviewSession::new(
+    }
+}
+
+/// A working-tree session over `vcs_info` with no files in it yet.
+pub(crate) fn empty_session(vcs_info: &VcsInfo) -> ReviewSession {
+    ReviewSession::new(
         vcs_info.root_path.clone(),
         vcs_info.head_commit.clone(),
         vcs_info.branch_name.clone(),
         SessionDiffSource::WorkingTree,
-    );
-    for file in &files {
-        session.add_file(file.display_path().clone(), file.status, file.content_hash);
-    }
-    let mut app = App::build(
-        Box::new(StubVcs(vcs_info.clone())),
+    )
+}
+
+/// The twelve-argument `App::build` every test app goes through, in one place:
+/// a signature change lands here rather than in each copy of the call.
+pub(crate) fn build_app_on(
+    vcs: Box<dyn VcsBackend>,
+    vcs_info: VcsInfo,
+    files: Vec<DiffFile>,
+    session: ReviewSession,
+) -> App {
+    App::build(
+        vcs,
         vcs_info,
         crate::theme::Theme::dark(),
         None,
@@ -88,10 +187,19 @@ fn grouped_app(files: Vec<DiffFile>) -> App {
         None,
         None,
     )
-    .expect("build app");
-    app.enable_grouping();
-    app.expand_all_dirs();
-    app
+    .expect("build app")
+}
+
+/// [`build_app_on`] over a backend with no history at all, which is every test
+/// that only reads what it put in `files`.
+pub(crate) fn build_app_over(files: Vec<DiffFile>, session: ReviewSession) -> App {
+    let vcs_info = stub_vcs_info();
+    build_app_on(
+        Box::new(StubVcs::new(vcs_info.clone())),
+        vcs_info,
+        files,
+        session,
+    )
 }
 
 fn grouped_paths(paths: &[&str]) -> App {
@@ -530,6 +638,33 @@ fn a_file_the_grouping_does_not_mention_still_gets_a_row() {
         matches!(selected, Some(FileTreeItem::File { file_idx, .. }) if file_idx == orphan_idx),
         "and the cursor can reach it, got {selected:?}"
     );
+}
+
+/// The same orphan, but wedged inside a group's run instead of appended after
+/// it. The run is split, and the guard has to say so: an ungrouped file is not
+/// transparent, it is a break, and reading past it treats two runs as one.
+#[test]
+#[cfg(debug_assertions)]
+#[should_panic(expected = "contiguous by group")]
+fn an_ungrouped_file_wedged_into_a_group_breaks_its_run() {
+    let (mut app, _) = app_with_an_orphan_file();
+    let orphan = app.diff_files.pop().expect("the orphan is last");
+
+    let ids: Vec<Option<crate::grouping::GroupId>> = {
+        let grouping = app.grouping.as_ref().expect("grouping is on");
+        app.diff_files
+            .iter()
+            .map(|file| grouping.group_of(file.display_path()).cloned())
+            .collect()
+    };
+    let split_at = ids
+        .windows(2)
+        .position(|pair| pair[0].is_some() && pair[0] == pair[1])
+        .map(|start| start + 1)
+        .expect("some group holds two adjacent files to wedge between");
+
+    app.diff_files.insert(split_at, orphan);
+    app.build_visible_items();
 }
 
 #[test]
