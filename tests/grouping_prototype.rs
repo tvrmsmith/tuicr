@@ -1034,26 +1034,20 @@ fn rule_words(text: &str) -> BTreeSet<String> {
         .collect()
 }
 
-/// How much of a digest rule the documented rule accounts for. Containment
-/// rather than symmetric overlap: the digest is a compression, so the doc says
-/// more than it does and a Jaccard score would punish the longest doc rules for
-/// being long.
-fn covered_by(digest: &BTreeSet<String>, documented: &BTreeSet<String>) -> f64 {
-    if digest.is_empty() {
-        return 0.0;
-    }
-    digest.intersection(documented).count() as f64 / digest.len() as f64
-}
-
 /// The prompt carries a hand-written digest of `docs/GROUPING.md`, so an added
 /// or removed rule in the doc leaves the digest a rule short with nothing
 /// failing — rule 11's wording already drifted once on this branch. The two are
-/// not compared as prose: the digest is a compression, and asserting the texts
-/// match would fail on the compression itself. What is locked is that each
-/// digest rule still restates *its own* documented rule — its vocabulary has to
-/// come from that rule more than from any other — so a rule renumbered, swapped
-/// with its neighbour, or replaced under an unchanged number fails here, while
-/// a rewording that says the same thing passes.
+/// not compared as prose: the digest is a compression, and grading one text's
+/// similarity to another says nothing about whether it still means the same
+/// thing.
+///
+/// **A numbering guard, and only that.** What is locked is that the digest
+/// numbers the same rules the doc does, and that each digest rule kept at least
+/// one word only its own documented rule uses — the term the rule is *about*,
+/// which is what a rule silently swapped for its neighbour or replaced under an
+/// unchanged number loses. Neither claim can tell that the digest says the same
+/// thing; a digest rule that inverted its own rule while keeping its vocabulary
+/// would pass. Whether the wording is right is a reading, not an assertion.
 ///
 /// Scoped to the rules that order *groups*. `gd-26r.22` added rules 12–14, which
 /// order the files inside one, and the prompt deliberately does not carry them:
@@ -1084,6 +1078,26 @@ fn every_documented_rule_reaches_the_model() {
         .collect();
     let ordinals: BTreeSet<u32> = documented.keys().copied().collect();
 
+    // The words only one documented rule uses. The shared vocabulary every rule
+    // in the list carries — group, file, change — survives any rewrite, so it
+    // is the term a rule is *about* that a rule replaced under an unchanged
+    // number loses.
+    let distinctive: BTreeMap<u32, BTreeSet<String>> = documented
+        .iter()
+        .map(|(ordinal, words)| {
+            let mine = words
+                .iter()
+                .filter(|word| {
+                    !documented
+                        .iter()
+                        .any(|(other, rule)| other != ordinal && rule.contains(*word))
+                })
+                .cloned()
+                .collect();
+            (*ordinal, mine)
+        })
+        .collect();
+
     let changeset = Changeset::parse(FIRE_CHECK_FILES);
     let grouping = passes::group(&changeset, GroupingConfig::default());
     for shape in Shape::ALL {
@@ -1097,21 +1111,42 @@ fn every_documented_rule_reaches_the_model() {
 
         for (ordinal, text) in &digest {
             let words = rule_words(text);
-            let mut ranked: Vec<(f64, u32)> = documented
-                .iter()
-                .map(|(number, rule)| (covered_by(&words, rule), *number))
-                .collect();
-            ranked.sort_by(|left, right| right.0.total_cmp(&left.0));
-            let (best, matched) = ranked[0];
-            let (runner_up, other) = ranked[1];
+            let mine = &distinctive[ordinal];
             assert!(
-                matched == *ordinal && best > runner_up,
-                "{slug}: the digest's rule {ordinal} reads as docs/GROUPING.md rule {matched} \
-                 ({best:.2} of its words) ahead of rule {other} ({runner_up:.2}), so the two \
-                 lists no longer state the same rule under this number"
+                mine.is_empty() || !words.is_disjoint(mine),
+                "{slug}: the digest's rule {ordinal} keeps none of the words only \
+                 docs/GROUPING.md rule {ordinal} uses ({mine:?}), so whatever it now says, \
+                 it is not that rule"
             );
         }
     }
+}
+
+/// The shipped arm sends the prompt this harness measured, byte for byte.
+///
+/// Every number `docs/GROUPING_PASSES.md` publishes for refine was produced by
+/// [`Shape::Full`] against a recorded run of *this* text. `tuicr::grouping::
+/// refine::prompt` is a separate rendering over the engine's own `Grouping`
+/// rather than the harness's `Partition`, so nothing but this assertion stops
+/// the two drifting — and a shipped prompt that has drifted is one whose F1 of
+/// 0.427 and 0.711 was measured on a prompt no user ever sends.
+///
+/// Fixture 1 rather than the synthetic changeset, because the parity that
+/// matters is on the input the recorded runs used.
+#[test]
+fn the_shipped_prompt_is_the_prompt_the_numbers_were_measured_on() {
+    let (changeset, _) = orca();
+    let config = GroupingConfig::default();
+    let harness = passes::group(&changeset, config).partition();
+    let engine = tuicr::grouping::group_changeset(&changeset, config);
+
+    assert_eq!(
+        tuicr::grouping::refine::prompt(&changeset, &engine),
+        refine::prompt(&changeset, &harness, Shape::Full),
+        "the shipped refine prompt no longer matches the Shape::Full prompt \
+         docs/GROUPING_PASSES.md's refine numbers were measured on. Either bring the two back \
+         together or re-measure; do not delete this bar."
+    );
 }
 
 /// The prompt is the one part of this pass that deterministic CI can pin: it is

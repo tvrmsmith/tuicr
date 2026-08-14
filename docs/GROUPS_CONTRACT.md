@@ -92,8 +92,8 @@ pub struct Assignment {
 
 ### Why this and not the prototype's shape
 
-`tests/grouping/passes.rs:62` returns `Grouping { assignments: Vec<Assignment> }`
-with `Assignment.group: String`. That is the honest starting point but wrong at
+The prototype's `Grouping { assignments: Vec<Assignment> }`, with
+`Assignment.group: String`, was the shape the harness started from. That is the honest starting point but wrong at
 two points, both settled after it was written:
 
 - **It is name-keyed.** `gd-26r.8` made identity a stable opaque `group_id`
@@ -146,7 +146,8 @@ because tuicr's reader is the only thing enforcing it.
 
 ### The request
 
-The prompt of `tests/grouping/refine.rs:216` is the shipped shape: the rules,
+The prompt (`src/grouping/refine.rs::prompt`, which the harness in
+`tests/grouping/refine.rs` sends verbatim) is the shipped shape: the rules,
 the changeset as paths plus change status (`A`/`M`/`D`/`R`), and the heuristic
 grouping rendered largest-group-first as `[name] (n files)` followed by its
 paths. No diff bodies — the fixtures carry none and neither does this.
@@ -222,16 +223,20 @@ config edit away at all times.
 
 ### Repair — the prototype's behaviour, shipped as-is
 
-`tests/grouping/refine.rs:310-458` is the contract. Every violation is repaired
-against the heuristic partition and **counted**; the repair count is part of the
-verdict, not a detail.
+`src/grouping/refine.rs::apply` is the contract, and the prototype harness in
+`tests/grouping/refine.rs` calls the shipped rules rather than copying them, so
+the recorded figures describe the pass the binary runs. Every violation is
+repaired against the heuristic partition and **counted**; the repair count is
+part of the verdict, not a detail.
 
 | Violation | Repair |
 | --- | --- |
 | Path not in the changeset | Dropped, counted as `invented path dropped` |
-| Path in two groups | First group wins, second occurrence counted |
+| Path in two *different* groups | First group wins, second occurrence counted. The same path twice in one group is not a violation and is not counted |
 | Path omitted entirely | Restored to its **existing heuristic group**, counted |
+| Path in no heuristic group either | Filed under `unplaced`, counted. Unreachable while the heuristic partition is total over the same changeset; it is repaired rather than asserted because losing a file is the worse failure |
 | Group with no `files` | Keeps its name and order slot; its paths fall to the restore loop |
+| `files` entry that is not a string | Skipped, counted as a non-string entry; the path it was meant to be falls to the restore loop |
 | Group with no/blank `name` | Filed as `unnamed-<index>`, counted |
 | Name reused across two groups | Second uniquified via `free_name`, counted |
 
@@ -261,8 +266,8 @@ which a response is discarded.
 omitted path is the wrong trade, and the money is spent at dispatch. A threshold
 would add a constant nobody has calibrated to guard against a failure mode
 measured at 0.5 invented paths per call on the worst arm. Repairs are recorded,
-so a misbehaving model surfaces in the debug surface rather than as a silent
-fallback the human cannot explain.
+so a misbehaving model surfaces as a startup warning naming the count rather
+than as a silent fallback the human cannot explain.
 
 ### Parse failure — one retry, then fall back
 

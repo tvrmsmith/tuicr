@@ -6,16 +6,21 @@
 //! `docs/GROUPING_PASSES.md` (every number the passes are held to). The fixture
 //! harness in `tests/grouping_prototype.rs` scores this code directly.
 //!
-//! What is **not** here yet, named rather than implied: the refine arm and its
-//! blocking startup screen, and `:regroup` with incremental assignment. Both
-//! are decided (`docs/MID_SESSION_REGROUP.md`, `docs/REGROUPING_STATE.md`) and
-//! land in later slices of `gd-26r.28`. Until then every group is
-//! [`GroupSource::Heuristics`] and no group is ever new since the last full
-//! pass.
+//! Two arms produce a grouping. [`group_changeset`] is the heuristic one:
+//! deterministic, instant, free, and the fallback every other path lands on.
+//! [`refine`] is the model one, opt-in behind `[grouping].refine`, blocking at
+//! startup, and worth the block for its partition (`docs/GROUPING_PASSES.md`).
+//!
+//! What is **not** here yet, named rather than implied: `:regroup` with
+//! incremental assignment, decided in `docs/REGROUPING_STATE.md` and landing in
+//! a later slice of `gd-26r.28`. Until then no group is ever new since the last
+//! full pass.
 
 pub mod changeset;
 pub mod order;
 pub mod passes;
+pub mod refine;
+pub mod vertex;
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -185,18 +190,15 @@ impl Grouping {
         }
     }
 
-    /// A freshly computed grouping: the passes' claims bucketed by name and put
-    /// into `order`, with a new identity minted for every group.
+    /// A freshly computed grouping: the passes' claims bucketed by name, put
+    /// into `gd-26r.12` Decision 3's group order, with a new identity minted
+    /// for every group.
     ///
-    /// A name `order` does not mention is appended name-sorted rather than
-    /// dropped, so a malformed order degrades the reading order instead of
-    /// losing files.
-    pub fn present(
-        changeset: &Changeset,
-        claims: Vec<PassClaim>,
-        order: &[String],
-        source: GroupSource,
-    ) -> Self {
+    /// The order is computed here rather than passed in because it is a
+    /// function of the very buckets this method builds, and a caller that
+    /// bucketed the claims a second time to ask for it could disagree with what
+    /// is presented.
+    pub fn present(changeset: &Changeset, claims: Vec<PassClaim>, source: GroupSource) -> Self {
         let mut members: BTreeMap<String, Vec<String>> = BTreeMap::new();
         let mut claim_by_path: BTreeMap<String, PassClaim> = BTreeMap::new();
         for claim in claims {
@@ -206,6 +208,7 @@ impl Grouping {
                 .push(claim.path.clone());
             claim_by_path.insert(claim.path.clone(), claim);
         }
+        let order = order::heuristic_group_order(&members);
 
         let mut names: Vec<String> = order
             .iter()
@@ -228,14 +231,27 @@ impl Grouping {
         Self::build(changeset, presented, claim_by_path)
     }
 
-    /// A grouping read back out of a persisted session, `groups` already in
-    /// reading order.
+    /// A grouping whose groups and identities came from somewhere other than
+    /// the passes, `groups` already in reading order: a persisted session, or
+    /// the refine arm's answer.
     ///
     /// Identity is restored rather than minted — the point of an opaque
     /// `group_id` (`docs/REGROUPING_STATE.md`): reopening a session shows
     /// yesterday's groups, with yesterday's group-keyed sidebar state still
-    /// pointing at them. Which pass claimed a file is *not* restored; it is
-    /// derived debug state and never persisted.
+    /// pointing at them. From the refine arm the incoming order is the reading
+    /// order the model proposed, which is the whole of what blocking startup
+    /// buys in ordering terms and the one thing the response is required to
+    /// carry (`docs/GROUPS_CONTRACT.md`).
+    ///
+    /// Within-group order is **not** taken from either source. It arrives here
+    /// unsorted and leaves sorted, because [`Grouping::build`] is the sole
+    /// constructor: the same rules 4, 12 and 14 that order a heuristic group
+    /// order a refined one, for free and identically, so the seam never
+    /// re-sorts and the prompt never asks.
+    ///
+    /// Which pass claimed a file is *not* carried: it is derived debug state,
+    /// never persisted, and no heuristic pass placed a refined assignment at
+    /// all, so `pass` reads `restored`.
     pub fn restore(changeset: &Changeset, groups: Vec<PresentedGroup>) -> Self {
         Self::build(changeset, groups, BTreeMap::new())
     }
@@ -292,13 +308,5 @@ impl Grouping {
 /// every real file in the changeset.
 pub fn group_changeset(changeset: &Changeset, config: GroupingConfig) -> Grouping {
     let claims = passes::assign(changeset, config);
-    let mut members: BTreeMap<String, Vec<String>> = BTreeMap::new();
-    for claim in &claims {
-        members
-            .entry(claim.group.clone())
-            .or_default()
-            .push(claim.path.clone());
-    }
-    let order = order::heuristic_group_order(&members);
-    Grouping::present(changeset, claims, &order, GroupSource::Heuristics)
+    Grouping::present(changeset, claims, GroupSource::Heuristics)
 }

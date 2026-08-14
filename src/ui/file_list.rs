@@ -353,13 +353,13 @@ mod tests {
     //! `ui::render`: the prompt/filter line in its bottom border, the middle
     //! elision of grouped file rows, and group rows themselves.
     use super::elide_middle;
-    use crate::app::{
-        App, DiffSource, FileTreeItem, FileTreeMode, FileTreePrompt, FocusedPanel, InputMode,
+    use crate::app::tests::grouping_tests::{
+        build_app_over, empty_session, make_file as file, stub_vcs_info,
     };
+    use crate::app::{App, FileTreeItem, FileTreeMode, FileTreePrompt, FocusedPanel};
     use crate::grouping::changeset::Changeset;
     use crate::grouping::{GroupId, GroupSource, Grouping, PresentedGroup};
-    use crate::model::{DiffFile, DiffLine, FileStatus, ReviewSession, SessionDiffSource};
-    use crate::vcs::traits::{VcsBackend, VcsInfo, VcsType};
+    use crate::model::{DiffFile, FileStatus, ReviewSession};
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
     use ratatui::buffer::Buffer;
@@ -367,100 +367,26 @@ mod tests {
     use unicode_segmentation::UnicodeSegmentation;
     use unicode_width::UnicodeWidthStr;
 
-    struct StubVcs(VcsInfo);
-    impl VcsBackend for StubVcs {
-        fn info(&self) -> &VcsInfo {
-            &self.0
-        }
-        fn get_working_tree_diff(
-            &self,
-            _hl: &crate::syntax::SyntaxHighlighter,
-        ) -> crate::error::Result<Vec<DiffFile>> {
-            Ok(Vec::new())
-        }
-        fn fetch_context_lines(
-            &self,
-            _path: &std::path::Path,
-            _status: FileStatus,
-            _ref_commit: Option<&str>,
-            _start: u32,
-            _end: u32,
-        ) -> crate::error::Result<Vec<DiffLine>> {
-            Ok(Vec::new())
-        }
-        fn file_line_count(
-            &self,
-            _path: &std::path::Path,
-            _status: FileStatus,
-            _ref_commit: Option<&str>,
-        ) -> crate::error::Result<u32> {
-            Ok(0)
-        }
-    }
-
-    fn file(path: &str) -> DiffFile {
-        DiffFile {
-            old_path: None,
-            new_path: Some(PathBuf::from(path)),
-            status: FileStatus::Modified,
-            hunks: vec![],
-            is_binary: false,
-            is_too_large: false,
-            is_commit_message: false,
-            content_hash: 0,
-        }
-    }
-
-    fn app_with(paths: &[&str]) -> App {
-        let vcs_info = VcsInfo {
-            root_path: PathBuf::from("/tmp"),
-            head_commit: "head".into(),
-            branch_name: Some("main".into()),
-            vcs_type: VcsType::Git,
-        };
-        let session = ReviewSession::new(
-            vcs_info.root_path.clone(),
-            vcs_info.head_commit.clone(),
-            vcs_info.branch_name.clone(),
-            SessionDiffSource::WorkingTree,
-        );
-        let mut app = App::build(
-            Box::new(StubVcs(vcs_info.clone())),
-            vcs_info,
-            crate::theme::Theme::dark(),
-            None,
-            false,
-            paths.iter().map(|p| file(p)).collect(),
-            session,
-            DiffSource::WorkingTree,
-            InputMode::Normal,
-            Vec::new(),
-            None,
-            None,
-        )
-        .expect("build app");
+    /// The sidebar tests build the same app the `crate::app` tests do; only the
+    /// two panel flags below are this module's own.
+    fn build_app(files: Vec<DiffFile>, session: ReviewSession) -> App {
+        let mut app = build_app_over(files, session);
         app.show_file_list = true;
         app.focused_panel = FocusedPanel::FileList;
         app
+    }
+
+    fn app_with(paths: &[&str]) -> App {
+        let session = empty_session(&stub_vcs_info());
+        build_app(paths.iter().map(|p| file(p)).collect(), session)
     }
 
     /// Everything above, plus a grouping recorded on the session so the group
     /// name is the record's rather than whatever the heuristics derive — the
     /// same route a refined grouping takes back out of a session file.
     fn app_with_group_named(name: &str, paths: &[&str]) -> App {
-        let vcs_info = VcsInfo {
-            root_path: PathBuf::from("/tmp"),
-            head_commit: "head".into(),
-            branch_name: Some("main".into()),
-            vcs_type: VcsType::Git,
-        };
         let files: Vec<DiffFile> = paths.iter().map(|p| file(p)).collect();
-        let mut session = ReviewSession::new(
-            vcs_info.root_path.clone(),
-            vcs_info.head_commit.clone(),
-            vcs_info.branch_name.clone(),
-            SessionDiffSource::WorkingTree,
-        );
+        let mut session = empty_session(&stub_vcs_info());
         for file in &files {
             session.add_file(file.display_path().clone(), file.status, file.content_hash);
         }
@@ -475,23 +401,7 @@ mod tests {
             }],
         ));
 
-        let mut app = App::build(
-            Box::new(StubVcs(vcs_info.clone())),
-            vcs_info,
-            crate::theme::Theme::dark(),
-            None,
-            false,
-            files,
-            session,
-            DiffSource::WorkingTree,
-            InputMode::Normal,
-            Vec::new(),
-            None,
-            None,
-        )
-        .expect("build app");
-        app.show_file_list = true;
-        app.focused_panel = FocusedPanel::FileList;
+        let mut app = build_app(files, session);
         app.enable_grouping();
         app.expand_all_dirs();
         assert_eq!(

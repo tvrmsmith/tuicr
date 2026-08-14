@@ -170,13 +170,13 @@ the new shape of the changeset, not the row you were on. You have lost nothing
 opens the group back to it.
 
 This resolves, rather than dodges, the hazard the earlier session recorded:
-`jump_to_file` (`src/app/navigation.rs:754-762`) inserts only *path* ancestors
+`jump_to_file` (`src/app/navigation.rs`) inserts only *path* ancestors
 into `expanded_dirs`, so it does not expand a group node, and the current file
 would otherwise have **no visible sidebar row at all** after a landing. The
 answer is not to teach `jump_to_file` about groups for this path. It is that
 selection after a landing targets the **group row**, not the file row — which
 `docs/SIDEBAR_MODEL.md` already requires of `ensure_valid_tree_selection`
-(`tree.rs:249-266`), which must fall back to the group node rather than
+(`src/app/tree.rs`), which must fall back to the group node rather than
 `select(0)`.
 
 Cursor preservation here therefore means *the diff pane is undisturbed*, not
@@ -240,7 +240,7 @@ process boundary, so only it is in scope for contract approval.
 2. **Reading order is a required field of the response, not an optional one.**
    Blocking startup exists precisely to obtain the order that the heuristic arm
    cannot produce. A refine response without a group order does not satisfy the
-   contract; `Refined.order` (prototyped at `tests/grouping/refine.rs:180`) is
+   contract; the group order the response carries is
    load-bearing. **Within-group file order is *not* carried, settled by
    `gd-26r.27`**: the engine sorts each group deterministically on both arms, so
    the response owes nothing about it and the prompt does not mention it. This

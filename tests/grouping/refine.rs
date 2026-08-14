@@ -28,6 +28,10 @@ use serde_json::Value;
 
 use super::score::{Partition, free_name};
 use tuicr::grouping::changeset::{ChangeKind, Changeset};
+// The repair rules are the shipped ones, not a copy: a harness that repaired
+// differently would score a different answer than the binary produces from the
+// same body, and the recorded figures would stop describing the shipped pass.
+use tuicr::grouping::refine::{claim, group_name, model_names, restore_dropped};
 
 /// How much freedom the refine call is given. The ticket asks whether a
 /// cheaper shape captures most of the benefit, so the shapes are the
@@ -134,42 +138,17 @@ pub fn arm_from_run_stem(stem: &str) -> Option<&str> {
     (!arm.is_empty()).then_some(arm)
 }
 
-/// The rules the call is held to. A digest of `docs/GROUPING.md` rather than
-/// the file itself: the prose there addresses a human deciding what the engine
-/// should aim at, and the sections on ambiguity annotation and on what is not
-/// decided are noise in a prompt. Every numbered rule survives.
-const RULES: &str = "\
-1. Groups are concern-shaped, not directory-shaped. A concern routinely spans
-   several top-level directories. A directory cut carries no information the
-   file tree did not already show.
-2. Groups sort by intent-centrality: the changeset's actual subject first, work
-   incidental to it next, drive-by fixes last.
-3. Drive-by and unrelated changes are collected into a named group and ordered
-   last, never scattered through the concern groups.
-4. A test file lives in its production file's group and never precedes it.
-   Tests never form their own group.
-5. When two groups claim a file, the more intent-central group takes it.
-6. A residual group is a smell. If a group amounts to \"everything that did not
-   sort elsewhere\", either name the concern it represents or split it.
-7. A burst of new test files sharing a filename token pins a concern, more
-   strongly than directory proximity does.
-8. Mechanical and generated changes (lockfiles, generated output, vendored
-   updates, formatter sweeps) get their own group, ordered last.
-9. A doc belonging to one concern joins that concern's group; a doc covering
-   the whole change goes in a docs group of its own.
-10. Group names use the changeset's own vocabulary — terms that appear in its
-    filenames — in kebab-case. `enterprise-host-routing` is legible; `shared`
-    is not.
-11. A rename is one file. It arrives as a single entry keyed by the new path.";
+/// The rules the call is held to, imported from the shipped arm rather than
+/// copied, so `every_documented_rule_reaches_the_model` grades the text a real
+/// refine call sends and a rule that stops reaching the model cannot pass here
+/// by being present only in a prototype's copy of the digest.
+pub use tuicr::grouping::refine::RULES;
 
-fn status(kind: ChangeKind) -> &'static str {
-    match kind {
-        ChangeKind::Added => "A",
-        ChangeKind::Modified => "M",
-        ChangeKind::Deleted => "D",
-        ChangeKind::Renamed => "R",
-    }
-}
+/// Rendering, JSON reading and answer unwrapping all come from the shipped arm
+/// for the same reason [`RULES`] does: a harness copy can drift, and a
+/// measurement of a prompt or a reader the binary no longer uses measures
+/// nothing.
+use tuicr::grouping::refine::{extract_json, first_value, status};
 
 /// The heuristic grouping as the prompt renders it, largest group first so the
 /// residual smells rule 6 targets are the first thing read.
@@ -349,12 +328,7 @@ pub fn apply(
                         repairs.push(format!("invented path dropped: {path}"));
                         continue;
                     }
-                    if let Some(previous) = assigned.insert(path.to_string(), name.clone()) {
-                        repairs.push(format!(
-                            "duplicate path kept in `{previous}`, not `{name}`: {path}"
-                        ));
-                        assigned.insert(path.to_string(), previous);
-                    }
+                    claim(&mut assigned, path, &name, &mut repairs);
                 }
             }
         }
@@ -426,60 +400,32 @@ pub fn apply(
         }
     }
 
-    // A dropped path goes back under its heuristic group's own name, not a
-    // uniquified one: the prompt shows the model those names, so a returned
-    // group called `X` *is* heuristic group `X` and the dropped path belongs in
-    // it. Reusing the plain name also puts co-dropped paths from one heuristic
-    // group back together, which a per-path uniquified name would split.
+    // The shipped restore rule, which also puts every changeset path the
+    // response left out back under its heuristic group's name. With it in place
+    // `assigned` is keyed by every distinct changeset path and nothing else, so
+    // the strict partition holds for any parseable body by construction. That
+    // is why the claim is stated here and not asserted over the recorded runs,
+    // where it could not fail.
     //
-    // With this loop in place `assigned` is keyed by every distinct changeset
-    // path and nothing else, so the strict partition holds for any parseable
-    // body by construction. That is why the claim is stated here and not
-    // asserted over the recorded runs, where it could not fail.
-    for path in &all_paths {
-        if !assigned.contains_key(*path) {
-            let name = heuristic_group
-                .get(path)
-                .copied()
-                .expect("the heuristic grouping places every path in the changeset");
-            repairs.push(format!("dropped path restored to `{name}`: {path}"));
-            assigned.insert(path.to_string(), name.to_string());
-        }
-    }
+    // The order it appends restored names to is a scratch vector, not `order`:
+    // here `order` is the model's group reading order and it feeds the tau_group
+    // figure, which is measured over the groups the model actually returned.
+    let mut restored_order = Vec::new();
+    restore_dropped(
+        &all_paths,
+        &heuristic_group,
+        &model_names(groups),
+        &mut used,
+        &mut restored_order,
+        &mut assigned,
+        &mut repairs,
+    );
 
     Ok(Refined {
         partition: Partition::from_assignments(assigned),
         order,
         repairs,
     })
-}
-
-/// The name a returned group is filed under, which is not always the name the
-/// model gave it. `Partition` buckets by name, so a reused name would silently
-/// union two groups the model returned separately and a missing name would
-/// union every group that lacks one — both changing the answer being scored.
-/// Each is uniquified and counted as a repair instead.
-fn group_name(
-    group: &Value,
-    index: usize,
-    used: &mut BTreeSet<String>,
-    repairs: &mut Vec<String>,
-) -> String {
-    let base = match group.get("name").and_then(Value::as_str) {
-        Some(name) if !name.trim().is_empty() => name.to_string(),
-        _ => {
-            repairs.push(format!(
-                "group {index} has no `name`, called `unnamed-{index}`"
-            ));
-            format!("unnamed-{index}")
-        }
-    };
-    let name = free_name(&base, used);
-    if name != base {
-        repairs.push(format!("group name `{base}` reused, filed as `{name}`"));
-    }
-    used.insert(name.clone());
-    name
 }
 
 /// How far two runs of the same prompt moved, as pairwise co-membership F1 of
@@ -806,6 +752,16 @@ impl RunRecord {
         })
     }
 
+    /// The answer text of a recorded Vertex response, read by the shipped
+    /// transport's own unwrapping so the corpus is scored on exactly the body
+    /// a live refine call would have been handed — thinking blocks dropped,
+    /// an empty answer named as the call not finishing.
+    fn answer(publisher: &str, response: &Value) -> Result<String, String> {
+        let publisher = tuicr::grouping::vertex::Publisher::from_slug(publisher)
+            .ok_or_else(|| format!("unknown vertex publisher `{publisher}`"))?;
+        tuicr::grouping::vertex::answer_text(publisher, response)
+    }
+
     /// A run recorded straight against Vertex by `grouping-refine-runs-vertex.sh`.
     ///
     /// Two things differ from the CLI envelope and both are load-bearing for the
@@ -861,20 +817,8 @@ impl RunRecord {
                     .get("thoughtsTokenCount")
                     .and_then(Value::as_f64)
                     .unwrap_or(0.0);
-                let parts = response
-                    .pointer("/candidates/0/content/parts")
-                    .and_then(Value::as_array)
-                    .ok_or_else(|| "vertex response has no candidate parts".to_string())?;
-                // A thought part carries `thought: true` and is the model's
-                // reasoning, not its answer. Concatenating it into the body
-                // would put prose in front of the JSON.
-                let body: String = parts
-                    .iter()
-                    .filter(|part| part.get("thought").and_then(Value::as_bool) != Some(true))
-                    .filter_map(|part| part.get("text").and_then(Value::as_str))
-                    .collect();
                 (
-                    body,
+                    Self::answer(publisher, response)?,
                     count(usage, "promptTokenCount")? - cached,
                     count(usage, "candidatesTokenCount")? + thoughts,
                     cached,
@@ -885,20 +829,8 @@ impl RunRecord {
                     .get("usage")
                     .ok_or_else(|| "vertex response has no `usage`".to_string())?;
                 let optional = |key: &str| usage.get(key).and_then(Value::as_f64).unwrap_or(0.0);
-                let content = response
-                    .get("content")
-                    .and_then(Value::as_array)
-                    .ok_or_else(|| "vertex response has no `content`".to_string())?;
-                // Same rule as the Gemini branch: the thinking blocks are
-                // billed as output but are not the answer. Here they are told
-                // apart by block type rather than by a flag.
-                let body: String = content
-                    .iter()
-                    .filter(|block| block.get("type").and_then(Value::as_str) == Some("text"))
-                    .filter_map(|block| block.get("text").and_then(Value::as_str))
-                    .collect();
                 (
-                    body,
+                    Self::answer(publisher, response)?,
                     count(usage, "input_tokens")?,
                     count(usage, "output_tokens")?,
                     optional("cache_creation_input_tokens") + optional("cache_read_input_tokens"),
@@ -906,14 +838,6 @@ impl RunRecord {
             }
             other => return Err(format!("unknown vertex publisher `{other}`")),
         };
-
-        // An empty body parses as "no JSON object in response" later, which
-        // blames the model for a recorder that filtered every part away.
-        if body.trim().is_empty() {
-            return Err(format!(
-                "vertex {publisher} response carries no answer text"
-            ));
-        }
 
         Ok(RunRecord {
             model,
@@ -931,25 +855,4 @@ impl RunRecord {
                 .ok_or_else(|| "vertex envelope has no `duration_ms`".to_string())?,
         })
     }
-}
-
-/// A model asked for "JSON and nothing else" mostly complies, and a prototype
-/// that fell over on a stray fence would be measuring the fence. Reading from
-/// the first `{` with a streaming deserialiser takes the first balanced object
-/// and ignores whatever follows it.
-fn extract_json(body: &str) -> Result<Value, String> {
-    let start = body
-        .find('{')
-        .ok_or_else(|| "no JSON object in response".to_string())?;
-    first_value(&body[start..])
-}
-
-/// `serde_json::from_str` rejects trailing content, which a fenced answer has.
-/// The streaming deserialiser stops at the end of the first value instead.
-fn first_value(text: &str) -> Result<Value, String> {
-    serde_json::Deserializer::from_str(text)
-        .into_iter::<Value>()
-        .next()
-        .ok_or_else(|| "empty JSON document".to_string())?
-        .map_err(|error| error.to_string())
 }
