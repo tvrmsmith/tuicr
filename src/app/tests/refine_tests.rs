@@ -15,6 +15,7 @@ use std::time::Duration;
 use super::grouping_tests::{
     make_file, ungrouped_app, ungrouped_app_serving, ungrouped_app_with_working_tree,
 };
+use super::startup_warning_tests::{expire_message, message};
 use crate::app::App;
 use crate::app::TargetPick;
 use crate::app::refine::{CancelKeys, RefineCall, RefineConfig, RefineOutcome, Screen, Skipped};
@@ -409,8 +410,8 @@ fn a_repairable_answer_is_applied_and_stays_total() {
     assert!(
         warning.contains("contract violations repaired"),
         "the outcome offers the count as a warning rather than computing and \
-         dropping it; whether the binary then displays it is `set_warning`'s \
-         business and is not asserted here: {warning}"
+         dropping it; that the binary then displays it is covered by \
+         `a_refine_warning_shows_when_it_is_not_first`: {warning}"
     );
     let RefineOutcome::Refined { repairs } = outcome else {
         panic!("{outcome:?}");
@@ -451,6 +452,44 @@ fn a_repairable_answer_is_applied_and_stays_total() {
             .iter()
             .any(|group| group.source == GroupSource::Heuristics)
     );
+}
+
+/// The refine arm is the last source `main.rs` collects a startup warning from,
+/// so its warning is always behind whatever else warned. Reproduced the way a
+/// user hits it — an unknown config key plus a repaired refine — and followed
+/// into the message slot, because until `gd-8km` the second one was dropped.
+#[test]
+fn a_refine_warning_shows_when_it_is_not_first() {
+    let mut app = app();
+    let (call, _) = answering(&[r#"{"groups": [
+        {"name": "auth", "files": [
+            "src/auth/token.rs", "src/auth/login.rs", "src/invented.rs"]}
+    ]}"#]);
+    let refine = app
+        .refine_grouping_with(PATIENT, call, &mut Recorder::default(), &mut Keys::silent())
+        .warning()
+        .expect("a repaired refine is not a quiet one");
+
+    // The order `main.rs` builds: the config parse warns first, the refine arm
+    // last.
+    app.set_startup_warnings(vec![
+        "Warning: Unknown config key 'nope', ignoring".to_string(),
+        refine,
+    ]);
+
+    assert_eq!(
+        message(&app),
+        "Warning: Unknown config key 'nope', ignoring (1/2)",
+        "the earlier warning still opens"
+    );
+    expire_message(&mut app);
+    let shown = message(&app);
+    assert!(
+        shown.contains("contract violations repaired"),
+        "the repair count reaches the human behind the config warning \
+         rather than being suppressed by it: {shown}"
+    );
+    assert!(shown.ends_with("(2/2)"), "{shown}");
 }
 
 /// Reopening never refines (`docs/REGROUPING_STATE.md`), so the wait is once per

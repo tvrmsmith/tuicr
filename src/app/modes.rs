@@ -19,7 +19,55 @@ impl App {
         self.set_message_inner(msg, MessageType::Warning, None);
     }
 
+    /// Startup collects warnings from independent sources — a config parse, a
+    /// theme, an unknown key, the sparse-checkout backend, the refine arm — and
+    /// several can fire on one run. They are shown one at a time in the single
+    /// message slot, each for its own TTL, tagged `(i/N)` so a reader knows more
+    /// are coming and which one they are on. Nothing is capped or dropped: the
+    /// queue drains in arrival order, so the refine warning appended last is
+    /// seen even when a config warning arrived first.
+    ///
+    /// Rejected, for a slot that is one right-aligned span in a fixed-height
+    /// status bar:
+    /// - **Joining them into one line.** Two full-sentence warnings already
+    ///   exceed a normal width, and the span is clipped rather than wrapped, so
+    ///   the later warning is lost again — the bug, restated.
+    /// - **A stacked block.** Rows for a transient message have to come out of
+    ///   the diff, and eight warnings would take the pane.
+    /// - **First plus `(+N more)`.** The N are never readable anywhere.
+    /// - **A scrollable `:messages` history.** The right home for a long tail,
+    ///   but a new surface, and this queue needs no cap without it.
+    ///
+    /// A message from anything the human then does replaces the queue rather
+    /// than waiting behind it: a reply to a keypress outranks startup noise.
+    pub fn set_startup_warnings(&mut self, warnings: Vec<String>) {
+        let total = warnings.len();
+        let mut queued: VecDeque<String> = warnings
+            .into_iter()
+            .enumerate()
+            .map(|(index, warning)| match total {
+                1 => warning,
+                _ => format!("{warning} ({}/{total})", index + 1),
+            })
+            .collect();
+        let Some(first) = queued.pop_front() else {
+            return;
+        };
+        self.set_warning(first);
+        self.queued_warnings = queued;
+    }
+
     fn set_message_inner(
+        &mut self,
+        msg: impl Into<String>,
+        message_type: MessageType,
+        ttl: Option<Duration>,
+    ) {
+        self.queued_warnings.clear();
+        self.write_message(msg, message_type, ttl);
+    }
+
+    fn write_message(
         &mut self,
         msg: impl Into<String>,
         message_type: MessageType,
@@ -39,8 +87,9 @@ impl App {
         });
     }
 
-    /// Returns `true` if a message was cleared so the main loop can
-    /// schedule a redraw.
+    /// Returns `true` if the slot changed — a message expired, or the next
+    /// queued startup warning took its place — so the main loop can schedule a
+    /// redraw.
     pub fn clear_expired_message(&mut self) -> bool {
         let expired = self
             .message
@@ -49,6 +98,9 @@ impl App {
             .is_some_and(|t| Instant::now() >= t);
         if expired {
             self.message = None;
+            if let Some(next) = self.queued_warnings.pop_front() {
+                self.write_message(next, MessageType::Warning, Some(MESSAGE_TTL_WARNING));
+            }
         }
         expired
     }
