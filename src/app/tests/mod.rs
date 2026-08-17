@@ -21,6 +21,7 @@ mod render_perf_tests;
 mod sbs_comment_side_tests;
 mod scroll_behavior_tests;
 mod scroll_tests;
+mod session_announcement_tests;
 mod sessions_resume_tests;
 mod single_file_view_tests;
 mod startup_warning_tests;

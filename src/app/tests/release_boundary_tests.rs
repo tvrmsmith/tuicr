@@ -14,7 +14,7 @@ fn vcs_info() -> VcsInfo {
     }
 }
 
-fn session_with_files(files: bool) -> ReviewSession {
+pub(super) fn session_with_files(files: bool) -> ReviewSession {
     let info = vcs_info();
     let mut session = ReviewSession::new(
         info.root_path.clone(),
@@ -32,7 +32,7 @@ fn session_with_files(files: bool) -> ReviewSession {
     session
 }
 
-fn build_app_with_session(session: ReviewSession) -> App {
+pub(super) fn build_app_with_session(session: ReviewSession) -> App {
     build_app_from_parts(vcs_info(), Vec::new(), None, session)
 }
 
