@@ -1164,6 +1164,8 @@ mod tests {
             outcome.warnings,
             vec!["Warning: Config key 'show_pr_comments' must be a boolean; ignoring value"]
         );
+    }
+
     // file_tree
 
     #[test]
