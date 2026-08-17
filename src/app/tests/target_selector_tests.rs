@@ -7,14 +7,18 @@ use crate::model::FileStatus;
 use crate::vcs::traits::{VcsChangeStatus, VcsType};
 
 pub(super) struct TestReviewsDir {
-    _dir: tempfile::TempDir,
+    dir: tempfile::TempDir,
 }
 
 impl TestReviewsDir {
     pub(super) fn new() -> Self {
         let dir = tempfile::tempdir().expect("failed to create test reviews dir");
         crate::persistence::storage::set_test_reviews_dir(Some(dir.path().to_path_buf()));
-        Self { _dir: dir }
+        Self { dir }
+    }
+
+    pub(super) fn path(&self) -> &std::path::Path {
+        self.dir.path()
     }
 }
 
