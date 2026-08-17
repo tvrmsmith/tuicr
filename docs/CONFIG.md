@@ -16,6 +16,12 @@ Local themes live in the sibling `themes/` directory:
 
 Unknown keys are ignored with a startup warning.
 
+Startup warnings come from sources that do not know about each other — the
+config parse, a theme, the VCS backend, the refine arm — so a single run can
+raise several. They share one slot in the status bar and are shown in turn, each
+for a few seconds and tagged `(2/3)` while more are waiting. None is dropped,
+whatever else warned first.
+
 ## Full example
 
 ```toml

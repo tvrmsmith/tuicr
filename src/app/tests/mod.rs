@@ -23,6 +23,7 @@ mod scroll_behavior_tests;
 mod scroll_tests;
 mod sessions_resume_tests;
 mod single_file_view_tests;
+mod startup_warning_tests;
 mod submit_flow_tests;
 mod target_selector_tests;
 mod tree_tests;
