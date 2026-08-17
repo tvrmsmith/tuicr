@@ -33,6 +33,13 @@ pub(super) fn render_file_list(frame: &mut Frame, app: &mut App, area: Rect) {
             app.unfiltered_file_count()
         ));
     }
+    // After the filter qualifier, which keeps its precedence over every
+    // grouping state: it changes what the counts mean (`gd-26r.15`). The room
+    // left is the border line less its two corners.
+    if let Some(status) = app.grouping_status() {
+        let room = (area.width as usize).saturating_sub(2 + title.width());
+        title.push_str(&status.chip(room));
+    }
     let mut block = Block::default()
         .title(title)
         .borders(Borders::ALL)
@@ -59,8 +66,14 @@ pub(super) fn render_file_list(frame: &mut Frame, app: &mut App, area: Rect) {
                 label,
                 reviewed,
                 total,
+                drifted,
                 ..
-            } => 2 + label.width() + 1 + group_count(*reviewed, *total).width(),
+            } => {
+                2 + drift_marker(*drifted).width()
+                    + label.width()
+                    + 1
+                    + group_count(*reviewed, *total).width()
+            }
         })
         .max()
         .unwrap_or(0);
@@ -110,6 +123,7 @@ pub(super) fn render_file_list(frame: &mut Frame, app: &mut App, area: Rect) {
                     reviewed,
                     total,
                     expanded,
+                    drifted,
                     ..
                 } => {
                     let icon = if *expanded {
@@ -117,6 +131,7 @@ pub(super) fn render_file_list(frame: &mut Frame, app: &mut App, area: Rect) {
                     } else {
                         COLLAPSED_GLYPH
                     };
+                    let marker = drift_marker(*drifted);
                     let count = group_count(*reviewed, *total);
                     // The count is flush right, which is what makes the
                     // collapsed overview scannable as a column of sizes, so a
@@ -125,15 +140,19 @@ pub(super) fn render_file_list(frame: &mut Frame, app: &mut App, area: Rect) {
                     // for the same reason it is on file rows.
                     let inner_width = inner.width as usize;
                     let name = if scroll_x == 0 {
-                        elide_middle(label, inner_width.saturating_sub(3 + count.width()))
+                        elide_middle(
+                            label,
+                            inner_width.saturating_sub(3 + marker.width() + count.width()),
+                        )
                     } else {
                         label.clone()
                     };
                     let gap = inner_width
-                        .saturating_sub(2 + name.width() + count.width())
+                        .saturating_sub(2 + marker.width() + name.width() + count.width())
                         .max(1);
                     Line::from(vec![
                         Span::styled(format!("{icon} "), styles::dir_icon_style(&app.theme)),
+                        Span::raw(marker),
                         Span::raw(name),
                         Span::raw(" ".repeat(gap)),
                         Span::styled(count, styles::dim_style(&app.theme)),
@@ -289,6 +308,18 @@ fn elide_middle(label: &str, max_width: usize) -> String {
 /// A group row's `reviewed/total` badge.
 fn group_count(reviewed: usize, total: usize) -> String {
     format!("{reviewed}/{total}")
+}
+
+/// The marker slot of a group row: `~ ` on a group incremental assignment
+/// produced, nothing otherwise (`gd-26r.15`, `docs/SIDEBAR_MODEL.md`).
+///
+/// Between the expand icon and the label, never between the label and the
+/// count: the count is flush right and that column is what makes a collapsed
+/// overview scannable as a list of sizes (`gd-26r.31`). Restyling the label
+/// instead was rejected — invisible on a theme without italics, and unreadable
+/// to anyone comparing two shades.
+fn drift_marker(drifted: bool) -> &'static str {
+    if drifted { "~ " } else { "" }
 }
 
 /// Leading `│` border plus one space before the prompt sigil.
@@ -527,6 +558,135 @@ mod tests {
         assert!(
             text.contains("mobile/src/\u{2026}uting-source.test.ts"),
             "expected mockup A's second row, got:\n{text}"
+        );
+    }
+
+    /// A grouped sidebar holding one group a full pass produced and one
+    /// incremental assignment opened, restored through the session the way a
+    /// reopened review restores it — which is what makes the marker and the
+    /// drift share persisted facts rather than facts about this process.
+    fn drifted_app() -> App {
+        let steady = ["src/auth/login.rs", "src/auth/session.rs", "docs/auth.md"];
+        let arrived = ["infra/terraform/network.tf"];
+        let files: Vec<DiffFile> = steady
+            .iter()
+            .chain(arrived.iter())
+            .map(|p| file(p))
+            .collect();
+        let mut session = empty_session(&stub_vcs_info());
+        for file in &files {
+            session.add_file(file.display_path().clone(), file.status, file.content_hash);
+        }
+        session.record_grouping(&Grouping::restore(
+            &Changeset::from_diff_files(&files),
+            vec![
+                PresentedGroup {
+                    id: GroupId::new(),
+                    name: "steady".to_string(),
+                    source: GroupSource::Heuristics,
+                    new_since_full_pass: false,
+                    members: steady.iter().map(|p| (*p).to_string()).collect(),
+                },
+                PresentedGroup {
+                    id: GroupId::new(),
+                    name: "arrivals".to_string(),
+                    source: GroupSource::Incremental,
+                    new_since_full_pass: true,
+                    members: arrived.iter().map(|p| (*p).to_string()).collect(),
+                },
+            ],
+        ));
+
+        let mut app = build_app(files, session);
+        app.enable_grouping();
+        app.expand_all_dirs();
+        app
+    }
+
+    /// One file in four arrived since the last full pass, and the header says
+    /// so after the counts, in plain text, with the command that fixes it.
+    #[test]
+    fn should_report_drift_in_the_sidebar_header_with_the_command_that_clears_it() {
+        let mut app = drifted_app();
+
+        // 20% of 180 columns is a 36-cell panel, which is the narrowest header
+        // that holds the counts and the whole advisory.
+        let buffer = draw_at(&mut app, 180);
+        let text = sidebar_text(&app, &buffer);
+
+        assert!(
+            text.contains("Files \u{00b7} 0/4 \u{00b7} 25% new \u{00b7} :regroup"),
+            "expected the drift chip after the counts, got:\n{text}"
+        );
+    }
+
+    /// The advisory goes whole rather than truncating to `:regr`, and the
+    /// percentage — the part the slot exists for — stays.
+    #[test]
+    fn should_drop_the_regroup_advice_from_a_header_too_narrow_for_it() {
+        let mut app = drifted_app();
+
+        let buffer = draw_at(&mut app, 150);
+        let text = sidebar_text(&app, &buffer);
+
+        assert!(
+            text.contains("Files \u{00b7} 0/4 \u{00b7} 25% new"),
+            "expected the drift share to survive the narrow header, got:\n{text}"
+        );
+        assert!(
+            !text.contains(":regr"),
+            "expected no truncated advisory, got:\n{text}"
+        );
+    }
+
+    /// The marker sits between the expand icon and the label. The count column
+    /// stays flush right, which is the whole reason it does not sit there.
+    #[test]
+    fn should_mark_only_the_group_incremental_assignment_opened() {
+        let mut app = drifted_app();
+
+        let buffer = draw_at(&mut app, 180);
+        let text = sidebar_text(&app, &buffer);
+
+        let marked = text
+            .lines()
+            .find(|line| line.contains("arrivals"))
+            .expect("the drifted group has a row");
+        let unmarked = text
+            .lines()
+            .find(|line| line.contains("steady"))
+            .expect("the full-pass group has a row");
+        assert!(
+            marked.contains("\u{25bc} ~ arrivals"),
+            "expected the marker before the label, got:\n{text}"
+        );
+        assert!(
+            marked.trim_end().ends_with("0/1"),
+            "the count stays flush right beside the marker, got: {marked}"
+        );
+        assert!(
+            !unmarked.contains('~'),
+            "a group a full pass produced carries no marker, got: {unmarked}"
+        );
+    }
+
+    /// Toggled off, the sidebar is the plain file tree again: no chip, no
+    /// marker, nothing about a grouping that is not on screen.
+    #[test]
+    fn should_carry_no_grouping_chrome_in_the_ungrouped_sidebar() {
+        let mut app = drifted_app();
+        app.toggle_grouping();
+
+        let buffer = draw_at(&mut app, 180);
+        let text = sidebar_text(&app, &buffer);
+
+        assert!(
+            !text.contains("new"),
+            "expected no drift chip in the ungrouped header, got:\n{text}"
+        );
+        assert!(
+            !text.contains('~'),
+            "expected no marker on a directory tree, got:\n{text}"
         );
     }
 

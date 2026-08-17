@@ -101,6 +101,10 @@ impl App {
         let prompt = refine::prompt(&changeset, &heuristic);
         let files = changeset.len();
 
+        // A refine the human asked for again is no longer a refine the human
+        // walked away from, whatever this one goes on to do.
+        self.refine_cancelled = false;
+
         // Replaces whatever was in flight. A second `:regroup` is a second
         // question, and the first answer is dropped with its receiver rather
         // than landing later over the top of this one.

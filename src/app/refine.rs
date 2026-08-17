@@ -347,6 +347,11 @@ impl App {
         let outcome = await_refined(&changeset, &heuristic, prompt, timeout, call, screen, keys);
         screen.finish();
 
+        // Every wait passes through here, so the header's cancelled state is
+        // set and cleared in one place: a later wait that ran to an answer, a
+        // timeout or a refusal is no longer a session the human cancelled.
+        self.refine_cancelled = matches!(outcome, Waited::Cancelled);
+
         match outcome {
             Waited::Refined(refined) => {
                 let repairs = refined.repairs.len();

@@ -399,7 +399,9 @@ human-corrections work (`gd-26r.18`) to consume.
 
 This is an explicit decision, not an omission. A marker on one row in seven is
 noise at 161 files, and until a human can *act* on the flag by reassigning the
-file, the marker offers nothing to do.
+file, the marker offers nothing to do. When it does surface, it goes in the
+marker slot the revision below defines rather than inventing a second glyph
+convention.
 
 ## What this demands of `build_visible_items`
 
@@ -558,6 +560,72 @@ interim row-cost pins (305 and 285); 174 and 13 are pinned and unchanged.
 between the two sidebars mid-session, the grouping survives the off state so
 toggling back never regroups, and the shared `expanded_dirs` split into two
 sets — see the amendment to point 3 above, which the toggle is what forced.
+
+## Revision (`gd-26r.15`): the status chip and the marker slot
+
+Grouping status is sidebar chrome, so its shape is recorded here. The decision
+itself is `gd-26r.15`; what follows is what it demands of these rows.
+
+### The header suffix
+
+The header is `" Files · {reviewed}/{total} "`, optionally followed by the
+filter qualifier. One grouping chip may follow that, plain (no theming: the
+header is a border title, and a coloured run inside a border line reads as a
+rendering artefact rather than a badge):
+
+| Chip | When |
+| --- | --- |
+| `· refining` | a `:regroup` refine call is in flight |
+| `· refine cancelled` | the reader pressed the cancel key on a refine wait |
+| `· heuristics only` | `[grouping].refine` is on and no group came back refined |
+| `· 9% new · :regroup` | files have drifted since the last full pass |
+
+**One chip at a time**, ranked filter qualifier > in flight > cancelled /
+unavailable > drift. Joining them and letting the header truncate would cut the
+count the header exists for. The drift chip's `· :regroup` tail renders only
+when the whole of it fits and drops to `· 9% new` otherwise, because a
+truncated `· :regr` is worse than no advice; it is advisory only, and no key is
+bound to it.
+
+Neither startup refine path reaches the header: both block the TUI behind a
+screen of their own, so there is nothing to put in a header that is not drawn
+yet. Nothing here reports repair counts — a repaired refine is still a refined
+partition, and the count stays a startup warning.
+
+The chip is grouped-view only. Toggled off (`<leader>g`), the sidebar is the
+existing file tree, unchanged, and the staleness of a grouping that is not on
+screen is a fact about something the reader is not looking at.
+
+### The marker slot on group rows
+
+A group row is `{expand icon} {marker}{name} … {reviewed/total}`. The marker
+slot holds `~ ` on a group incremental assignment produced —
+`GroupSource::Incremental` or `new_since_full_pass`, one glyph for both because
+the reader's decision is identical — and is empty otherwise.
+
+Before the label, never between the label and the count: the count is flush
+right and that column is what makes the 13-row collapsed overview scannable.
+Restyling the label instead was rejected — invisible on a theme without
+italics, unreadable to anyone comparing two shades. **`gd-26r.18` reuses this
+slot** for whatever it surfaces about ambiguous assignments.
+
+### The drift number
+
+`Grouping::drift()` is the one drift number: files sitting in drifted groups
+over every file in the partition, `0.0` when nothing drifted, and the header
+hides the chip at exactly zero rather than parking a `0%` the reader learns to
+stop looking at. The auto-regroup backstop (`gd-26r.36`) reads the same
+function, so the backstop cannot fire at a value the reader never watched
+approach.
+
+Files over files, not groups over groups: one arrival marks a whole group, and
+counting the mark would report a third of the review as drifted when one file
+moved. It is measured off the groups rather than off each assignment's `pass`
+because `pass` is derived debug state a session restore does not carry, and a
+drift number that reset itself on reopen is the one thing a persisted
+indicator must not do. The gap that leaves is a file incremental assignment
+*joined* to an established group: it moves neither the number nor any row's
+marker, so the header and the rows agree.
 
 ## Deliberately not decided here
 
