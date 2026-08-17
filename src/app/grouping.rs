@@ -27,6 +27,8 @@
 //! (`docs/REGROUPING_STATE.md`); only a review the session never grouped, and
 //! `:regroup` itself (`crate::app::regroup`), start from the heuristics.
 
+use unicode_width::UnicodeWidthStr;
+
 use super::*;
 use crate::grouping::changeset::Changeset;
 use crate::grouping::passes::GroupingConfig;
@@ -45,6 +47,59 @@ pub(crate) enum TargetPick {
     NewTarget,
     /// The file set moved inside a review already open; never refines.
     SameReview,
+}
+
+/// The grouping state the sidebar header is reporting, and the text it reports
+/// it with (`gd-26r.15`).
+///
+/// The header is a border title, so the text is plain: a coloured run inside a
+/// border line reads as a rendering artefact rather than as a badge. "Not
+/// silent" is met by the slot being permanently present, not by being loud.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum GroupingStatus {
+    /// A `:regroup` refine call is in flight. Only `:regroup` reaches here:
+    /// both startup waits block the TUI behind a screen of their own, so there
+    /// is no header to put this in until they are over.
+    Refining,
+    /// The human pressed the cancel key. Worded as a choice, deliberately not
+    /// as [`Self::HeuristicsOnly`]'s statement about the world.
+    RefineCancelled,
+    /// `[grouping].refine` is on and no group came back refined — offline, no
+    /// credentials, rate-limited, timed out, or an envelope that would not
+    /// parse. Said out loud so weak groups are not blamed on the heuristics
+    /// when the refine pass never ran.
+    HeuristicsOnly,
+    /// The share of files placed by incremental assignment since the last full
+    /// pass, hidden entirely at zero.
+    Drift { percent: u32 },
+}
+
+impl GroupingStatus {
+    /// The header suffix, given the cells the header has left for it.
+    ///
+    /// `room` only decides the drift chip's advisory tail: `· :regroup` renders
+    /// when the whole of it fits and is dropped when it does not, because a
+    /// truncated `· :regr` is worse than no advice at all. The other three are
+    /// short enough that a header too narrow for them is too narrow for the
+    /// counts as well.
+    pub(crate) fn chip(self, room: usize) -> String {
+        match self {
+            GroupingStatus::Refining => "\u{00b7} refining ".to_string(),
+            GroupingStatus::RefineCancelled => "\u{00b7} refine cancelled ".to_string(),
+            GroupingStatus::HeuristicsOnly => "\u{00b7} heuristics only ".to_string(),
+            GroupingStatus::Drift { percent } => {
+                // Advisory only, naming the command. No conditional binding: a
+                // key that exists only while a condition holds is a key nobody
+                // learns.
+                let advised = format!("\u{00b7} {percent}% new \u{00b7} :regroup ");
+                if advised.width() <= room {
+                    advised
+                } else {
+                    format!("\u{00b7} {percent}% new ")
+                }
+            }
+        }
+    }
 }
 
 impl App {
@@ -120,6 +175,49 @@ impl App {
     /// a grouping populated behind a directory tree.
     pub(in crate::app) fn active_grouping(&self) -> Option<&crate::grouping::Grouping> {
         self.grouping.as_ref().filter(|_| self.grouping_enabled)
+    }
+
+    /// What the sidebar header says about the grouping right now, or `None`
+    /// when it says nothing: an ungrouped sidebar, and a grouped one that is
+    /// refined, current and undrifted.
+    ///
+    /// **One chip at a time**, in the order below (`gd-26r.15`). In flight
+    /// outranks unavailable because it is transient and about to answer the
+    /// question the other states describe; unavailable outranks drift because
+    /// "not the grouping you asked for" outranks "the grouping you asked for
+    /// has moved". Joining them and letting the header truncate was rejected: a
+    /// narrow sidebar would cut the file count the header exists for.
+    ///
+    /// Nothing here is reported while grouping is toggled off. The chrome
+    /// belongs to the grouped view, and the staleness of a grouping that is not
+    /// on screen is a fact about something the reader is not looking at.
+    pub(crate) fn grouping_status(&self) -> Option<GroupingStatus> {
+        let grouping = self.active_grouping()?;
+        if self.pending_regroup.is_some() {
+            return Some(GroupingStatus::Refining);
+        }
+        if self.refine_cancelled {
+            return Some(GroupingStatus::RefineCancelled);
+        }
+        // Asked of the partition rather than of the last call's outcome, so a
+        // reopened session that was refined yesterday keeps quiet and one that
+        // never got a refined group says so however long ago it failed.
+        let refined = grouping
+            .groups()
+            .iter()
+            .any(|group| group.source == crate::grouping::GroupSource::Refined);
+        if self.refine_config.is_some() && !refined {
+            return Some(GroupingStatus::HeuristicsOnly);
+        }
+        let drift = grouping.drift();
+        if drift <= 0.0 {
+            return None;
+        }
+        // Rounded, but never down to the `0%` that would contradict the slot
+        // being hidden at exactly zero: one file in a thousand is drift the
+        // reader can act on, and `0% new · :regroup` reads as a bug.
+        let percent = ((drift * 100.0).round() as u32).max(1);
+        Some(GroupingStatus::Drift { percent })
     }
 
     /// Reorders the sidebar for a diff that has just finished loading, arming

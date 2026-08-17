@@ -590,6 +590,7 @@ impl App {
                     .count(),
                 total: members.len(),
                 expanded,
+                drifted: group.drifted(),
             });
             if !expanded {
                 continue;

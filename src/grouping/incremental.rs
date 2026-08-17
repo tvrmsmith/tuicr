@@ -330,6 +330,46 @@ mod tests {
         );
     }
 
+    /// The drift number the sidebar renders and the auto-regroup backstop
+    /// thresholds on (`gd-26r.15`): the files in drifted groups over every file
+    /// in the partition, and nothing at all before anything drifts.
+    #[test]
+    fn drift_is_files_over_files_and_zero_until_something_arrives() {
+        let (changeset, before) = full_pass(CHANGESET);
+        assert_eq!(before.drift(), 0.0, "a full pass has drifted from nothing");
+        let grown = Changeset::parse(&format!("{CHANGESET}A\tinfra/terraform/main.tf\n"));
+
+        let after = assign_incrementally(&grown, as_kept(&before), GroupingConfig::default());
+
+        assert_eq!(
+            after.drift(),
+            1.0 / 7.0,
+            "one arrival among seven files, not one group among five"
+        );
+        assert!(
+            after.drift() < 1.0 / before.groups().len() as f64,
+            "counting the marked group instead would overstate the drift"
+        );
+        assert_eq!(changeset.len(), 6, "the fixture the fractions are read off");
+    }
+
+    /// The gap the group-derived number leaves, pinned rather than left to be
+    /// discovered: a file that joined an established group carries no marker in
+    /// the sidebar, so it moves no percentage either.
+    #[test]
+    fn an_arrival_that_joins_an_established_group_does_not_move_the_drift() {
+        let (_, before) = full_pass(CHANGESET);
+        let grown = Changeset::parse(&format!("{CHANGESET}A\tsrc/auth/refresh.rs\n"));
+
+        let after = assign_incrementally(&grown, as_kept(&before), GroupingConfig::default());
+
+        assert!(
+            !group_of(&after, "src/auth/refresh.rs").drifted(),
+            "the arrival joined a group a full pass ranked"
+        );
+        assert_eq!(after.drift(), 0.0);
+    }
+
     /// The partition is strict and total whatever arrives, because the builder
     /// is the same one the full pass goes through.
     #[test]
