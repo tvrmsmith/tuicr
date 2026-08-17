@@ -309,25 +309,19 @@ fn main() -> anyhow::Result<()> {
     }
     app.expand_all_dirs();
 
-    let session_registered = match app.ensure_ephemeral_session_file() {
-        Ok(_) => app.has_persisted_session_file(),
-        Err(e) => {
-            startup_warnings.push(format!("Failed to initialize review session file: {e}"));
-            true
-        }
-    };
+    let registration = app.register_session_at_startup();
+    startup_warnings.extend(registration.warning);
 
     // Announce the slug for the active session so agents and wrapper scripts
     // can discover it without parsing the markdown export. This is emitted to
     // stderr before the alt-screen swap so the line stays on the user's
     // scrollback after tuicr exits.
     //
-    // Suppressed when no session file exists yet — bare `tuicr` on the target
-    // selector. The slug is still derivable there, but it is the pre-selection
-    // one and choosing a target changes it, so announcing would hand agents a
-    // slug that never receives a comment. They use `review list` and `active`
-    // instead.
-    if session_registered && let Some(slug) = app.session_slug() {
+    // Suppressed when no session file exists — bare `tuicr` on the target
+    // selector, and a registration that failed. `SessionRegistration` decides
+    // which; either way announcing would hand agents a slug that never receives
+    // a comment. They use `review list` and `active` instead.
+    if let Some(slug) = registration.slug {
         eprintln!("tuicr-session: {slug}");
     }
 

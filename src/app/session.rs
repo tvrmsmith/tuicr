@@ -1,5 +1,19 @@
 use super::*;
 
+/// What startup registration of the session file leaves the caller to do.
+///
+/// `slug` is announced on stderr as `tuicr-session: <slug>`, the discovery
+/// contract agents and wrapper scripts read. It is `Some` only once a session
+/// file exists on disk: the slug derives in every other case too, but on the
+/// bare target selector it is the pre-selection one that choosing a target
+/// changes, and on a failed registration it names a file that was never
+/// written. Either way it would be a slug that never receives a comment, while
+/// the caller sees a well-formed announcement.
+pub struct SessionRegistration {
+    pub slug: Option<String>,
+    pub warning: Option<String>,
+}
+
 impl App {
     /// Slug for the currently active session, derived from the session's
     /// embedded fields. Returns `None` if derivation fails (e.g., a local
@@ -48,6 +62,24 @@ impl App {
         self.session_path
             .as_deref()
             .is_some_and(|path| path.exists())
+    }
+
+    /// Register the session file at startup and report what the caller should
+    /// announce and warn about.
+    pub fn register_session_at_startup(&mut self) -> SessionRegistration {
+        if let Err(e) = self.ensure_ephemeral_session_file() {
+            return SessionRegistration {
+                slug: None,
+                warning: Some(format!("Failed to initialize review session file: {e}")),
+            };
+        }
+        SessionRegistration {
+            slug: self
+                .has_persisted_session_file()
+                .then(|| self.session_slug())
+                .flatten(),
+            warning: None,
+        }
     }
 
     pub fn ensure_ephemeral_session_file(&mut self) -> Result<Option<PathBuf>> {

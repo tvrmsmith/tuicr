@@ -19,6 +19,7 @@ mod regroup_tests;
 mod release_boundary_tests;
 mod scroll_behavior_tests;
 mod scroll_tests;
+mod session_announcement_tests;
 mod single_file_view_tests;
 mod startup_warning_tests;
 mod submit_flow_tests;
