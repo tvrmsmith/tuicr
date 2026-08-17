@@ -427,6 +427,7 @@ fn should_comment_on_a_commit_only_file_after_narrowing_the_commit_pane() {
             author: "user".to_string(),
             in_reply_to: None,
             commit_id: None,
+            in_reply_to: None,
         },
     );
 
