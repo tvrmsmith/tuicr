@@ -25,7 +25,7 @@ pub mod passes;
 pub mod refine;
 pub mod vertex;
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use changeset::Changeset;
@@ -101,6 +101,18 @@ pub struct Group {
     pub source: GroupSource,
     /// Set when opened by incremental assignment (`docs/REGROUPING_STATE.md`).
     pub new_since_full_pass: bool,
+}
+
+impl Group {
+    /// Whether this group came from incremental assignment rather than a full
+    /// pass. **One question, not two** (`gd-26r.15`): the reader's decision is
+    /// the same for a group opened since the last full pass and for a group
+    /// carrying that source, so the sidebar's `~` marker and
+    /// [`Grouping::drift`] both ask it here rather than each spelling out the
+    /// disjunction.
+    pub fn drifted(&self) -> bool {
+        self.source == GroupSource::Incremental || self.new_since_full_pass
+    }
 }
 
 /// Where one file landed. `pass` and `runner_up` are debug-only derived state,
@@ -296,6 +308,42 @@ impl Grouping {
             *hits.entry(assignment.pass).or_default() += 1;
         }
         hits
+    }
+
+    /// How far this grouping has drifted from its last full pass: the files
+    /// sitting in groups incremental assignment produced, over every file in
+    /// the partition. `0.0` when nothing drifted.
+    ///
+    /// **The one drift number** (`gd-26r.15`). The sidebar header renders it
+    /// and the auto-regroup backstop (`gd-26r.36`) thresholds on it, because a
+    /// backstop that fires at a value the reader never watched approach is a
+    /// surprise rather than a backstop.
+    ///
+    /// Files over files, not groups over groups: one arrival marks a whole
+    /// group, and counting the mark would say a third of the review moved when
+    /// one file did. It is measured off the groups rather than off each
+    /// assignment's `pass` because `pass` is derived debug state that a session
+    /// restore does not carry, and a number that reset itself on reopen would
+    /// be the one thing a persisted drift indicator must not do
+    /// (`docs/REGROUPING_STATE.md`). The gap that leaves is a file incremental
+    /// assignment *joined* to an established group: it does not move the
+    /// number, and it carries no `~` in the sidebar either, so the two agree.
+    pub fn drift(&self) -> f64 {
+        if self.assignments.is_empty() {
+            return 0.0;
+        }
+        let drifted: BTreeSet<&GroupId> = self
+            .groups
+            .iter()
+            .filter(|group| group.drifted())
+            .map(|group| &group.id)
+            .collect();
+        let moved = self
+            .assignments
+            .iter()
+            .filter(|assignment| drifted.contains(&assignment.group_id))
+            .count();
+        moved as f64 / self.assignments.len() as f64
     }
 
     /// Assignments where a second group was nearly as good a fit.

@@ -585,6 +585,7 @@ impl App {
             refine_target_picked: false,
             refine_wanted: false,
             refine_over_saved_grouping: false,
+            refine_cancelled: false,
             expanded_top: HashMap::new(),
             expanded_bottom: HashMap::new(),
             file_line_count_cache: HashMap::new(),

@@ -160,7 +160,8 @@ Repository-managed agent integrations:
 **FileTreeMode** and **FileTreeItem** (`src/app/mod.rs`):
 
 - `FileTreeMode` is how the sidebar lays out the directories above each file: `Nested` (default, one row per ancestor), `Compact` (a single-child chain collapses into one row), `Flat` (no directory rows, each file labelled with its full path). Set once by the binary from config
-- `FileTreeItem` is one sidebar row: `Directory`, `File`, or `Group`. `Group` rows sit at depth 0 with their members directly beneath them at depth 1 and no directory rows between (`docs/SIDEBAR_MODEL.md`); the row's `expanded_groups` key is the opaque group id
+- `FileTreeItem` is one sidebar row: `Directory`, `File`, or `Group`. `Group` rows sit at depth 0 with their members directly beneath them at depth 1 and no directory rows between (`docs/SIDEBAR_MODEL.md`); the row's `expanded_groups` key is the opaque group id. `Group.drifted` fills the row's marker slot with `~` before the label — the slot `gd-26r.18` reuses rather than inventing a second glyph
+- `App::grouping_status()` is the sidebar header's grouping chip: one at a time, grouped-view only, ranked `Refining` > `RefineCancelled` / `HeuristicsOnly` > `Drift { percent }` and rendered plain after the filter qualifier (`docs/SIDEBAR_MODEL.md`)
 
 **InputMode** (`src/app/mod.rs`):
 
@@ -192,6 +193,7 @@ Repository-managed agent integrations:
 - The sidebar's partition of one changeset: `groups: Vec<Group>` in reading order plus `assignments` from path to `GroupId`. Every changeset file is in exactly one group (`docs/TOTAL_COVERAGE.md`)
 - `Grouping::build` is the sole constructor and sorts within each group by construction (`src/grouping/order.rs`), so no caller re-sorts what it hands back — including the refine arm, whose response carries group order only
 - `Group`: `id: GroupId`, `name`, `source: GroupSource`, `new_since_full_pass: bool`. Membership lives in `assignments`, not on the group; read it with `Grouping::files_in(&group.id)`. `GroupId` is an opaque uuid minted by `GroupId::new()` or rehydrated by `GroupId::from_persisted` from the session, so a restored grouping keeps yesterday's ids. It is the sidebar's row key under grouping (`docs/SIDEBAR_MODEL.md`)
+- `Group::drifted()` is `Incremental || new_since_full_pass`, and `Grouping::drift()` is the files in drifted groups over every file in the partition — **the one drift number**, read by both the sidebar chip and the auto-regroup backstop (`gd-26r.36`)
 - `GroupSource::{Heuristics, Refined, Incremental}`: which arm placed the group, per group rather than per grouping — a refined answer that only restated the heuristics presents as `Heuristics`, and a group opened by incremental assignment presents as `Incremental`
 - `PresentedGroup`: one group flattened for the renderer
 - `Changeset` (`src/grouping/changeset.rs`): the engine's read-only view of a diff — `ChangedFile` paths and change kinds, with the commit-message pseudo-file excluded

@@ -196,6 +196,12 @@ pub enum FileTreeItem {
         reviewed: usize,
         total: usize,
         expanded: bool,
+        /// Whether the group came from incremental assignment rather than a
+        /// full pass, which the row marks with a `~` before its label
+        /// (`gd-26r.15`). The marker slot this opens is the one `gd-26r.18`
+        /// reuses rather than inventing a second glyph convention
+        /// (`docs/SIDEBAR_MODEL.md`).
+        drifted: bool,
     },
 }
 
@@ -1486,6 +1492,15 @@ pub struct App {
     /// [`crate::app::refine::Skipped::AlreadyGrouped`] warning instead of a
     /// second refine.
     pub(crate) refine_over_saved_grouping: bool,
+    /// Whether the last refine wait ended because the human pressed the cancel
+    /// key, which the sidebar header words as a choice rather than as a fact
+    /// about the world (`gd-26r.15`).
+    ///
+    /// The only part of the grouping status that is not derivable from the
+    /// grouping itself: a heuristics-only partition looks identical whether the
+    /// call failed or was walked away from, and blaming the environment for a
+    /// decision the reader made is the one reading of it that is wrong.
+    pub(crate) refine_cancelled: bool,
     /// Stores lines expanded downward from the upper boundary of each gap
     pub expanded_top: HashMap<GapId, Vec<DiffLine>>,
     /// Stores lines expanded upward from the lower boundary of each gap (in ascending line order)

@@ -100,6 +100,11 @@ row per group, its files listed beneath it by full relative path. Collapse the g
 large review reads as a short overview of what changed. `--no-grouping` reviews the plain
 directory tree instead, whose layout the `file_tree` config key controls.
 
+The sidebar header says how the grouping stands: `· refining` while a `:regroup` is running,
+`· heuristics only` or `· refine cancelled` when `[grouping].refine` produced nothing, and
+`· 9% new · :regroup` once files have been placed into the grouping since the last full pass.
+Those files' groups carry a `~` before their name.
+
 ## How it compares
 
 | | tuicr | [hunk](https://github.com/modem-dev/hunk) | [lumen](https://github.com/jnsahaj/lumen) | `gh pr review` | `git diff` |
