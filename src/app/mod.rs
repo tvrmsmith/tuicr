@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime};
 
@@ -1345,6 +1345,10 @@ pub struct App {
     pub dirty: bool,
     pub quit_warned: bool,
     pub message: Option<Message>,
+    /// Startup warnings still waiting for the message slot, in arrival order.
+    /// Drained one per TTL by [`App::clear_expired_message`]; see
+    /// [`App::set_startup_warnings`].
+    pub queued_warnings: VecDeque<String>,
     pub pending_confirm: Option<ConfirmAction>,
     pub supports_keyboard_enhancement: bool,
     pub show_file_list: bool,

@@ -553,6 +553,7 @@ impl App {
             dirty: false,
             quit_warned: false,
             message: None,
+            queued_warnings: VecDeque::new(),
             pending_confirm: None,
             supports_keyboard_enhancement: false,
             show_file_list: true,

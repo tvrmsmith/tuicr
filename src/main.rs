@@ -404,9 +404,7 @@ fn main() -> anyhow::Result<()> {
         app.focused_panel = FocusedPanel::Diff;
     }
 
-    if let Some(message) = startup_warnings.first() {
-        app.set_warning(message.clone());
-    }
+    app.set_startup_warnings(startup_warnings);
 
     // Track pending z command for zz centering
     let mut pending_z = false;
