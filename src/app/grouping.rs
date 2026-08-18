@@ -209,14 +209,13 @@ impl App {
         if self.refine_config.is_some() && !refined {
             return Some(GroupingStatus::HeuristicsOnly);
         }
-        let drift = grouping.drift();
-        if drift <= 0.0 {
+        // The same function the auto-regroup backstop thresholds on
+        // (`src/app/regroup.rs`), in the same units, so the number that trips
+        // it is the number this chip counted up to.
+        let percent = grouping.drift_percent();
+        if percent == 0 {
             return None;
         }
-        // Rounded, but never down to the `0%` that would contradict the slot
-        // being hidden at exactly zero: one file in a thousand is drift the
-        // reader can act on, and `0% new · :regroup` reads as a bug.
-        let percent = ((drift * 100.0).round() as u32).max(1);
         Some(GroupingStatus::Drift { percent })
     }
 
