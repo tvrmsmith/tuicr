@@ -54,6 +54,18 @@ pub const DEFAULT_REFINE_TIMEOUT_MS: usize = 180_000;
 /// failure a warning.
 pub const MAX_REFINE_TIMEOUT_MS: usize = 86_400_000;
 
+/// The drift percentage at which tuicr regroups without being asked
+/// (`gd-26r.36`), read in the units the sidebar chip reports drift in.
+///
+/// **Deliberately high** (`docs/REGROUPING_STATE.md`). The indicator is the
+/// primary defence against drift and the backstop is the last one: below three
+/// quarters, a reader watching the chip climb still has a grouping that mostly
+/// describes what they are reading, and a landing they did not ask for costs
+/// them their expanded rows for nothing. At three quarters most of the review
+/// sits in groups no full pass ever ranked, which is the wholesale
+/// changeset switch `docs/REGROUPING_STATE.md` wants noticed.
+pub const DEFAULT_REGROUP_THRESHOLD: usize = 75;
+
 /// `[grouping]` section settings: whether startup blocks on a refine call, how
 /// long it may block for, and which Vertex arm answers it.
 ///
@@ -77,6 +89,14 @@ pub struct GroupingConfig {
     pub refine: bool,
     /// How long one refine attempt may block startup, in milliseconds.
     pub refine_timeout_ms: usize,
+    /// The drift percentage at which the review regroups on its own, in the
+    /// units the sidebar chip reports. `0` turns the backstop off entirely.
+    ///
+    /// **Heuristics-only whatever [`Self::refine`] says**
+    /// (`docs/REGROUPING_STATE.md`): a threshold crossing that silently spent
+    /// money and reshuffled the sidebar mid-review is the surprise the grouping
+    /// work exists to prevent, so this key never reaches the refine arm.
+    pub regroup_threshold: usize,
     /// Publisher model id. `None` ships `claude-opus-5`; `TUICR_REFINE_MODEL`
     /// overrides both.
     pub refine_model: Option<String>,
@@ -94,6 +114,7 @@ impl Default for GroupingConfig {
         Self {
             refine: false,
             refine_timeout_ms: DEFAULT_REFINE_TIMEOUT_MS,
+            regroup_threshold: DEFAULT_REGROUP_THRESHOLD,
             refine_model: None,
             vertex_project: None,
             vertex_location: None,
@@ -293,6 +314,7 @@ const FORGE_KNOWN_KEYS: &[&str] = &["comment_type_prefix"];
 const GROUPING_KNOWN_KEYS: &[&str] = &[
     "refine",
     "refine_timeout_ms",
+    "regroup_threshold",
     "refine_model",
     "vertex_project",
     "vertex_location",
@@ -637,6 +659,22 @@ fn parse_grouping(value: &Value, warnings: &mut Vec<String>) -> Option<GroupingC
             any_override = true;
         } else {
             cfg.refine_timeout_ms = timeout;
+            any_override = true;
+        }
+    }
+
+    if let Some(threshold) = read_section_usize(table, "grouping", "regroup_threshold", warnings) {
+        // A percentage, so anything past 100 is a value drift can never reach:
+        // it reads as "never regroup on your own", which `0` already says, and
+        // silently keeping it would leave a backstop nobody can tell is dead.
+        if threshold > 100 {
+            warnings.push(
+                "Warning: Config key 'grouping.regroup_threshold' is a percentage and must be \
+                 between 0 and 100; ignoring value"
+                    .to_string(),
+            );
+        } else {
+            cfg.regroup_threshold = threshold;
             any_override = true;
         }
     }
@@ -2083,6 +2121,67 @@ scope_line = "no"
     }
 
     // [grouping]
+
+    #[test]
+    fn should_read_the_regroup_threshold_without_a_refine_arm() {
+        // The backstop is heuristics-only, so the review that never refines is
+        // the one it exists for: the key must not need `refine` beside it.
+        let cfg = parse_config("[grouping]\nregroup_threshold = 40\n")
+            .config
+            .expect("config should parse");
+        let grouping = cfg.grouping.expect("the section is set");
+        assert_eq!(grouping.regroup_threshold, 40);
+        assert!(!grouping.refine);
+    }
+
+    #[test]
+    fn should_default_the_regroup_threshold_high() {
+        assert_eq!(
+            GroupingConfig::default().regroup_threshold,
+            DEFAULT_REGROUP_THRESHOLD
+        );
+        let cfg = parse_config("[grouping]\nrefine = true\n")
+            .config
+            .expect("config should parse");
+        assert_eq!(
+            cfg.grouping.expect("the section is set").regroup_threshold,
+            DEFAULT_REGROUP_THRESHOLD
+        );
+    }
+
+    #[test]
+    fn should_turn_the_backstop_off_at_a_zero_regroup_threshold() {
+        let cfg = parse_config("[grouping]\nregroup_threshold = 0\n")
+            .config
+            .expect("config should parse");
+        assert_eq!(
+            cfg.grouping.expect("the section is set").regroup_threshold,
+            0
+        );
+    }
+
+    #[test]
+    fn should_refuse_a_regroup_threshold_above_a_hundred_percent() {
+        let outcome = parse_config("[grouping]\nrefine = true\nregroup_threshold = 150\n");
+
+        assert!(
+            outcome
+                .warnings
+                .iter()
+                .any(|warning| warning.contains("grouping.regroup_threshold")),
+            "a percentage drift can never reach is worth saying out loud"
+        );
+        assert_eq!(
+            outcome
+                .config
+                .expect("config should parse")
+                .grouping
+                .expect("the section is set")
+                .regroup_threshold,
+            DEFAULT_REGROUP_THRESHOLD,
+            "and the default stands rather than a dead backstop"
+        );
+    }
 
     #[test]
     fn should_leave_refine_off_when_no_grouping_section_is_present() {

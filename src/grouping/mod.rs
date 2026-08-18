@@ -346,6 +346,27 @@ impl Grouping {
         moved as f64 / self.assignments.len() as f64
     }
 
+    /// [`Self::drift`] in the units the reader watches it in: whole percent,
+    /// `0` only when nothing drifted at all.
+    ///
+    /// **The chip and the threshold read this same function** (`gd-26r.36`).
+    /// The sidebar renders `9% new` and the auto-regroup backstop fires at a
+    /// configured percentage, so comparing the raw fraction against the
+    /// configured number would let the backstop trip at `74.6%` while the
+    /// header still said `75% new` — a backstop firing at a value the reader
+    /// never watched approach, which is the surprise it exists to avoid.
+    ///
+    /// Rounded, but never down to a `0` that would contradict the slot being
+    /// hidden at exactly zero: one file in a thousand is drift the reader can
+    /// act on, and `0% new · :regroup` reads as a bug.
+    pub fn drift_percent(&self) -> u32 {
+        let drift = self.drift();
+        if drift <= 0.0 {
+            return 0;
+        }
+        ((drift * 100.0).round() as u32).max(1)
+    }
+
     /// Assignments where a second group was nearly as good a fit.
     pub fn close_calls(&self) -> impl Iterator<Item = &Assignment> {
         self.assignments

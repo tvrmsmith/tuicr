@@ -68,6 +68,7 @@ refine_timeout_ms = 180000
 refine_model = "claude-opus-5"
 # vertex_project = "my-project"   # defaults to your credentials' project
 vertex_location = "global"
+regroup_threshold = 75
 
 [forge]
 comment_type_prefix = true
@@ -244,6 +245,7 @@ refine_timeout_ms = 180000
 refine_model = "claude-opus-5"
 vertex_project = "my-project"
 vertex_location = "global"
+regroup_threshold = 75
 ```
 
 | Key                 | Default            | Description                                                                                                                                                        |
@@ -253,6 +255,7 @@ vertex_location = "global"
 | `refine_model`      | `claude-opus-5`    | Publisher model id. Anthropic (`claude-*`) and Google (`gemini-*`) models are both understood.                                                                     |
 | `vertex_project`    | (from credentials) | Google Cloud project billed for the call. Falls back to `GOOGLE_CLOUD_PROJECT`, then to the `quota_project_id` in your credentials file.                           |
 | `vertex_location`   | `global`           | Vertex region.                                                                                                                                                     |
+| `regroup_threshold` | `75`               | The drift percentage — the `n% new` the sidebar header counts — at which tuicr regroups on its own. Heuristics-only whatever `refine` says: the automatic regroup is instant, offline and free, and never costs a model call. `0` turns it off; values above `100` are refused with a warning. |
 
 How much the model thinks is not configurable. Low effort is what the shipped model was measured at; the alternative is slower, dearer, and better on only some changesets, which is not a setting anyone can be advised on.
 
@@ -276,6 +279,10 @@ Grouping is off entirely with `--no-grouping`, which also skips refine.
 **The sidebar is a toggle, not a startup-only setting.** `<leader>g`, or `:set groups!`, switches between the grouped list and the plain directory tree at any point in a review. Whichever one you start in is the one `--no-grouping` decides; the other is a keypress away. Toggling off keeps the grouping, so toggling back is instant and never regroups — and never refines, whatever `refine` says. `:regroup` remains the only way to ask for a new grouping. Each sidebar also remembers its own expanded rows, so a trip through the other one leaves your arrangement exactly as you left it.
 
 Starting with `--no-grouping` and then pressing `<leader>g` computes the grouping there and then, with the heuristics alone.
+
+**A very drifted review regroups itself.** Files that appear while a review is open — a `:reload`, a switch to a different range of commits — are filed into the existing groups without disturbing what you are reading, and the header counts how much of the review that accounts for (`42% new`). When that number reaches `regroup_threshold`, tuicr runs a full heuristic pass rather than letting you read a grouping that no longer describes the changeset. It lands the way `:regroup` does: all groups collapse, the cursor moves to the collapsed group holding the file you are on, and the diff pane does not move.
+
+The threshold is deliberately high, and the backstop never refines: it is free, instant and offline, so a crossing cannot spend money or make you wait. It also fires on the same number the header shows, so it can only happen after you have watched it approach — and never on the frame a session reopens, because reopening shows you yesterday's groups.
 
 ### Credentials for refine
 

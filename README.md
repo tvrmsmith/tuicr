@@ -103,7 +103,9 @@ directory tree instead, whose layout the `file_tree` config key controls.
 The sidebar header says how the grouping stands: `· refining` while a `:regroup` is running,
 `· heuristics only` or `· refine cancelled` when `[grouping].refine` produced nothing, and
 `· 9% new · :regroup` once files have been placed into the grouping since the last full pass.
-Those files' groups carry a `~` before their name.
+Those files' groups carry a `~` before their name. Let that number reach
+`[grouping].regroup_threshold` (75% by default) and tuicr regroups the review itself, from
+the heuristics alone — instant, offline, and never a model call.
 
 ## How it compares
 

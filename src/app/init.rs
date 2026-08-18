@@ -582,6 +582,8 @@ impl App {
             pending_grouping: None,
             pending_regroup: None,
             refine_config: None,
+            regroup_threshold: crate::config::DEFAULT_REGROUP_THRESHOLD,
+            drift_when_last_polled: None,
             refine_target_picked: false,
             refine_wanted: false,
             refine_over_saved_grouping: false,

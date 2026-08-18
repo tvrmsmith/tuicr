@@ -1465,6 +1465,22 @@ pub struct App {
     /// from here, because the one that fires when a diff loads runs long after
     /// the startup code that could have passed it in.
     pub refine_config: Option<crate::app::refine::RefineConfig>,
+    /// The drift percentage at which [`App::poll_regroup_backstop`] regroups
+    /// without being asked, in the units [`crate::grouping::Grouping::drift_percent`]
+    /// reports and the sidebar chip renders. `0` turns the backstop off.
+    ///
+    /// Deliberately high (`docs/REGROUPING_STATE.md`), and read by the
+    /// heuristics-only landing whatever `[grouping].refine` says: the backstop
+    /// must be free, instant and deterministic, so it never reaches
+    /// [`Self::refine_config`].
+    pub regroup_threshold: usize,
+    /// The drift percentage [`App::poll_regroup_backstop`] saw last, latched on
+    /// its first poll so the backstop answers drift that moves *under* the
+    /// reader rather than drift a reopened session arrived carrying
+    /// (`docs/REGROUPING_STATE.md`: yesterday's review shows yesterday's
+    /// groups). `None` until the first poll, which is every poll before the
+    /// main loop starts, because only the main loop polls.
+    pub(crate) drift_when_last_polled: Option<u32>,
     /// Set by [`App::reorder_for_load`] when a load answering a review target
     /// the human just picked finishes, and consumed by the next
     /// [`App::order_files_by_group`], which turns it into [`Self::refine_wanted`].

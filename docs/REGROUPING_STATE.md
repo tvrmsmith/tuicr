@@ -143,6 +143,29 @@ silently spent $1.40–2.00 and three minutes and reshuffled the sidebar mid-rev
 would be exactly the surprise this whole ticket exists to prevent. Refine costs
 money and wall-clock, so refine is something the human asks for.
 
+**Shipped by `gd-26r.36`**, with the threshold at `[grouping].regroup_threshold`
+— a drift *percentage*, defaulting to 75, `0` for off. Three things it settled
+that this record left open:
+
+- **It fires on `Grouping::drift_percent()`**, the whole-percent form of the one
+  drift number the sidebar chip renders (`gd-26r.37`). Not a second fraction of
+  its own: a backstop that fired at a value the reader never watched approach is
+  a surprise rather than a backstop, and comparing the raw fraction to a
+  configured percentage would let it trip at 74.6% under a header still reading
+  `75% new`. It inherits that number's group-derived semantics with it, so a
+  file that *joined* an established group moves neither the chip nor the
+  threshold.
+- **It is polled from the main loop**, next to `:regroup`'s own poller, rather
+  than called from the dozen loads that drift a grouping. A landing under the
+  reader is what that loop already does, and one load forgetting the call would
+  be a silent gap.
+- **A crossing has to happen under the reader.** The first poll latches whatever
+  drift the review opened carrying and fires nothing, so a session persisted
+  over the threshold is not regrouped on its first frame — *reopening a session
+  never regroups* holds literally, and a full pass would otherwise mint fresh
+  ids over exactly the groups the reader came back to. The next arrival, which
+  they are present for, fires it.
+
 ## How a human forces a regroup
 
 `:regroup`. It is the only path to a full recompute, and the only path to

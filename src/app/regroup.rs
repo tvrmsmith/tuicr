@@ -19,6 +19,14 @@
 //! body twice — lands the heuristic pass computed at dispatch instead, so the
 //! command always ends in a regrouped review.
 //!
+//! **The auto-regroup backstop shares that landing.** `:regroup` is the human's
+//! lever; [`App::poll_regroup_backstop`] is the one that pulls itself, once
+//! drift crosses a deliberately high threshold. It is heuristics-only and never
+//! refine, so unlike `:regroup` it is free, instant and cannot surprise anyone
+//! with a bill — and it lands through the same [`App::land`] rather than a
+//! second path, because the two landings behave identically by ruling
+//! (`docs/MID_SESSION_REGROUP.md`).
+//!
 //! What a landing does is `docs/MID_SESSION_REGROUP.md` verbatim: all groups
 //! collapse, the diff pane does not move, and sidebar selection lands on the
 //! collapsed group row holding the current file. Group-keyed sidebar state
@@ -188,6 +196,89 @@ impl App {
             Some(warning) => self.set_warning(warning),
             None => self.set_message("Regrouped."),
         }
+        true
+    }
+
+    /// The auto-regroup backstop (`gd-26r.36`): the full heuristic pass the
+    /// review takes on its own once drift crosses
+    /// [`App::regroup_threshold`]. Returns whether anything changed, which is
+    /// the main loop's redraw signal.
+    ///
+    /// **Heuristics-only, never refine** (`docs/REGROUPING_STATE.md`). It does
+    /// not consult [`App::refine_config`] and cannot reach a call: a threshold
+    /// crossing that silently spent \$1.40–2.00 and three minutes and reshuffled
+    /// the sidebar mid-review is exactly the surprise the grouping work exists
+    /// to prevent. Refine costs money, so refine is something the human asks
+    /// for with `:regroup`.
+    ///
+    /// **It fires on [`crate::grouping::Grouping::drift_percent`]**, the one
+    /// drift number the sidebar chip renders. A backstop that fired at a value
+    /// the reader never watched approach would be a surprise rather than a
+    /// backstop, so it does not compute its own fraction — it inherits the
+    /// group-derived reading of drift with it (`gd-26r.37`), which means a file
+    /// that joined an established group moves neither the chip nor this.
+    ///
+    /// Polled from the main loop rather than called from the loads that create
+    /// drift, for three reasons. It is a landing under the reader, which is
+    /// what the loop already does with [`App::poll_regroup`]; the loads that
+    /// drift a grouping are a dozen call sites and one forgetting it would be
+    /// a silent gap; and the loop is the line between startup and mid-session,
+    /// so a reopened session whose persisted drift is already over the
+    /// threshold cannot regroup before its reader has seen it, which
+    /// `docs/REGROUPING_STATE.md` forbids outright.
+    pub fn poll_regroup_backstop(&mut self) -> bool {
+        if self.regroup_threshold == 0 {
+            return false;
+        }
+        // Nothing fires under an in-flight `:regroup`. The human has already
+        // asked for the full pass this would land, and the answer to that
+        // question is the one they want: landing a heuristic pass first would
+        // reshuffle the sidebar twice, and the second reshuffle is the
+        // requested one. The fallback arm lands a heuristic pass anyway if the
+        // call fails, which is this backstop's outcome by another route.
+        if self.pending_regroup.is_some() {
+            return false;
+        }
+        // Asked of the grouping the sidebar is *rendering*: with `<leader>g`
+        // off the reader is looking at the directory tree, the chip is silent,
+        // and a landing they cannot see is one they cannot understand when
+        // they toggle back.
+        let Some(grouping) = self.active_grouping() else {
+            return false;
+        };
+        let percent = grouping.drift_percent();
+        // The crossing has to happen *under* the reader. A session reopened
+        // over the threshold is left alone — "reopening a session never
+        // regroups; yesterday's review shows yesterday's groups"
+        // (`docs/REGROUPING_STATE.md`) — and a full pass on the first frame
+        // would mint fresh ids over exactly the groups the reader came back
+        // to. So the first poll latches whatever drift the review opened on
+        // and fires nothing; from then on the backstop answers movement.
+        let Some(before) = self.drift_when_last_polled.replace(percent) else {
+            // The opening value, whatever it is.
+            return false;
+        };
+        if before == percent || (percent as usize) < self.regroup_threshold {
+            return false;
+        }
+
+        let changeset = Changeset::from_diff_files(&self.diff_files);
+        if changeset.is_empty() {
+            return false;
+        }
+        let regrouped = group_changeset(&changeset, GroupingConfig::default());
+        let groups = regrouped.groups().len();
+        // Slice C's landing, not a second one: all groups collapse, the diff
+        // pane does not move, and selection lands on the collapsed group row
+        // holding the current file (`docs/MID_SESSION_REGROUP.md`).
+        self.land(regrouped);
+        // Said out loud, and said as an explanation. A sidebar that rearranged
+        // itself is worth a sentence naming what crossed and what it cost,
+        // which is nothing.
+        self.set_message(format!(
+            "{percent}% of the review had drifted; regrouped from the heuristics into {groups} \
+             groups."
+        ));
         true
     }
 

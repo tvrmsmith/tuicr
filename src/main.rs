@@ -289,6 +289,17 @@ fn main() -> anyhow::Result<()> {
     // has no changeset to refine here: it opens on the target selector, and its
     // wait runs from the main loop when the diff loads.
     if !cli_args.no_grouping {
+        // Read whether or not refine is on, and outside the filter below:
+        // the backstop is heuristics-only, so a review that never refines is
+        // exactly the one it exists for (`docs/REGROUPING_STATE.md`).
+        if let Some(threshold) = config_outcome
+            .config
+            .as_ref()
+            .and_then(|cfg| cfg.grouping.as_ref())
+            .map(|grouping| grouping.regroup_threshold)
+        {
+            app.regroup_threshold = threshold;
+        }
         if let Some(grouping) = config_outcome
             .config
             .as_ref()
@@ -455,6 +466,13 @@ fn main() -> anyhow::Result<()> {
         // human is reading a file and the sidebar re-sorting is not worth
         // freezing that for (`docs/MID_SESSION_REGROUP.md`).
         needs_redraw |= app.poll_regroup();
+        // And the regroup nobody asked for: once the sidebar chip has counted
+        // drift up past `[grouping].regroup_threshold`, a full heuristic pass
+        // lands through the same path `:regroup` uses. Polled here rather than
+        // from the loads that drift a grouping, so that a session reopened over
+        // the threshold is regrouped no earlier than its reader can see it
+        // happen (`docs/REGROUPING_STATE.md`).
+        needs_redraw |= app.poll_regroup_backstop();
         needs_redraw |= pr_pending;
 
         // A diff that loaded after the alternate screen went up — bare `tuicr`
