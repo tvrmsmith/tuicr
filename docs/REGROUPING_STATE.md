@@ -60,6 +60,7 @@ files parse unchanged (precedent: `review.rs:24,26`; legacy-parse tests at
    | `order` | position in intent-centrality order |
    | `source` | `heuristics` \| `refined` \| `incremental` — what produced this group |
    | `new_since_full_pass` | set when opened by incremental assignment |
+   | `unbounded` | set when the size cap's split pass could not bound the group (`gd-26r.23`) |
 
 **Why an id and not the name.** Names are not stable and are not even stable in
 *kind*: the heuristic arm derives mechanical token joins
@@ -107,6 +108,14 @@ Reassigning content-changed files sounds more disruptive than it is:
 `add_file` has **already cleared `reviewed`** on that file before grouping sees
 it, because its content moved. So an incremental reassignment never relocates
 something the human had approved.
+
+**The size cap does not run incrementally** (`gd-26r.23`). An arrival that
+pushes a group past the hard cap for its arm is left where it belongs: a group
+row splitting in two under a reader mid-review is worse than a row that is
+briefly too big, and refusing the arrival would mint groups by arrival order.
+The drift the arrivals add carries the review to the `gd-26r.36` backstop's full
+pass, and that pass splits. The cap is therefore an invariant of each full pass,
+not of every frame.
 
 **A new group is appended last and marked new.** It is by definition unranked —
 intent-centrality order is a property of a full pass — so it sits at the bottom

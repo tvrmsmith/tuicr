@@ -603,6 +603,16 @@ slot holds `~ ` on a group incremental assignment produced —
 `GroupSource::Incremental` or `new_since_full_pass`, one glyph for both because
 the reader's decision is identical — and is empty otherwise.
 
+**Revision (`gd-26r.23`): `!` in the same slot.** A group the size cap's single
+split pass could not bound carries `! ` instead, and `!` outranks `~` in the
+rare row that could take both. One slot, one glyph, and the more urgent claim
+wins: `~` says the row is a little stale, `!` says the engine gave up here and
+the row will not help you. That is the one thing the flush-right count cannot
+say for itself — 38 files is either a coherent large concern or a failed split,
+and the number does not tell them apart. A group the pass *did* split carries no
+marker at all: those pieces are ordinary groups of the pass, named
+`parent · suffix`, and there is no soft-cap signal anywhere.
+
 Before the label, never between the label and the count: the count is flush
 right and that column is what makes the 13-row collapsed overview scannable.
 Restyling the label instead was rejected — invisible on a theme without
@@ -632,7 +642,8 @@ marker, so the header and the rows agree.
 - Group navigation keybindings beyond the `<leader>g` toggle, and any group UX
   beyond the sidebar's shape.
 - Group-level review counts beyond the `reviewed/total` shown on the group row.
-- Group sizing. `github-client-plumbing` at 38 files and `pr-actions` at 29
-  both exceed the ~20 soft / ~25 hard cap the human wants, and the two groups a
-  cap would split are exactly the two that read as weak. Tracked separately.
+- ~~Group sizing~~ — settled by `gd-26r.23` and built in `gd-26r.38`: soft cap
+  20 (refine prompt only), hard caps 25 refined and 30 heuristic, enforced by a
+  directory split at the end of each full pass. `github-client-plumbing` at 38
+  files was one of the two groups the cap was written for.
 - How a human reassigns a file to a different group (`gd-26r.18`).

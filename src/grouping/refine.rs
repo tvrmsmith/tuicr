@@ -142,12 +142,36 @@ fn render_groups(changeset: &Changeset, heuristic: &Grouping) -> String {
     out
 }
 
+/// How coarse the answer should be (`gd-26r.23`), the whole of what this arm is
+/// told about group size.
+///
+/// The size signal and the soft cap, and **no target group count**: a count as
+/// `f(file count)` and a cap that scales with the changeset were both rejected,
+/// because the model is the thing that can see which concerns the changeset
+/// actually has and a formula is not. `gd-26r.11`'s full-coarse arm failed with
+/// a bare coarseness instruction and no size signal; the file count is the
+/// variable it was missing, and whether size alone is enough is the open risk
+/// the first week of real reviews tests.
+///
+/// Public because the harness's parity test splices it into the `Shape::Full`
+/// prompt `docs/GROUPING_PASSES.md`'s refine numbers were measured on: this
+/// sentence is the one deliberate difference between the two, and anything else
+/// that drifts still fails that test.
+pub fn size_guidance() -> String {
+    format!(
+        " A group should hold at most {} files, and the size of the changeset sets how coarse \
+         the grouping should be: the smaller the changeset, the fewer and coarser its groups.",
+        super::caps::SOFT_CAP
+    )
+}
+
 /// Exactly what is sent. Paths and change status only: no diff bodies, because
 /// a hunk-reading pass does not fit in one call over a 161-file changeset and
 /// was never measured (`docs/GROUPING_PASSES.md`).
 pub fn prompt(changeset: &Changeset, heuristic: &Grouping) -> String {
     let count = changeset.len();
     let groups = render_groups(changeset, heuristic);
+    let size = size_guidance();
 
     format!(
         "You are grouping the files of one changeset for code review. A heuristic pass has \
@@ -163,7 +187,7 @@ pub fn prompt(changeset: &Changeset, heuristic: &Grouping) -> String {
          {{\"groups\": [{{\"name\": \"kebab-case-name\", \"files\": [\"path\", ...]}}, ...]}}\n\n\
          List the groups in the order a reviewer should read them (rule 2). Every one \
          of the {count} input paths must appear in exactly one group. Do not invent, \
-         omit or duplicate a path.\n"
+         omit or duplicate a path.{size}\n"
     )
 }
 
@@ -276,9 +300,16 @@ pub fn apply(body: &str, changeset: &Changeset, heuristic: &Grouping) -> Result<
             name: name.clone(),
             source,
             new_since_full_pass: false,
+            unbounded: false,
             members,
         });
     }
+
+    // The cap last, over the finished partition, and by each group's own source
+    // (`gd-26r.23`). Not a repair: an oversized answer violates nothing the
+    // contract asks for, so it is not counted into `repairs` and does not push
+    // the arm towards the "this model is misbehaving" warning.
+    let presented = super::caps::enforce(presented);
 
     Ok(Refined {
         grouping: Grouping::restore(changeset, presented),
