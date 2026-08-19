@@ -2487,3 +2487,44 @@ which runs identically on the heuristic, refined, cancelled, timed-out and
 `refine = false` paths. Three tests in `src/grouping/order.rs` pin the fix —
 camel-case, plural, and the `dir:` prefix — and every bar in the table above is
 the existing suite, unwidened.
+# The size caps sit after every number above (`gd-26r.23`, built in `gd-26r.38`)
+
+`grouping::caps::enforce` runs at the end of both full passes and splits any
+group over the hard cap for the arm that produced it — 25 refined, 30 heuristic
+— by directory. **No figure in this document was re-measured, and none needed
+to be**, because the harness scores `passes::assign`'s claims and the caps run
+after them: `tests/grouping/arms.rs` buckets the raw claims, so every F1,
+precision, recall and tau above still describes exactly the code it described
+before. What changed is that those numbers now describe the passes rather than
+the partition the sidebar shows.
+
+The gap between the two, measured on fixture 1 (orca, 161 files) with
+`GroupingConfig::default()`:
+
+| | groups | largest group |
+| --- | --- | --- |
+| heuristic claims, what every number above scores | 19 | 36 (22.4%) |
+| what the sidebar shows, caps applied | 25 | 20 (12.4%) |
+
+Nothing on fixture 1 comes out `unbounded`: every over-cap group had a
+directory boundary to cut on, so the one split pass bounded all of them. The
+pieces are named `parent · suffix` — `project · github-project`,
+`project · tasks` — which is why those names now appear in the refine
+prompt's rendering of the heuristic grouping.
+
+**Two deliberate breaks with the recorded refine runs**, both pinned by
+`the_shipped_prompt_is_the_prompt_the_numbers_were_measured_on` rather than
+waived:
+
+1. The prompt now carries `refine::size_guidance()`: the soft cap of 20 and the
+   instruction that the changeset's size sets the granularity. No recorded run
+   was sent it, so **the refine figures — F1 0.427 and 0.711 — predate it**.
+2. The heuristic grouping the prompt renders is the capped one, because the
+   heuristic cap runs inside `group_changeset`.
+
+Both are `gd-26r.23`'s decision, not drift, and the parity test splices them in
+so anything *else* that diverges still fails. Re-measuring the refine arm needs
+fresh recorded runs; the human's judgment on real reviews is what that decision
+named as its evidence, and pairwise F1 is structurally blind to group size in
+any case — `gd-26r.11`'s full-coarse arm traded fixture 1 against fixture 2
+rather than winning, which is what confirmed the blind spot.

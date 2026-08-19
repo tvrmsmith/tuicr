@@ -67,9 +67,10 @@ pub(super) fn render_file_list(frame: &mut Frame, app: &mut App, area: Rect) {
                 reviewed,
                 total,
                 drifted,
+                unbounded,
                 ..
             } => {
-                2 + drift_marker(*drifted).width()
+                2 + group_marker(*unbounded, *drifted).width()
                     + label.width()
                     + 1
                     + group_count(*reviewed, *total).width()
@@ -124,6 +125,7 @@ pub(super) fn render_file_list(frame: &mut Frame, app: &mut App, area: Rect) {
                     total,
                     expanded,
                     drifted,
+                    unbounded,
                     ..
                 } => {
                     let icon = if *expanded {
@@ -131,7 +133,7 @@ pub(super) fn render_file_list(frame: &mut Frame, app: &mut App, area: Rect) {
                     } else {
                         COLLAPSED_GLYPH
                     };
-                    let marker = drift_marker(*drifted);
+                    let marker = group_marker(*unbounded, *drifted);
                     let count = group_count(*reviewed, *total);
                     // The count is flush right, which is what makes the
                     // collapsed overview scannable as a column of sizes, so a
@@ -310,16 +312,29 @@ fn group_count(reviewed: usize, total: usize) -> String {
     format!("{reviewed}/{total}")
 }
 
-/// The marker slot of a group row: `~ ` on a group incremental assignment
-/// produced, nothing otherwise (`gd-26r.15`, `docs/SIDEBAR_MODEL.md`).
+/// The marker slot of a group row: `! ` on a group the size cap could not bound
+/// (`gd-26r.23`), `~ ` on a group incremental assignment produced
+/// (`gd-26r.15`), nothing otherwise (`docs/SIDEBAR_MODEL.md`).
+///
+/// **One slot, one glyph**, and `!` outranks `~` in the rare row that could
+/// carry both. `~` says the row is a little stale; `!` says the row will not
+/// help you at all, which is the more urgent of the two and the one the count
+/// column cannot say for itself. A cap-forced *split* carries neither: those
+/// groups are as fresh as anything else the pass produced.
 ///
 /// Between the expand icon and the label, never between the label and the
 /// count: the count is flush right and that column is what makes a collapsed
 /// overview scannable as a list of sizes (`gd-26r.31`). Restyling the label
 /// instead was rejected — invisible on a theme without italics, and unreadable
 /// to anyone comparing two shades.
-fn drift_marker(drifted: bool) -> &'static str {
-    if drifted { "~ " } else { "" }
+fn group_marker(unbounded: bool, drifted: bool) -> &'static str {
+    if unbounded {
+        "! "
+    } else if drifted {
+        "~ "
+    } else {
+        ""
+    }
 }
 
 /// Leading `│` border plus one space before the prompt sigil.
@@ -428,6 +443,7 @@ mod tests {
                 name: name.to_string(),
                 source: GroupSource::Heuristics,
                 new_since_full_pass: false,
+                unbounded: false,
                 members: paths.iter().map(|p| (*p).to_string()).collect(),
             }],
         ));
@@ -585,6 +601,7 @@ mod tests {
                     name: "steady".to_string(),
                     source: GroupSource::Heuristics,
                     new_since_full_pass: false,
+                    unbounded: false,
                     members: steady.iter().map(|p| (*p).to_string()).collect(),
                 },
                 PresentedGroup {
@@ -592,6 +609,7 @@ mod tests {
                     name: "arrivals".to_string(),
                     source: GroupSource::Incremental,
                     new_since_full_pass: true,
+                    unbounded: false,
                     members: arrived.iter().map(|p| (*p).to_string()).collect(),
                 },
             ],
@@ -667,6 +685,72 @@ mod tests {
         assert!(
             !unmarked.contains('~'),
             "a group a full pass produced carries no marker, got: {unmarked}"
+        );
+    }
+
+    /// The same slot, the other glyph (`gd-26r.23`): a group the size cap's one
+    /// split pass could not bound says so with `!`, and the split it *could*
+    /// make says nothing at all — those pieces are ordinary groups of the pass.
+    ///
+    /// Restored through the session like the drift marker above, because a
+    /// reopened review never regroups and the row has to keep saying it.
+    #[test]
+    fn should_mark_only_the_group_the_size_cap_could_not_bound() {
+        let flat = ["src/gen/a.rs", "src/gen/b.rs"];
+        let split = ["src/api/c.rs"];
+        let files: Vec<DiffFile> = flat.iter().chain(split.iter()).map(|p| file(p)).collect();
+        let mut session = empty_session(&stub_vcs_info());
+        for file in &files {
+            session.add_file(file.display_path().clone(), file.status, file.content_hash);
+        }
+        session.record_grouping(&Grouping::restore(
+            &Changeset::from_diff_files(&files),
+            vec![
+                PresentedGroup {
+                    id: GroupId::new(),
+                    name: "generated".to_string(),
+                    source: GroupSource::Heuristics,
+                    new_since_full_pass: false,
+                    unbounded: true,
+                    members: flat.iter().map(|p| (*p).to_string()).collect(),
+                },
+                PresentedGroup {
+                    id: GroupId::new(),
+                    name: "client \u{b7} api".to_string(),
+                    source: GroupSource::Heuristics,
+                    new_since_full_pass: false,
+                    unbounded: false,
+                    members: split.iter().map(|p| (*p).to_string()).collect(),
+                },
+            ],
+        ));
+
+        let mut app = build_app(files, session);
+        app.enable_grouping();
+        app.expand_all_dirs();
+
+        let buffer = draw_at(&mut app, 180);
+        let text = sidebar_text(&app, &buffer);
+
+        let marked = text
+            .lines()
+            .find(|line| line.contains("generated"))
+            .expect("the unbounded group has a row");
+        let piece = text
+            .lines()
+            .find(|line| line.contains("client"))
+            .expect("the split piece has a row");
+        assert!(
+            marked.contains("\u{25bc} ! generated"),
+            "expected the marker before the label, got:\n{text}"
+        );
+        assert!(
+            marked.trim_end().ends_with("0/2"),
+            "the count stays flush right beside the marker, got: {marked}"
+        );
+        assert!(
+            !piece.contains('!') && !piece.contains('~'),
+            "a piece the split pass did bound carries no marker, got: {piece}"
         );
     }
 

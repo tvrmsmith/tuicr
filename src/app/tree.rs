@@ -591,6 +591,7 @@ impl App {
                 total: members.len(),
                 expanded,
                 drifted: group.drifted(),
+                unbounded: group.unbounded,
             });
             if !expanded {
                 continue;

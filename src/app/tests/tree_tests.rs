@@ -141,6 +141,7 @@ fn grouped_app_from(mode: FileTreeMode, files: Vec<DiffFile>, groups_text: &str)
                 name: name.to_string(),
                 source: GroupSource::Heuristics,
                 new_since_full_pass: false,
+                unbounded: false,
                 members: Vec::new(),
             }),
             None => presented
