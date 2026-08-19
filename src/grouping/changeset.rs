@@ -196,7 +196,12 @@ impl ChangedFile {
     }
 }
 
-fn split_tokens(text: &str) -> Vec<String> {
+/// The one tokeniser. Every comparison of one name against another runs both
+/// sides through this, or the two sides are not comparable: `gd-o7s` was a
+/// group name split on separators alone being matched against file tokens that
+/// had also been camel-split and singularised, so `work-items` scored 1 against
+/// `workItems.ts` instead of 2.
+pub fn split_tokens(text: &str) -> Vec<String> {
     let mut tokens = Vec::new();
     for chunk in text.split(['-', '_', '.', '/', ' ', '[', ']']) {
         for token in split_camel_case(chunk) {

@@ -13,7 +13,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use super::changeset::{ChangedFile, Changeset};
+use super::changeset::{ChangedFile, Changeset, split_tokens};
 
 /// Prefix of the directory-fallback groups `gd-26r.12` Decision 3 pins last.
 pub const FALLBACK_PREFIX: &str = "dir:";
@@ -128,12 +128,14 @@ pub fn covers(production: &ChangedFile, test: &ChangedFile) -> bool {
 /// name matches two members equally well, or none, constrains nothing — the
 /// conservative reading, because a wrong central file would invert every pair
 /// in the group at once.
+///
+/// Both sides run through [`split_tokens`], the same tokeniser
+/// [`ChangedFile::name_tokens`] uses, so the comparison is between like and
+/// like (`gd-o7s`). The only thing done to the name first is a split on `:`,
+/// which is the `dir:` fallback prefix's namespace separator and not a
+/// character any filename carries.
 pub fn central_file<'a>(name: &str, files: &[&'a ChangedFile]) -> Option<&'a ChangedFile> {
-    let wanted: BTreeSet<String> = name
-        .split(['-', '_', '/', ':', ' '])
-        .filter(|token| token.len() > 1)
-        .map(str::to_ascii_lowercase)
-        .collect();
+    let wanted: BTreeSet<String> = name.split(':').flat_map(split_tokens).collect();
     if wanted.is_empty() {
         return None;
     }
@@ -289,6 +291,54 @@ mod tests {
         assert_eq!(
             ordered("token", &group, CentralFirst::On),
             ["src/a/token.rs", "src/b/token.rs"],
+        );
+    }
+
+    /// `gd-o7s`: the group name is tokenised the way a filename is, so a name
+    /// written with separators finds the member that writes the same concern in
+    /// camelCase. Before the fix the name split to `work`/`items` and the file
+    /// to `work`/`item`, which is not a shared token between them at all, so
+    /// rule 13 stood down on a group it names exactly.
+    #[test]
+    fn a_hyphenated_name_finds_the_member_that_spells_it_camel_case() {
+        assert_eq!(
+            ordered(
+                "work-items",
+                &["src/x/aaa.ts", "src/x/workItems.ts"],
+                CentralFirst::On,
+            ),
+            ["src/x/workItems.ts", "src/x/aaa.ts"],
+        );
+    }
+
+    /// The other half of the same asymmetry: file tokens are singularised, so a
+    /// plural-only group name matched nothing until the name was singularised
+    /// too.
+    #[test]
+    fn a_plural_name_finds_its_singular_member() {
+        assert_eq!(
+            ordered(
+                "tokens",
+                &["src/auth/aaa.rs", "src/auth/token.rs"],
+                CentralFirst::On,
+            ),
+            ["src/auth/token.rs", "src/auth/aaa.rs"],
+        );
+    }
+
+    /// The `dir:` fallback groups are named with the prefix `gd-26r.12`
+    /// Decision 3 pins them last by, and `:` is not a separator the file
+    /// tokeniser knows. Split off first, so the directory's own tokens still
+    /// reach the comparison rather than arriving fused to `dir`.
+    #[test]
+    fn a_directory_fallback_name_still_matches_on_the_directorys_tokens() {
+        assert_eq!(
+            ordered(
+                "dir:src/rotation",
+                &["src/rotation/aaa.rs", "src/rotation/rotation.rs"],
+                CentralFirst::On,
+            ),
+            ["src/rotation/rotation.rs", "src/rotation/aaa.rs"],
         );
     }
 
