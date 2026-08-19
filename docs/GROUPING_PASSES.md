@@ -2114,7 +2114,9 @@ separates can share a *computed* group. All 28 recorded arm/fixture pairs were
 re-scored with it. The largest move anywhere is **0.009** (`cold ·
 vertex-opus-low` on fixture 2, +0.437 → +0.428); the median is 0.001. The
 shipped arm is **+0.044 → +0.042** on fixture 1 and **+0.335 → +0.335** on
-fixture 2. No bar moves, no verdict above changes, and `recorded_numbers_hold`
+fixture 2. (**Amended by `gd-o7s`, below**: tokenising the group name the way a
+filename is tokenised moves the shipped arm's fixture-1 as-shipped figure to
+**+0.043**. Everything else in this paragraph stands.) No bar moves, no verdict above changes, and `recorded_numbers_hold`
 passes untouched. The report prints both columns — `published` and `as shipped`
 — so no number here is a quiet restatement.
 
@@ -2139,7 +2141,8 @@ paying for the first.
 
 **The cost side is weaker than `gd-26r.14` knew, and this is recorded rather
 than buried.** Under the pro-refine bias, the shipped arm (full ·
-vertex-opus-low) buys **+0.042 on fixture 1 — indistinguishable from chance —
+vertex-opus-low) buys **+0.042 on fixture 1 — +0.043 since `gd-o7s`,
+indistinguishable from chance either way —
 after a 30–70s block**, and **+0.335 on fixture 2**. A reader on a
 fixture-1-shaped changeset waits a minute for nothing measurable, and that is
 one changeset in the two measured. What carries the ruling despite that is the
@@ -2371,3 +2374,116 @@ The guards are written to survive the move of the sort out of test code and into
 4. **Rule 4's three gates unchanged in meaning** — `is_test`, stem equality and
    locality. Changing any of them is a change to what the published +1.000 over
    42 pairs *claims*, so it re-records the row; it is not a refactor.
+
+# Tokenising the group name (`gd-o7s`)
+
+Rule 13 compares a group's name against its members' names. Until this ticket
+the two sides were not tokenised alike: `central_file` split the **name** on
+`-`, `_`, `/`, `:` and space and lowercased it, while the **file** side went
+through `split_tokens` — separator split, camel-case split, lowercase,
+singularise, test markers dropped. So `work-items` offered `work`/`items`
+against `workItems.ts`'s `work`/`item` and shared **no** token at all, and a
+plural-only name matched nothing. Rule 13 stood down on groups it names exactly,
+silently, and the sort fell through to its directory-and-stem key.
+
+`gd-26r.32` found this and approved it as-is, correctly: the fix changes scoring
+and that ticket was bound to move no published figure. This ticket is the other
+half — the fix **and** the re-measure, recorded here deliberately.
+
+The fix is one expression. `split_tokens` is now `pub` and `central_file` runs
+the name through it, after a split on `:` — the `dir:` fallback prefix's
+namespace separator, which is not a character the file tokeniser needs to know
+about and not one a filename carries.
+
+## What moved
+
+The whole corpus was re-run: both fixtures, every baseline, ablation and sweep,
+all 28 recorded refine arm/fixture pairs, and both order sections.
+
+| figure | before | after |
+| --- | --- | --- |
+| heuristic F1, fixtures 1 / 2 | 0.394 / 0.378 | **unchanged** |
+| refined F1, fixtures 1 / 2 | 0.427 / 0.711 | **unchanged** |
+| heuristic `tau_group` as shipped, fixtures 1 / 2 | −0.191 / +0.077 | **unchanged** |
+| rule 4, fixture 1 | +1.000 over 42 pairs | **unchanged** |
+| `tau_within`, fixture 1 | +0.800 (at the fixture's ceiling) | **unchanged** |
+| `tau_within`, fixture 2 | −0.667 over 18 pairs | **unchanged** |
+| what rule 13 is worth, both fixtures | zero | **still zero** |
+| every published cell in every baseline, ablation and sweep | — | **identical** |
+| refine arms, `tau_group` **as shipped** | 11 of 28 pairs move | see below |
+
+Eleven refine arm/fixture pairs move one endpoint each, in **both** directions,
+none by more than **0.002**:
+
+| arm | fixture | figure | before | after |
+| --- | --- | --- | --- | --- |
+| **full · vertex-opus-low (what ships)** | 1 | mean / worst | +0.042 / −0.050 | **+0.043 / −0.048** |
+| full · vertex-opus-default | 1 | worst / best | +0.075 / +0.247 | +0.074 / +0.249 |
+| full · gemini-3-flash-low | 1 | mean / worst / best | −0.010 / −0.078 / +0.060 | −0.011 / −0.079 / +0.059 |
+| full · opus | 1 | worst / best | +0.105 / +0.376 | +0.106 / +0.375 |
+| full · opus-low | 1 | mean | +0.135 | +0.136 |
+| full · sonnet | 1 | mean | −0.081 | −0.080 |
+| full-coarse · opus | 1 | best | +0.228 | +0.230 |
+| cold · gemini-3-flash-low | 1 | mean | +0.117 | +0.118 |
+| cold · vertex-opus-low | 1 | mean | +0.227 | +0.226 |
+| merge-only · opus | 2 | mean | +0.201 | +0.202 |
+| cold · vertex-opus-low | 2 | best | +0.470 | +0.469 |
+
+The `published` column — the refine order as returned, before the within-group
+sort — is untouched everywhere, because it is not this sort's output.
+
+## Why so little moved, which is the finding
+
+Three reasons, and each is a claim about the corpus rather than about the fix:
+
+1. **F1 cannot move.** It is a partition metric. Rule 13 is an order key; it
+   decides which file leads a group, never which group a file is in. "Possibly
+   the refined F1" was the ticket's expectation and it is refuted by
+   construction, not by luck.
+2. **Fixture 1's heuristic group names are derived from its filenames'
+   tokens**, so both sides already reduced alike — **0 of 19** groups change
+   central file. Every fixture-1 heuristic figure is therefore bit-identical,
+   including the two the bars guard.
+3. **Fixture 2 changes exactly 2 of 29 groups**, both `dir:` fallbacks whose
+   directory leaf is plural and now singularises to meet its members:
+   `dir:…/app/pages/admissions` now leads with `admission-list.tsx`, and
+   `dir:…/app/shared/stores` with `tab-store.ts` — each previously had no
+   central file at all. Neither is an *expected* group, so no constrained
+   within-group pair is affected and `tau_within` holds; what moves is those
+   files' positions in the flattened sequence, which is the whole of the
+   ≤0.002 refine drift above.
+
+The refine arms move at all because a **model-named** group is exactly the case
+the asymmetry hurt: `github-repository-identity` against
+`githubRepositoryIdentity.ts`. Those arms are replays, so this is the engine
+re-sorting a recorded partition, not the model answering differently.
+
+## Where it did get worse, and the ruling
+
+Five of the eleven moves are the wrong way, each by 0.001: `full ·
+gemini-3-flash-low` on fixture 1 at all three endpoints (its whole row is
+worse), `cold · vertex-opus-low` on fixture 1 at the mean (+0.227 → +0.226) and
+on fixture 2 at `best` (+0.470 → +0.469), `full · opus` on fixture 1 at `best`,
+and `full · vertex-opus-default` on fixture 1 at `worst`. That is reported as a
+result, not smoothed: the fix is not free everywhere, and nothing else was tuned
+to net it out.
+
+**It still lands.** The moves are noise against a metric whose own bias warning
+is printed above every block, they run both ways, and the shipped arm is among
+the ones that gain. What the fix buys is not a number: rule 13 is normative in
+`docs/GROUPING.md`, it ships **on** by `gd-26r.27`'s ruling precisely so a
+reader can check the sort against the written spec, and a comparison that
+tokenises one side and not the other does not implement the rule it claims to.
+The corpus says the correction is cheap; the spec says it is required. Both
+fixtures happening to name their groups the way their files are named is a fact
+about two changesets, not a reason to leave the comparison lopsided for the
+third.
+
+## Blast radius
+
+`central_file` only, plus `split_tokens` becoming `pub` within the crate. No
+pass, no key, no config, no partition: the sole caller is `sort_group_files`,
+which runs identically on the heuristic, refined, cancelled, timed-out and
+`refine = false` paths. Three tests in `src/grouping/order.rs` pin the fix —
+camel-case, plural, and the `dir:` prefix — and every bar in the table above is
+the existing suite, unwidened.
