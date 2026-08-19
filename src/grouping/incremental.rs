@@ -160,6 +160,9 @@ pub(super) fn place(
             name,
             source: GroupSource::Incremental,
             new_since_full_pass: true,
+            // An arrival never marks a group unbounded: the cap does not run
+            // mid-session at all (`gd-26r.23`).
+            unbounded: false,
             members,
         });
     }
@@ -225,6 +228,7 @@ mod tests {
                 name: group.name.clone(),
                 source: group.source,
                 new_since_full_pass: group.new_since_full_pass,
+                unbounded: group.unbounded,
                 members: grouping
                     .files_in(&group.id)
                     .map(|path| path.to_string_lossy().to_string())

@@ -18,6 +18,7 @@
 //! automatic change to a grouping; `:regroup` is the human's lever for a full
 //! recompute, and a full recompute is one of the two arms above.
 
+pub mod caps;
 pub mod changeset;
 mod incremental;
 pub mod order;
@@ -101,6 +102,12 @@ pub struct Group {
     pub source: GroupSource,
     /// Set when opened by incremental assignment (`docs/REGROUPING_STATE.md`).
     pub new_since_full_pass: bool,
+    /// Set when the cap's single split pass could not bring this group under
+    /// the cap of the arm that produced it (`gd-26r.23`, [`caps`]): the sidebar
+    /// renders `!` before the label to say the engine gave up here, which the
+    /// count column cannot say — 38 files is either a coherent large concern or
+    /// a failed split, and the number does not tell the two apart.
+    pub unbounded: bool,
 }
 
 impl Group {
@@ -154,6 +161,10 @@ pub struct PresentedGroup {
     pub name: String,
     pub source: GroupSource,
     pub new_since_full_pass: bool,
+    /// Set by [`caps::enforce`] on a group its single split pass could not
+    /// bound, and carried through a session restore so a reopened review keeps
+    /// the marker the pass earned.
+    pub unbounded: bool,
     /// Members in any order. The builder sorts them, so no caller — not even a
     /// session file — can hand back a grouping the within-group rules do not
     /// hold on.
@@ -196,6 +207,7 @@ impl Grouping {
                 name: group.name,
                 source: group.source,
                 new_since_full_pass: group.new_since_full_pass,
+                unbounded: group.unbounded,
             });
         }
 
@@ -213,6 +225,12 @@ impl Grouping {
     /// function of the very buckets this method builds, and a caller that
     /// bucketed the claims a second time to ask for it could disagree with what
     /// is presented.
+    ///
+    /// A freshly computed grouping is a full pass, so the size caps run here
+    /// (`gd-26r.23`): the passes claim what they claim, and any group over the
+    /// cap of the arm that produced it is directory-split before the order is
+    /// paid out to [`Grouping::build`]. Pieces take their parent's slot, so the
+    /// group order the buckets earned is the order that survives.
     pub fn present(changeset: &Changeset, claims: Vec<PassClaim>, source: GroupSource) -> Self {
         let mut members: BTreeMap<String, Vec<String>> = BTreeMap::new();
         let mut claim_by_path: BTreeMap<String, PassClaim> = BTreeMap::new();
@@ -240,10 +258,11 @@ impl Grouping {
                 name,
                 source,
                 new_since_full_pass: false,
+                unbounded: false,
             })
             .collect();
 
-        Self::build(changeset, presented, claim_by_path)
+        Self::build(changeset, caps::enforce(presented), claim_by_path)
     }
 
     /// A grouping whose groups and identities came from somewhere other than

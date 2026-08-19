@@ -83,6 +83,7 @@ src/
 │
 ├── grouping/            # Changeset grouping engine (docs/GROUPING.md, docs/GROUPS_CONTRACT.md)
 │   ├── mod.rs           # Grouping, Group, group ids, the strict file-level partition
+│   ├── caps.rs          # Group size caps and the one directory split that enforces them
 │   ├── changeset.rs     # Tokenised view of the changeset the passes score
 │   ├── passes.rs        # Heuristic grouping passes
 │   ├── order.rs         # Group and within-group ordering
@@ -160,7 +161,7 @@ Repository-managed agent integrations:
 **FileTreeMode** and **FileTreeItem** (`src/app/mod.rs`):
 
 - `FileTreeMode` is how the sidebar lays out the directories above each file: `Nested` (default, one row per ancestor), `Compact` (a single-child chain collapses into one row), `Flat` (no directory rows, each file labelled with its full path). Set once by the binary from config
-- `FileTreeItem` is one sidebar row: `Directory`, `File`, or `Group`. `Group` rows sit at depth 0 with their members directly beneath them at depth 1 and no directory rows between (`docs/SIDEBAR_MODEL.md`); the row's `expanded_groups` key is the opaque group id. `Group.drifted` fills the row's marker slot with `~` before the label — the slot `gd-26r.18` reuses rather than inventing a second glyph
+- `FileTreeItem` is one sidebar row: `Directory`, `File`, or `Group`. `Group` rows sit at depth 0 with their members directly beneath them at depth 1 and no directory rows between (`docs/SIDEBAR_MODEL.md`); the row's `expanded_groups` key is the opaque group id. `Group.drifted` fills the row's marker slot with `~` before the label, and `Group.unbounded` fills the same slot with `!` and outranks it (`gd-26r.23`) — the slot `gd-26r.18` reuses rather than inventing a third glyph
 - `App::grouping_status()` is the sidebar header's grouping chip: one at a time, grouped-view only, ranked `Refining` > `RefineCancelled` / `HeuristicsOnly` > `Drift { percent }` and rendered plain after the filter qualifier (`docs/SIDEBAR_MODEL.md`)
 
 **InputMode** (`src/app/mod.rs`):
@@ -179,7 +180,7 @@ Repository-managed agent integrations:
 
 - Persisted review state with `files: HashMap<PathBuf, FileReview>`
 - Each `FileReview` has: `reviewed: bool`, `reviewed_hunks: BTreeSet<String>`, `file_comments: Vec<Comment>`, `line_comments: HashMap<u32, Vec<Comment>>`, `group_id: Option<String>`
-- The grouping is persisted state, not a derived view: `groups: Vec<SessionGroup>` (`id`, `name`, `order`, `source`, `new_since_full_pass`) holds the table in reading order. `record_grouping()` writes it plus each file's `group_id`; `grouping_for(changeset)` rebuilds a `Grouping` from it, so reopening restores yesterday's groups instead of regrouping
+- The grouping is persisted state, not a derived view: `groups: Vec<SessionGroup>` (`id`, `name`, `order`, `source`, `new_since_full_pass`, `unbounded`) holds the table in reading order. `record_grouping()` writes it plus each file's `group_id`; `grouping_for(changeset)` rebuilds a `Grouping` from it, so reopening restores yesterday's groups instead of regrouping
 - Release boundary: `release_count` (monotonic, bumped by `:send`), `released_at`, and per-comment `released_in: Option<u32>`. `ReviewSession::release()` stamps every unreleased comment with the new batch. `Comment::apply_edit()` clears `released_in` so an edited comment republishes. All three fields are `#[serde(default)]` for old session JSON.
 
 **ReviewStore** (`src/review_store.rs`):
@@ -192,10 +193,11 @@ Repository-managed agent integrations:
 
 - The sidebar's partition of one changeset: `groups: Vec<Group>` in reading order plus `assignments` from path to `GroupId`. Every changeset file is in exactly one group (`docs/TOTAL_COVERAGE.md`)
 - `Grouping::build` is the sole constructor and sorts within each group by construction (`src/grouping/order.rs`), so no caller re-sorts what it hands back — including the refine arm, whose response carries group order only
-- `Group`: `id: GroupId`, `name`, `source: GroupSource`, `new_since_full_pass: bool`. Membership lives in `assignments`, not on the group; read it with `Grouping::files_in(&group.id)`. `GroupId` is an opaque uuid minted by `GroupId::new()` or rehydrated by `GroupId::from_persisted` from the session, so a restored grouping keeps yesterday's ids. It is the sidebar's row key under grouping (`docs/SIDEBAR_MODEL.md`)
+- `Group`: `id: GroupId`, `name`, `source: GroupSource`, `new_since_full_pass: bool`, `unbounded: bool`. Membership lives in `assignments`, not on the group; read it with `Grouping::files_in(&group.id)`. `GroupId` is an opaque uuid minted by `GroupId::new()` or rehydrated by `GroupId::from_persisted` from the session, so a restored grouping keeps yesterday's ids. It is the sidebar's row key under grouping (`docs/SIDEBAR_MODEL.md`)
 - `Group::drifted()` is `Incremental || new_since_full_pass`, and `Grouping::drift()` is the files in drifted groups over every file in the partition — **the one drift number**, read by both the sidebar chip and the auto-regroup backstop (`gd-26r.36`) through `Grouping::drift_percent()`, which is that same number in whole percent so the chip and the threshold cannot disagree
 - `GroupSource::{Heuristics, Refined, Incremental}`: which arm placed the group, per group rather than per grouping — a refined answer that only restated the heuristics presents as `Heuristics`, and a group opened by incremental assignment presents as `Incremental`
 - `PresentedGroup`: one group flattened for the renderer
+- `grouping::caps` is the size caps (`gd-26r.23`), three **constants** and no config key: soft cap 20 (a number in the refine prompt only, no engine behaviour), hard cap 25 on a `Refined` group and 30 on a `Heuristics` one. `caps::enforce` runs at the end of both full passes — `Grouping::present` and `refine::apply` — and splits any over-cap group by directory, naming the pieces `parent · shortest-distinguishing-suffix`. **One pass**: a piece still over the cap is kept as it is and carries `Group::unbounded`, which is the sidebar's `!` marker. It never runs on incremental assignment, and it never moves `Grouping::drift()`
 - `Changeset` (`src/grouping/changeset.rs`): the engine's read-only view of a diff — `ChangedFile` paths and change kinds, with the commit-message pseudo-file excluded
 
 **RefineOutcome** (`src/app/refine.rs`):

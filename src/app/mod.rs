@@ -202,6 +202,10 @@ pub enum FileTreeItem {
         /// reuses rather than inventing a second glyph convention
         /// (`docs/SIDEBAR_MODEL.md`).
         drifted: bool,
+        /// Whether the size cap's single split pass could not bound this group
+        /// (`gd-26r.23`), which fills the same marker slot with `!`. It
+        /// outranks `drifted` there: one slot, one glyph.
+        unbounded: bool,
     },
 }
 

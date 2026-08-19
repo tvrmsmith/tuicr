@@ -76,6 +76,9 @@ pub struct Group {
     pub source: GroupSource,
     /// Set when opened by incremental assignment (REGROUPING_STATE.md).
     pub new_since_full_pass: bool,
+    /// Set when the size cap's single split pass could not bound this group
+    /// (gd-26r.23). The sidebar's `!` marker.
+    pub unbounded: bool,
 }
 
 pub enum GroupSource { Heuristics, Refined, Incremental }
@@ -238,6 +241,14 @@ part of the verdict, not a detail.
 | Group with no `files` | Keeps its name and order slot; its paths fall to the restore loop |
 | `files` entry that is not a string | Skipped, counted as a non-string entry; the path it was meant to be falls to the restore loop |
 | Group with no/blank `name` | Filed as `unnamed-<index>`, counted |
+
+**A group over the size cap is not a violation** (`gd-26r.23`). The cap is
+enforced after `apply` has produced its partition, by `grouping::caps::enforce`,
+which splits the group by directory and names the pieces `parent · suffix`.
+Routing it through the table above was rejected deliberately: it would make the
+cap part of the contract the response is graded against, and count a large but
+legitimate answer into the repair warning that exists to say the model is
+misbehaving.
 | Name reused across two groups | Second uniquified via `free_name`, counted |
 
 Two properties fall out and are worth stating:
@@ -349,6 +360,8 @@ one-file `dir:` groups. `gd-26r.18` owns that revisit.
 - ~~Within-group file order~~ — settled by `gd-26r.27`: the engine's sort owns
   it, the contract carries nothing about it.
 - How the pre-TUI progress screen renders a retry (`gd-26r.15`).
-- Group sizing and any soft/hard cap (`gd-26r.23`).
+- ~~Group sizing and any soft/hard cap~~ — settled by `gd-26r.23`: soft cap 20
+  in the prompt, hard caps 25 (refined) and 30 (heuristic) enforced after
+  `apply` and outside the repair count, all three constants rather than config.
 - Vertex credential types beyond `authorized_user` ADC (map fog).
 - How a human reassigns a file (`gd-26r.18`).

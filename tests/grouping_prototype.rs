@@ -1122,7 +1122,8 @@ fn every_documented_rule_reaches_the_model() {
     }
 }
 
-/// The shipped arm sends the prompt this harness measured, byte for byte.
+/// The shipped arm sends the prompt this harness measured, byte for byte, less
+/// the one sentence `gd-26r.23` deliberately added to it.
 ///
 /// Every number `docs/GROUPING_PASSES.md` publishes for refine was produced by
 /// [`Shape::Full`] against a recorded run of *this* text. `tuicr::grouping::
@@ -1131,21 +1132,53 @@ fn every_documented_rule_reaches_the_model() {
 /// the two drifting — and a shipped prompt that has drifted is one whose F1 of
 /// 0.427 and 0.711 was measured on a prompt no user ever sends.
 ///
+/// **Two deliberate differences, both spliced in here rather than waived.**
+/// `refine::size_guidance()` is `gd-26r.23`'s soft cap and size signal, which
+/// no recorded run was sent (`docs/GROUPING_PASSES.md` records that the refine
+/// figures predate it). And the heuristic grouping the shipped prompt renders
+/// is the *capped* one, because the heuristic cap runs inside
+/// `group_changeset`, so the harness partition is built from the engine's own
+/// output rather than from the raw claims. Everything else still has to match.
+///
 /// Fixture 1 rather than the synthetic changeset, because the parity that
 /// matters is on the input the recorded runs used.
 #[test]
 fn the_shipped_prompt_is_the_prompt_the_numbers_were_measured_on() {
     let (changeset, _) = orca();
     let config = GroupingConfig::default();
-    let harness = passes::group(&changeset, config).partition();
     let engine = tuicr::grouping::group_changeset(&changeset, config);
+    // Path-sorted, because the harness renders a group's members in the order
+    // they were filed and the shipped renderer sorts them (the within-group
+    // order is engine-owned and deliberately absent from the prompt).
+    let mut assignments: Vec<(String, String)> = engine
+        .groups()
+        .iter()
+        .flat_map(|group| {
+            engine
+                .files_in(&group.id)
+                .map(|path| (path.to_string_lossy().to_string(), group.name.clone()))
+                .collect::<Vec<_>>()
+        })
+        .collect();
+    assignments.sort();
+    let harness = Partition::from_assignments(assignments);
+
+    let measured = refine::prompt(&changeset, &harness, Shape::Full);
+    let with_guidance = measured.replace(
+        "Do not invent, omit or duplicate a path.\n",
+        &format!(
+            "Do not invent, omit or duplicate a path.{}\n",
+            tuicr::grouping::refine::size_guidance()
+        ),
+    );
 
     assert_eq!(
         tuicr::grouping::refine::prompt(&changeset, &engine),
-        refine::prompt(&changeset, &harness, Shape::Full),
+        with_guidance,
         "the shipped refine prompt no longer matches the Shape::Full prompt \
-         docs/GROUPING_PASSES.md's refine numbers were measured on. Either bring the two back \
-         together or re-measure; do not delete this bar."
+         docs/GROUPING_PASSES.md's refine numbers were measured on, and the difference is not \
+         the size guidance. Either bring the two back together or re-measure; do not delete \
+         this bar."
     );
 }
 

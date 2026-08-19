@@ -58,6 +58,12 @@ pub struct SessionGroup {
     /// a full pass.
     #[serde(default)]
     pub new_since_full_pass: bool,
+    /// Set when the size cap's single split pass could not bound this group
+    /// (`gd-26r.23`). Persisted for the same reason the grouping itself is:
+    /// reopening never regroups, so the row that said the engine gave up here
+    /// has to keep saying it.
+    #[serde(default)]
+    pub unbounded: bool,
 }
 
 impl FileReview {
@@ -353,6 +359,7 @@ impl ReviewSession {
                 order,
                 source: group.source.as_str().to_string(),
                 new_since_full_pass: group.new_since_full_pass,
+                unbounded: group.unbounded,
             })
             .collect();
 
@@ -465,6 +472,7 @@ impl ReviewSession {
                 name: group.name.clone(),
                 source: GroupSource::from_persisted(&group.source),
                 new_since_full_pass: group.new_since_full_pass,
+                unbounded: group.unbounded,
                 members: members.remove(group.id.as_str()).unwrap_or_default(),
             })
             .collect();

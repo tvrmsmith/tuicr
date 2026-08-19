@@ -107,6 +107,11 @@ Those files' groups carry a `~` before their name. Let that number reach
 `[grouping].regroup_threshold` (75% by default) and tuicr regroups the review itself, from
 the heuristics alone — instant, offline, and never a model call.
 
+No group is allowed to swallow the review: a full pass splits an oversized group by
+directory, naming the pieces `client-plumbing · api`. The rare group it cannot split
+that way — a single flat directory of generated files, say — keeps its files and carries a
+`!` before its name, which says the grouping will not help you there.
+
 ## How it compares
 
 | | tuicr | [hunk](https://github.com/modem-dev/hunk) | [lumen](https://github.com/jnsahaj/lumen) | `gh pr review` | `git diff` |
