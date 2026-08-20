@@ -81,7 +81,7 @@ src/
 │       ├── bkt.rs       # ForgeBackend impl and bkt command runner
 │       └── models.rs    # Bitbucket Cloud REST 2.0 response models
 │
-├── grouping/            # Changeset grouping engine (docs/GROUPING.md, docs/GROUPS_CONTRACT.md)
+├── grouping/            # Changeset grouping engine (docs/GROUPING_INDEX.md maps the design docs)
 │   ├── mod.rs           # Grouping, Group, group ids, the strict file-level partition
 │   ├── caps.rs          # Group size caps and the one directory split that enforces them
 │   ├── changeset.rs     # Tokenised view of the changeset the passes score
@@ -353,12 +353,13 @@ These are non-obvious things the implementation chain hit. Worth preserving for 
 
 When adding user-facing features, update the relevant documentation:
 
-| Document               | Update when adding/changing...                                                                                           |
-| ---------------------- | ------------------------------------------------------------------------------------------------------------------------ |
-| `README.md`            | Keybindings, commands (`:*`), CLI flags, features list, installation methods, agent integration setup, forge limitations |
-| `src/ui/help_popup.rs` | Keybindings or commands (update the `help_text` vector)                                                                  |
-| `AGENTS.md`            | Module structure, repo-managed agent integrations, key types, data flow, dependencies, forge invariants and gotchas      |
-| `docs/CONFIG.md`       | Any `config.toml` key: add a row to the Options table and a line to the Full example block                               |
+| Document                 | Update when adding/changing...                                                                                           |
+| ------------------------ | ------------------------------------------------------------------------------------------------------------------------ |
+| `README.md`              | Keybindings, commands (`:*`), CLI flags, features list, installation methods, agent integration setup, forge limitations |
+| `src/ui/help_popup.rs`   | Keybindings or commands (update the `help_text` vector)                                                                  |
+| `AGENTS.md`              | Module structure, repo-managed agent integrations, key types, data flow, dependencies, forge invariants and gotchas      |
+| `docs/CONFIG.md`         | Any `config.toml` key: add a row to the Options table and a line to the Full example block                               |
+| `docs/GROUPING_INDEX.md` | A grouping design doc: add a router row and a doc entry. Also when a fact moves from one grouping doc to another         |
 
 ---
 
