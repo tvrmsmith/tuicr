@@ -1,5 +1,8 @@
 # Total coverage of the partition
 
+Part of the grouping design set. [`docs/GROUPING_INDEX.md`](GROUPING_INDEX.md)
+maps a question to the doc that owns the answer.
+
 Design record for `gd-26r.12` on the wayfinder map `gd-26r` (grouped review of
 large changesets in tuicr). **Mostly decision-only**: the one thing that lands
 as code with this ticket is the guard on the commit-message hoist

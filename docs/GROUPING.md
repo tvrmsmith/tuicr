@@ -1,5 +1,8 @@
 # Grouping guidelines
 
+Part of the grouping design set. [`docs/GROUPING_INDEX.md`](GROUPING_INDEX.md)
+maps a question to the doc that owns the answer.
+
 How a changeset should be cut into groups for review. These are the rules the
 grouping engine aims at, and the rules a human uses when correcting it.
 

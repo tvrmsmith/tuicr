@@ -1,5 +1,8 @@
 # Heuristic grouping passes: findings
 
+Part of the grouping design set. [`docs/GROUPING_INDEX.md`](GROUPING_INDEX.md)
+maps a question to the doc that owns the answer.
+
 What the grouping engine runs, in what order, and what happens when two passes
 claim the same file. The rules being aimed at are `docs/GROUPING.md`; the
 fixture and scoring method are `tests/fixtures/grouping/README.md`.
