@@ -32,10 +32,11 @@ mean copying the doc's content here.
 | Does the `nested`/`compact`/`flat` tree mode do anything while grouping is on? | [`SIDEBAR_MODEL.md`](SIDEBAR_MODEL.md) § The tree mode is its own feature |
 | How many rows does each layout cost on the fixture? | [`SIDEBAR_MODEL.md`](SIDEBAR_MODEL.md) § Row cost |
 | What can the sidebar header chip say, and which one wins? | [`SIDEBAR_MODEL.md`](SIDEBAR_MODEL.md) § The header suffix |
-| What do `~` and `!` on a group row mean? | [`SIDEBAR_MODEL.md`](SIDEBAR_MODEL.md) § The marker slot on group rows |
+| What do `~`, `!` and `?` on a group row mean? | [`SIDEBAR_MODEL.md`](SIDEBAR_MODEL.md) § The marker slot on group rows |
 | What exactly is the `n% new` number counting? | [`SIDEBAR_MODEL.md`](SIDEBAR_MODEL.md) § The drift number |
 | What invariant must `build_visible_items` hold under grouping? | [`SIDEBAR_MODEL.md`](SIDEBAR_MODEL.md) § What this demands of `build_visible_items` |
 | Which parts of the grouping survive into the session file? | [`REGROUPING_STATE.md`](REGROUPING_STATE.md) § What is persisted |
+| I marked a group as wrong. Does the mark survive a regroup? | [`REGROUPING_STATE.md`](REGROUPING_STATE.md) § What happens to review state across a regroup |
 | What changes the grouping without the reader asking? | [`REGROUPING_STATE.md`](REGROUPING_STATE.md) § Incremental assignment |
 | Which actions regroup, and which of those also refine? | [`REGROUPING_STATE.md`](REGROUPING_STATE.md) § How a human forces a regroup |
 | When does tuicr regroup on its own? | [`REGROUPING_STATE.md`](REGROUPING_STATE.md) § The staleness indicator and the auto backstop |
@@ -224,8 +225,8 @@ close and still read as though a corrections UI is coming:
 
 - `GROUPING.md:135-139`, `:146`
 - `GROUPS_CONTRACT.md:134-137`, `:143-144`, `:328-355`, `:357-359`, `:370`
-- `SIDEBAR_MODEL.md:396-407`, `:622-623`, `:652`
-- `REGROUPING_STATE.md:78-79`, `:84`, `:273-275`
+- `SIDEBAR_MODEL.md:396-407`, `:622-623`, `:665`
+- `REGROUPING_STATE.md:78-79`, `:84`, `:293-295`
 - `TOTAL_COVERAGE.md:152-154`, `:231-232`
 
 Read `bd show gd-26r.18` for the close reason.
@@ -246,9 +247,12 @@ correction. `REGROUPING_STATE.md:14-16` and `MID_SESSION_REGROUP.md:113`,
 says contract approval covers the refine exchange, which
 `GROUPS_CONTRACT.md`'s ruling reverses. Trust the contract.
 
-**Open build work.** `gd-26r.40`, `gd-26r.41`, `gd-26r.42` and `gd-26r.43` are
-open. When they ship, `gd-26r.40`'s facts land in `REGROUPING_STATE.md` and
-`SIDEBAR_MODEL.md`, and the feedback mechanism's land in `SIDEBAR_MODEL.md` for
-anything on screen, `CONFIG.md` for anything configurable, and
-`REGROUPING_STATE.md` for anything persisted. Nothing about their behaviour is
-described anywhere in these docs yet, and nothing should be until it ships.
+**Open build work.** `gd-26r.40`, `gd-26r.42` and `gd-26r.43` are open.
+`gd-26r.41` shipped: the marks, their glyph and its ranking are now
+`SIDEBAR_MODEL.md`'s facts, and what a landing does to a mark is
+`REGROUPING_STATE.md`'s. When the rest ship, `gd-26r.40`'s facts land in
+`REGROUPING_STATE.md` and `SIDEBAR_MODEL.md`, and the rest of the feedback
+mechanism's land in `SIDEBAR_MODEL.md` for anything on screen, `CONFIG.md` for
+anything configurable, and `REGROUPING_STATE.md` for anything persisted.
+Nothing about their behaviour is described anywhere in these docs yet, and
+nothing should be until it ships.
