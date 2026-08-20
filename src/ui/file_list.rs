@@ -68,9 +68,10 @@ pub(super) fn render_file_list(frame: &mut Frame, app: &mut App, area: Rect) {
                 total,
                 drifted,
                 unbounded,
+                marked,
                 ..
             } => {
-                2 + group_marker(*unbounded, *drifted).width()
+                2 + group_marker(*marked, *unbounded, *drifted).width()
                     + label.width()
                     + 1
                     + group_count(*reviewed, *total).width()
@@ -126,6 +127,7 @@ pub(super) fn render_file_list(frame: &mut Frame, app: &mut App, area: Rect) {
                     expanded,
                     drifted,
                     unbounded,
+                    marked,
                     ..
                 } => {
                     let icon = if *expanded {
@@ -133,7 +135,7 @@ pub(super) fn render_file_list(frame: &mut Frame, app: &mut App, area: Rect) {
                     } else {
                         COLLAPSED_GLYPH
                     };
-                    let marker = group_marker(*unbounded, *drifted);
+                    let marker = group_marker(*marked, *unbounded, *drifted);
                     let count = group_count(*reviewed, *total);
                     // The count is flush right, which is what makes the
                     // collapsed overview scannable as a column of sizes, so a
@@ -207,6 +209,16 @@ pub(super) fn render_file_list(frame: &mut Frame, app: &mut App, area: Rect) {
                             Span::raw(indent),
                             Span::styled(format!("{checkbox} "), checkbox_style),
                         ];
+                        // Same glyph and same ranking-by-omission as
+                        // `group_marker`: a mark is the one fact on the row
+                        // only the human knows, so it gets the slot right
+                        // after the checkbox. An unmarked row pushes no span
+                        // at all, matching how `group_marker` returns `""`
+                        // and how pristine mode below drops its span outright
+                        // — no fixed-width placeholder to keep aligned.
+                        if app.session.is_file_marked(path) {
+                            spans.push(Span::raw("? "));
+                        }
                         // Pristine mode reviews unchanged code; the M/A/D
                         // badge would lie. Suppress it and leave the row as
                         // checkbox + filename.
@@ -312,12 +324,16 @@ fn group_count(reviewed: usize, total: usize) -> String {
     format!("{reviewed}/{total}")
 }
 
-/// The marker slot of a group row: `! ` on a group the size cap could not bound
-/// (`gd-26r.23`), `~ ` on a group incremental assignment produced
-/// (`gd-26r.15`), nothing otherwise (`docs/SIDEBAR_MODEL.md`).
+/// The marker slot of a group row: `? ` on a group the reader marked
+/// (`gd-26r.41`), `! ` on a group the size cap could not bound (`gd-26r.23`),
+/// `~ ` on a group incremental assignment produced (`gd-26r.15`), nothing
+/// otherwise (`docs/SIDEBAR_MODEL.md`).
 ///
-/// **One slot, one glyph**, and `!` outranks `~` in the rare row that could
-/// carry both. `~` says the row is a little stale; `!` says the row will not
+/// **One slot, one glyph**, and `?` outranks both `!` and `~` in a row that
+/// could carry more than one. `!` and `~` are engine facts, re-derivable at
+/// any time by re-running the pass; the mark is the one thing on the row only
+/// the human knows, and re-deriving anything never recovers it. `!` outranks
+/// `~` in turn: `~` says the row is a little stale, `!` says the row will not
 /// help you at all, which is the more urgent of the two and the one the count
 /// column cannot say for itself. A cap-forced *split* carries neither: those
 /// groups are as fresh as anything else the pass produced.
@@ -327,8 +343,10 @@ fn group_count(reviewed: usize, total: usize) -> String {
 /// overview scannable as a list of sizes (`gd-26r.31`). Restyling the label
 /// instead was rejected — invisible on a theme without italics, and unreadable
 /// to anyone comparing two shades.
-fn group_marker(unbounded: bool, drifted: bool) -> &'static str {
-    if unbounded {
+fn group_marker(marked: bool, unbounded: bool, drifted: bool) -> &'static str {
+    if marked {
+        "? "
+    } else if unbounded {
         "! "
     } else if drifted {
         "~ "
@@ -473,6 +491,18 @@ mod tests {
                 _ => None,
             })
             .expect("a group row")
+    }
+
+    /// The row key of the group named `label`, for toggling its mark the same
+    /// way `App::toggle_group_mark_by_id` does.
+    fn group_id(app: &App, label: &str) -> String {
+        app.build_visible_items()
+            .iter()
+            .find_map(|item| match item {
+                FileTreeItem::Group { id, label: l, .. } if l == label => Some(id.clone()),
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("no group row named {label}"))
     }
 
     fn draw(app: &mut App) -> Buffer {
@@ -751,6 +781,122 @@ mod tests {
         assert!(
             !piece.contains('!') && !piece.contains('~'),
             "a piece the split pass did bound carries no marker, got: {piece}"
+        );
+    }
+
+    /// A group the reader marked (`gd-26r.41`) says so with `?` in the same
+    /// slot `!` and `~` share.
+    #[test]
+    fn a_marked_group_renders_the_mark_before_its_name() {
+        let mut app = app_with_group_named("host-routing", &["src/host.ts", "src/routing.ts"]);
+        let id = group_id(&app, "host-routing");
+        app.session.toggle_group_mark(&id);
+
+        let buffer = draw(&mut app);
+        let text = sidebar_text(&app, &buffer);
+
+        assert!(
+            text.contains("\u{25bc} ? host-routing"),
+            "expected the mark glyph before the label, got:\n{text}"
+        );
+    }
+
+    /// The mark outranks `!`: both are engine-visible facts about the same
+    /// group, but `!` is re-derivable from the partition at any time and the
+    /// mark is the one fact on the row only the human supplied. Losing it to
+    /// `!` in the shared slot would make it invisible on exactly the group
+    /// the reader most wanted to flag.
+    #[test]
+    fn the_mark_outranks_the_unbounded_glyph_on_a_marked_group() {
+        let flat = ["src/gen/a.rs", "src/gen/b.rs"];
+        let files: Vec<DiffFile> = flat.iter().map(|p| file(p)).collect();
+        let mut session = empty_session(&stub_vcs_info());
+        for file in &files {
+            session.add_file(file.display_path().clone(), file.status, file.content_hash);
+        }
+        session.record_grouping(&Grouping::restore(
+            &Changeset::from_diff_files(&files),
+            vec![PresentedGroup {
+                id: GroupId::new(),
+                name: "generated".to_string(),
+                source: GroupSource::Heuristics,
+                new_since_full_pass: false,
+                unbounded: true,
+                members: flat.iter().map(|p| (*p).to_string()).collect(),
+            }],
+        ));
+
+        let mut app = build_app(files, session);
+        app.enable_grouping();
+        app.expand_all_dirs();
+        let id = group_id(&app, "generated");
+        app.session.toggle_group_mark(&id);
+
+        let buffer = draw(&mut app);
+        let text = sidebar_text(&app, &buffer);
+
+        assert!(
+            text.contains("? generated"),
+            "expected the mark to win the shared slot, got:\n{text}"
+        );
+        assert!(
+            !text.contains("! generated"),
+            "the unbounded glyph must not appear once the group is marked, got:\n{text}"
+        );
+    }
+
+    /// The mark outranks `~` for the same reason it outranks `!`: drift is
+    /// re-derivable from `new_since_full_pass`, the mark is not.
+    #[test]
+    fn the_mark_outranks_the_drift_glyph_on_a_marked_group() {
+        let mut app = drifted_app();
+        let id = group_id(&app, "arrivals");
+        app.session.toggle_group_mark(&id);
+
+        let buffer = draw_at(&mut app, 180);
+        let text = sidebar_text(&app, &buffer);
+
+        assert!(
+            text.contains("? arrivals"),
+            "expected the mark to win the shared slot, got:\n{text}"
+        );
+        assert!(
+            !text.contains("~ arrivals"),
+            "the drift glyph must not appear once the group is marked, got:\n{text}"
+        );
+    }
+
+    /// File rows have no marker slot of their own (`gd-26r.41`): the mark
+    /// lands between the checkbox and the status char, the same glyph a
+    /// marked group carries.
+    #[test]
+    fn a_marked_file_row_renders_the_mark_between_the_checkbox_and_the_status_char() {
+        let mut app = app_with(&["src/main.rs"]);
+        app.session.toggle_file_mark(&PathBuf::from("src/main.rs"));
+
+        let text = buffer_text(&draw(&mut app));
+
+        assert!(
+            text.contains("\u{25a2} ? M main.rs"),
+            "expected the mark between the checkbox and the status char, got:\n{text}"
+        );
+    }
+
+    /// An unmarked row must render exactly as it did before this feature: no
+    /// placeholder column standing in for the absent mark.
+    #[test]
+    fn an_unmarked_file_row_renders_no_mark_column() {
+        let mut app = app_with(&["src/main.rs"]);
+
+        let text = buffer_text(&draw(&mut app));
+
+        assert!(
+            text.contains("\u{25a2} M main.rs"),
+            "expected the plain checkbox-status-name row, got:\n{text}"
+        );
+        assert!(
+            !text.contains('?'),
+            "an unmarked row must carry no mark glyph, got:\n{text}"
         );
     }
 

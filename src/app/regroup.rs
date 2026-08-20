@@ -330,7 +330,25 @@ impl App {
     /// longer exists. `expanded_dirs` is untouched: the ungrouped tree is not
     /// what the human asked to recompute, and `<leader>g` will show it to them
     /// as they left it.
+    ///
+    /// **The one landing path.** `:regroup`, a refine answer and the
+    /// `gd-26r.36` backstop all reach here rather than any of their own — the
+    /// alternative, `record_grouping` (`src/model/review.rs`), is only reached
+    /// through `sort_files_by_directory` → `order_files_by_group`, which is
+    /// skipped whenever `grouping_enabled` is off, and `<leader>g` can flip
+    /// that mid-flight while a `:regroup` refine call is still out. `land` is
+    /// the only place a landing is unconditional, which is why the
+    /// grouping-feedback bookkeeping (`gd-26r.41`) lives here: counting a
+    /// landing and dropping group marks — **not** file marks, which are
+    /// path-keyed and stay true of a file that just moved — has to happen
+    /// exactly once per landing, on every path that produces one.
     fn land(&mut self, grouping: Grouping) {
+        self.session.record_landing();
+        self.session.clear_group_marks();
+        // `landing_count` and a cleared `marked_groups` are session state like
+        // any comment or reviewed flag, so a landing has to be saved like one.
+        self.dirty = true;
+
         let was = self.diff_state.current_file_idx;
         let relative_line = self
             .diff_state

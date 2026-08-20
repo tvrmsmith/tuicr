@@ -1031,3 +1031,132 @@ fn files_under(app: &App, id: &str) -> Vec<String> {
         .map(|path| path.to_string_lossy().to_string())
         .collect()
 }
+
+/// Grouping feedback (`gd-26r.41`): marking a group or a file, and what
+/// survives a landing.
+mod marks {
+    use super::*;
+
+    fn first_group_id(app: &App) -> String {
+        group_ids(app).into_iter().next().expect("a group row")
+    }
+
+    fn first_file_idx(app: &App) -> usize {
+        app.build_visible_items()
+            .iter()
+            .find_map(|item| match item {
+                FileTreeItem::File { file_idx, .. } => Some(*file_idx),
+                _ => None,
+            })
+            .expect("a file row")
+    }
+
+    #[test]
+    fn marking_a_group_and_landing_a_regroup_drops_the_group_mark_and_keeps_the_file_mark() {
+        let mut app = grouped_paths(PATHS);
+        let group_id = first_group_id(&app);
+        let file_idx = first_file_idx(&app);
+        let path = app.diff_files[file_idx].display_path().clone();
+
+        app.toggle_group_mark_by_id(&group_id);
+        app.toggle_mark_for_file_idx(file_idx);
+        assert!(
+            app.session.is_group_marked(&group_id),
+            "the group is marked before landing"
+        );
+        assert!(
+            app.session.is_file_marked(&path),
+            "the file is marked before landing"
+        );
+
+        // `:regroup` with no refine call lands the heuristic pass synchronously.
+        app.regroup_with(None);
+
+        assert!(
+            app.session.marked_group_ids().is_empty(),
+            "a landing mints fresh group ids, so the old group's mark points at nothing \
+             recoverable and is dropped"
+        );
+        assert!(
+            app.session.is_file_marked(&path),
+            "a file mark is path-keyed and stays true of a file that just moved"
+        );
+    }
+
+    #[test]
+    fn landing_count_counts_landings() {
+        let mut app = grouped_paths(PATHS);
+        assert_eq!(
+            app.session.landing_count, 0,
+            "a session that only opened its grouping has never landed one"
+        );
+
+        app.regroup_with(None);
+        assert_eq!(app.session.landing_count, 1, "one :regroup is one landing");
+    }
+
+    #[test]
+    fn marking_a_group_does_not_move_drift() {
+        let mut app = grouped_paths(PATHS);
+        let before = app.grouping.as_ref().expect("grouping computed").clone();
+        let group_id = first_group_id(&app);
+
+        app.toggle_group_mark_by_id(&group_id);
+
+        let after = app.grouping.as_ref().expect("grouping computed");
+        assert_eq!(
+            after.drift(),
+            before.drift(),
+            "a mark changes no assignment, so it must never move drift"
+        );
+        assert_eq!(after.drift_percent(), before.drift_percent());
+        assert_eq!(
+            after
+                .groups()
+                .iter()
+                .map(|group| group.drifted())
+                .collect::<Vec<_>>(),
+            before
+                .groups()
+                .iter()
+                .map(|group| group.drifted())
+                .collect::<Vec<_>>(),
+            "a mark must never be able to trip the gd-26r.36 auto-regroup backstop"
+        );
+    }
+
+    #[test]
+    fn marking_the_commit_message_pseudo_file_is_refused() {
+        let mut app = grouped_paths_with_commit_message(PATHS);
+        let commit_msg_idx = app
+            .diff_files
+            .iter()
+            .position(|file| file.is_commit_message)
+            .expect("the commit message row");
+
+        app.toggle_mark_for_file_idx(commit_msg_idx);
+
+        let path = app.diff_files[commit_msg_idx].display_path().clone();
+        assert!(
+            !app.session.is_file_marked(&path),
+            "the commit message sits outside the partition and cannot be in the wrong group"
+        );
+    }
+
+    #[test]
+    fn marking_a_review_with_no_grouping_is_refused() {
+        let mut app = ungrouped_app(PATHS.iter().map(|path| make_file(path)).collect());
+        assert!(app.grouping.is_none(), "the fixture has no grouping at all");
+        let file_idx = 0;
+        let path = app.diff_files[file_idx].display_path().clone();
+
+        app.toggle_mark_for_file_idx(file_idx);
+        app.toggle_group_mark_by_id("nonexistent");
+
+        assert!(
+            !app.session.is_file_marked(&path),
+            "a mark is feedback on a grouping, and this review has none"
+        );
+        assert!(app.session.marked_group_ids().is_empty());
+    }
+}
