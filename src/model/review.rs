@@ -1,7 +1,7 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeSet, HashMap};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use super::comment::Comment;
 use super::diff_types::{DiffFile, FileStatus};
@@ -34,6 +34,13 @@ pub struct FileReview {
     /// file that changes group keeps everything it had.
     #[serde(default)]
     pub group_id: Option<String>,
+    /// Grouping feedback (`gd-26r.41`): the reader's opinion that this file is
+    /// in the wrong group, carrying no destination. Path-keyed like the rest
+    /// of `FileReview`, which is why a file mark survives a landing that mints
+    /// fresh group ids — `docs/GROUPING.md`'s "this is wrong" outlives the
+    /// group it was said about, unlike [`ReviewSession::marked_groups`].
+    #[serde(default)]
+    pub marked: bool,
 }
 
 /// One row of the session's group table (`docs/REGROUPING_STATE.md`).
@@ -77,6 +84,7 @@ impl FileReview {
             reviewed_hunks: BTreeSet::new(),
             content_hash: Some(content_hash),
             group_id: None,
+            marked: false,
         }
     }
 
@@ -174,6 +182,25 @@ pub struct ReviewSession {
     /// grouping existed, and on every session reviewed with grouping off.
     #[serde(default)]
     pub groups: Vec<SessionGroup>,
+    /// Grouping feedback (`gd-26r.41`): groups the reader marked as wrong,
+    /// keyed by the same id string as [`SessionGroup::id`] and
+    /// [`FileReview::group_id`]. Dropped wholesale on a landing
+    /// (`App::land`, `src/app/regroup.rs`) because every landing mints fresh
+    /// group ids, so a group mark points at nothing recoverable once one
+    /// happens.
+    #[serde(default)]
+    pub marked_groups: BTreeSet<String>,
+    /// How many times the session has landed a grouping — `:regroup`, a
+    /// refine answer, or the `gd-26r.36` auto-regroup backstop — since it was
+    /// opened. Modelled on `release_count` above: monotonic, `0` means the
+    /// session opened on its persisted grouping and never landed a new one,
+    /// and old session JSON rehydrates as `0`.
+    ///
+    /// Read seam for `gd-26r.43`'s log entry, which uses it to tell an
+    /// offline reader that the snapshot it is reading was not the only
+    /// partition the human saw. Nothing in this ticket consumes it.
+    #[serde(default)]
+    pub landing_count: u32,
     pub session_notes: Option<String>,
 }
 
@@ -203,6 +230,8 @@ impl ReviewSession {
             review_comments: Vec::new(),
             files: HashMap::new(),
             groups: Vec::new(),
+            marked_groups: BTreeSet::new(),
+            landing_count: 0,
             session_notes: None,
         }
     }
@@ -492,6 +521,77 @@ impl ReviewSession {
         self.files
             .get(path)
             .is_some_and(|review| review.reviewed_hunks.contains(key))
+    }
+
+    /// Grouping feedback (`gd-26r.41`): whether `path` carries a "this file is
+    /// in the wrong group" mark. `false` for a path the session has no
+    /// [`FileReview`] for.
+    pub fn is_file_marked(&self, path: &Path) -> bool {
+        self.files.get(path).is_some_and(|review| review.marked)
+    }
+
+    /// Flips `path`'s mark and returns the new state. A no-op that returns
+    /// `false` when the session has no [`FileReview`] for `path` — there is
+    /// nothing to carry the mark.
+    pub fn toggle_file_mark(&mut self, path: &Path) -> bool {
+        let Some(review) = self.files.get_mut(path) else {
+            return false;
+        };
+        review.marked = !review.marked;
+        review.marked
+    }
+
+    /// Whether the group named by `id` carries a mark.
+    pub fn is_group_marked(&self, id: &str) -> bool {
+        self.marked_groups.contains(id)
+    }
+
+    /// Flips the mark on the group named by `id` and returns the new state.
+    pub fn toggle_group_mark(&mut self, id: &str) -> bool {
+        if self.marked_groups.remove(id) {
+            false
+        } else {
+            self.marked_groups.insert(id.to_string());
+            true
+        }
+    }
+
+    /// Drops every group mark. Called on a landing (`App::land`,
+    /// `src/app/regroup.rs`), which mints fresh group ids wholesale, so a mark
+    /// left behind would point at a group that no longer exists in any
+    /// recoverable sense.
+    pub fn clear_group_marks(&mut self) {
+        self.marked_groups.clear();
+    }
+
+    /// Every marked file's path, sorted for a deterministic read.
+    ///
+    /// Read seam for `gd-26r.42`'s verdict prompt, which shows the
+    /// accumulated marks rather than offering a file picker. Nothing in this
+    /// ticket consumes it.
+    pub fn marked_files(&self) -> Vec<&Path> {
+        let mut paths: Vec<&Path> = self
+            .files
+            .values()
+            .filter(|review| review.marked)
+            .map(|review| review.path.as_path())
+            .collect();
+        paths.sort_unstable();
+        paths
+    }
+
+    /// Every marked group's id, sorted for a deterministic read.
+    ///
+    /// Read seam for `gd-26r.42`'s verdict prompt. Nothing in this ticket
+    /// consumes it.
+    pub fn marked_group_ids(&self) -> Vec<&str> {
+        self.marked_groups.iter().map(String::as_str).collect()
+    }
+
+    /// Records that the session landed a grouping. Saturating, since a landing
+    /// counter that wrapped would undercount rather than overflow visibly.
+    pub fn record_landing(&mut self) {
+        self.landing_count = self.landing_count.saturating_add(1);
     }
 }
 
@@ -1195,6 +1295,170 @@ mod tests {
         assert!(session.is_hunk_reviewed(&path, &second_key));
     }
 
+    mod grouping_feedback {
+        use super::*;
+
+        #[test]
+        fn should_toggle_a_file_mark_on_then_off() {
+            let mut session = test_session();
+            let path = PathBuf::from("src/lib.rs");
+            session.add_file(path.clone(), FileStatus::Modified, SOME_HASH);
+
+            assert!(!session.is_file_marked(&path));
+            assert!(
+                session.toggle_file_mark(&path),
+                "the first toggle marks the file"
+            );
+            assert!(session.is_file_marked(&path));
+            assert!(
+                !session.toggle_file_mark(&path),
+                "the second toggle clears it"
+            );
+            assert!(!session.is_file_marked(&path));
+        }
+
+        #[test]
+        fn should_leave_an_unknown_path_unmarked_when_toggled() {
+            let mut session = test_session();
+            let unknown = PathBuf::from("nowhere.rs");
+
+            let result = session.toggle_file_mark(&unknown);
+
+            assert!(
+                !result,
+                "a path with no FileReview has nothing to carry the mark"
+            );
+            assert!(!session.is_file_marked(&unknown));
+        }
+
+        #[test]
+        fn should_toggle_a_group_mark_on_then_off() {
+            let mut session = test_session();
+
+            assert!(!session.is_group_marked("group-1"));
+            assert!(
+                session.toggle_group_mark("group-1"),
+                "the first toggle marks the group"
+            );
+            assert!(session.is_group_marked("group-1"));
+            assert!(
+                !session.toggle_group_mark("group-1"),
+                "the second toggle clears it"
+            );
+            assert!(!session.is_group_marked("group-1"));
+        }
+
+        #[test]
+        fn should_clear_every_group_mark_while_leaving_file_marks_alone() {
+            let mut session = test_session();
+            let path = PathBuf::from("src/lib.rs");
+            session.add_file(path.clone(), FileStatus::Modified, SOME_HASH);
+            session.toggle_file_mark(&path);
+            session.toggle_group_mark("group-1");
+            session.toggle_group_mark("group-2");
+
+            session.clear_group_marks();
+
+            assert!(
+                session.marked_groups.is_empty(),
+                "a landing mints fresh group ids, so every group mark is dropped"
+            );
+            assert!(
+                session.is_file_marked(&path),
+                "a file mark is path-keyed and survives a landing"
+            );
+        }
+
+        #[test]
+        fn should_list_marked_files_sorted() {
+            let mut session = test_session();
+            for path in ["z.rs", "a.rs", "m.rs"] {
+                session.add_file(PathBuf::from(path), FileStatus::Modified, SOME_HASH);
+                session.toggle_file_mark(&PathBuf::from(path));
+            }
+
+            assert_eq!(
+                session.marked_files(),
+                vec![Path::new("a.rs"), Path::new("m.rs"), Path::new("z.rs")],
+                "the read seam is sorted so a caller gets a deterministic order"
+            );
+        }
+
+        #[test]
+        fn should_list_marked_group_ids_sorted() {
+            let mut session = test_session();
+            session.toggle_group_mark("zeta");
+            session.toggle_group_mark("alpha");
+
+            assert_eq!(session.marked_group_ids(), vec!["alpha", "zeta"]);
+        }
+
+        #[test]
+        fn should_count_landings_starting_from_zero() {
+            let mut session = test_session();
+            assert_eq!(session.landing_count, 0, "a fresh session has never landed");
+
+            session.record_landing();
+            assert_eq!(session.landing_count, 1);
+
+            session.record_landing();
+            assert_eq!(session.landing_count, 2);
+        }
+
+        #[test]
+        fn should_round_trip_grouping_feedback_fields() {
+            let mut session = test_session();
+            let path = PathBuf::from("src/lib.rs");
+            session.add_file(path.clone(), FileStatus::Modified, SOME_HASH);
+            session.toggle_file_mark(&path);
+            session.toggle_group_mark("group-1");
+            session.record_landing();
+
+            let json = serde_json::to_string(&session).unwrap();
+            let restored: ReviewSession = serde_json::from_str(&json).unwrap();
+
+            assert!(restored.is_file_marked(&path));
+            assert!(restored.is_group_marked("group-1"));
+            assert_eq!(restored.landing_count, 1);
+        }
+
+        /// Pre-`gd-26r.41` session JSON, lacking `marked`, `marked_groups` and
+        /// `landing_count` entirely. New fields must rehydrate to their
+        /// defaults rather than fail to parse.
+        const LEGACY_SESSION_JSON_WITHOUT_MARKS: &str = r##"{
+            "id": "abc-uuid",
+            "version": "1.3",
+            "repo_path": "/tmp/test-repo",
+            "branch_name": "main",
+            "base_commit": "deadbeef",
+            "diff_source": "working_tree",
+            "created_at": "2026-05-01T12:00:00Z",
+            "updated_at": "2026-05-01T12:00:00Z",
+            "review_comments": [],
+            "files": {
+                "src/lib.rs": {
+                    "path": "src/lib.rs",
+                    "reviewed": false,
+                    "status": "modified",
+                    "file_comments": [],
+                    "line_comments": {}
+                }
+            },
+            "session_notes": null
+        }"##;
+
+        #[test]
+        fn should_default_grouping_feedback_fields_for_legacy_session_json() {
+            let session: ReviewSession =
+                serde_json::from_str(LEGACY_SESSION_JSON_WITHOUT_MARKS).unwrap();
+
+            assert!(session.marked_groups.is_empty());
+            assert_eq!(session.landing_count, 0);
+            let file = session.files.get(&PathBuf::from("src/lib.rs")).unwrap();
+            assert!(!file.marked, "legacy FileReview JSON has no marked field");
+        }
+    }
+
     #[test]
     fn should_reset_reviewed_when_legacy_session_has_no_hash() {
         let mut session = test_session();
@@ -1212,6 +1476,7 @@ mod tests {
                 reviewed_hunks: BTreeSet::new(),
                 content_hash: None,
                 group_id: None,
+                marked: false,
             },
         );
 

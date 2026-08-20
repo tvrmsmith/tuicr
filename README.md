@@ -112,6 +112,11 @@ directory, naming the pieces `client-plumbing · api`. The rare group it cannot 
 that way — a single flat directory of generated files, say — keeps its files and carries a
 `!` before its name, which says the grouping will not help you there.
 
+`?` before a group or file's name is your own mark, not the engine's: press `x` on a
+row that looks wrong to flag it as you read, with no need to say where it belongs. It
+outranks `~` and `!` in the group row's marker slot, since those are facts tuicr can
+re-derive at any time and your mark is the one thing on the row only you know.
+
 ## How it compares
 
 | | tuicr | [hunk](https://github.com/modem-dev/hunk) | [lumen](https://github.com/jnsahaj/lumen) | `gh pr review` | `git diff` |
@@ -304,6 +309,7 @@ A first-session cheatsheet. Press `?` inside tuicr for the full reference.
 | `v` / `V` | Visual mode (range comment) |
 | `r` | Toggle file reviewed |
 | `R` | Toggle hunk reviewed |
+| `x` | Toggle a grouping mark on the group or file under the cursor |
 | `e` | Open focused file in `$EDITOR` |
 | `y` | Copy review to clipboard |
 | `:edit` | Open focused file in `$EDITOR` |

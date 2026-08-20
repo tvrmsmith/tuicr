@@ -622,6 +622,19 @@ Restyling the label instead was rejected — invisible on a theme without
 italics, unreadable to anyone comparing two shades. **`gd-26r.18` reuses this
 slot** for whatever it surfaces about ambiguous assignments.
 
+**Revision (`gd-26r.41`): `?` in the same slot, outranking both.** The reader
+marks a group with `x`, and the mark takes `? ` in the same one slot, ahead of
+both `!` and `~`. `!` and `~` are engine facts, re-derivable at any time by
+re-running the pass or reading `new_since_full_pass`; the mark is the one
+thing on the row only the human knows, and losing it to a re-derivable fact in
+a shared slot would make it invisible on exactly the group the reader most
+wanted to flag. `!` keeps outranking `~` beneath it, unchanged from the
+revision above.
+
+File rows get the mark too, which is new: they carry no marker slot of their
+own today, so `?` lands between the checkbox and the status char instead, the
+same glyph and the same reasoning as the group row's.
+
 ### The drift number
 
 `Grouping::drift()` is the one drift number: files sitting in drifted groups

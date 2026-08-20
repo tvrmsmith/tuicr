@@ -495,6 +495,13 @@ pub fn render_help(frame: &mut Frame, app: &mut App) {
         ]),
         Line::from(vec![
             Span::styled(
+                "  x         ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("Toggle a grouping mark on the group or file under the cursor"),
+        ]),
+        Line::from(vec![
+            Span::styled(
                 "  c         ",
                 Style::default().add_modifier(Modifier::BOLD),
             ),

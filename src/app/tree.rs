@@ -425,6 +425,47 @@ impl App {
         }
     }
 
+    /// Grouping feedback (`gd-26r.41`): toggles `file_idx`'s "this file is in
+    /// the wrong group" mark. Resolves the path exactly as
+    /// [`App::toggle_reviewed_for_file_idx`] does, so the same row under the
+    /// same index means the same file to both.
+    ///
+    /// Refuses when the review has no grouping at all — a mark is feedback on
+    /// a grouping, and there is none to have an opinion about — and refuses
+    /// the commit-message pseudo-file, which sits outside the partition
+    /// (`docs/TOTAL_COVERAGE.md` Decision 1) and so cannot be "in the wrong
+    /// group".
+    pub fn toggle_mark_for_file_idx(&mut self, file_idx: usize) {
+        if self.grouping.is_none() {
+            self.set_warning("This review has no grouping; there is nothing to mark.");
+            return;
+        }
+        let Some(file) = self.diff_files.get(file_idx) else {
+            return;
+        };
+        if file.is_commit_message {
+            self.set_warning("The commit message is not part of any group; nothing to mark.");
+            return;
+        }
+        let path = file.display_path().clone();
+        self.session.toggle_file_mark(&path);
+        self.dirty = true;
+    }
+
+    /// Grouping feedback (`gd-26r.41`): toggles the "this group is wrong" mark
+    /// on the group named by `id`.
+    ///
+    /// Refuses when the review has no grouping at all, for the same reason
+    /// [`App::toggle_mark_for_file_idx`] does.
+    pub fn toggle_group_mark_by_id(&mut self, id: &str) {
+        if self.grouping.is_none() {
+            self.set_warning("This review has no grouping; there is nothing to mark.");
+            return;
+        }
+        self.session.toggle_group_mark(id);
+        self.dirty = true;
+    }
+
     /// Expand whatever hides `file_idx` and put the tree cursor on its row.
     ///
     /// Under grouping the file's group id is the only key that reveals
@@ -571,6 +612,7 @@ impl App {
 
             let group_key = Self::group_row_key(group);
             let expanded = self.expanded_groups.contains(&group_key);
+            let marked = self.session.is_group_marked(&group_key);
             items.push(FileTreeItem::Group {
                 id: group_key,
                 label: group.name.clone(),
@@ -585,6 +627,7 @@ impl App {
                 expanded,
                 drifted: group.drifted(),
                 unbounded: group.unbounded,
+                marked,
             });
             if !expanded {
                 continue;

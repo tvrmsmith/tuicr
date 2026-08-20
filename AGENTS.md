@@ -133,6 +133,7 @@ Repository-managed agent integrations:
 - Contains: `vcs` (Box<dyn VcsBackend>), `vcs_info`, `session`, `diff_files`, `input_mode`, scroll/cursor state
 - Sidebar shape: `file_tree_mode` (`FileTreeMode`), `expanded_dirs` (directory rows of the ungrouped tree) and `expanded_groups` (group rows of the grouped sidebar) — one key space each, since `<leader>g` lets a session arrange both
 - Grouping: `grouping: Option<Grouping>` and `grouping_enabled` — `grouping` stays populated while grouping is toggled off, so ask `App::active_grouping()` for the grouping the sidebar is rendering, plus the refine arm's `refine_config`, `refine_target_picked`, `refine_wanted`, `refine_over_saved_grouping`, `pending_grouping` and `pending_regroup`, plus the auto-regroup backstop's `regroup_threshold` (a drift percentage; `0` is off) and `drift_when_last_polled`, the opening value the first poll latches so a reopened session is not regrouped for drift it arrived with (see `src/app/grouping.rs`, `src/app/refine.rs` and `src/app/regroup.rs`)
+- Grouping feedback (`gd-26r.41`): `App::toggle_mark_for_file_idx` and `App::toggle_group_mark_by_id` (`src/app/tree.rs`) flip a mark on the sidebar row under the cursor, refusing when the review has no grouping and refusing the commit-message pseudo-file. The mark itself lives on the session — see `ReviewSession` below — and `App::land` (`src/app/regroup.rs`) calls `record_landing()` then `clear_group_marks()` on every landing: a landing drops group marks and keeps file marks
 - PR mode also carries `pr_info: Option<PullRequestInfo>` and `viewing_pr_info: bool` for the file-tree "PR Description" panel
 - Methods: `scroll_down/up`, `next/prev_file`, `next/prev_hunk`, `go_to_source_line`, `toggle_reviewed`, `save_comment`, `jump_to_pr_info`
 - Diff search state lives on `App` (`search_matches`, `search_highlight_visible`, see `app/search.rs`); rendering patches `theme.search_match_bg` over content spans via `ui::text_utils::apply_search_highlight_*`
@@ -161,7 +162,7 @@ Repository-managed agent integrations:
 **FileTreeMode** and **FileTreeItem** (`src/app/mod.rs`):
 
 - `FileTreeMode` is how the sidebar lays out the directories above each file: `Nested` (default, one row per ancestor), `Compact` (a single-child chain collapses into one row), `Flat` (no directory rows, each file labelled with its full path). Set once by the binary from config
-- `FileTreeItem` is one sidebar row: `Directory`, `File`, or `Group`. `Group` rows sit at depth 0 with their members directly beneath them at depth 1 and no directory rows between (`docs/SIDEBAR_MODEL.md`); the row's `expanded_groups` key is the opaque group id. `Group.drifted` fills the row's marker slot with `~` before the label, and `Group.unbounded` fills the same slot with `!` and outranks it (`gd-26r.23`) — the slot `gd-26r.18` reuses rather than inventing a third glyph
+- `FileTreeItem` is one sidebar row: `Directory`, `File`, or `Group`. `Group` rows sit at depth 0 with their members directly beneath them at depth 1 and no directory rows between (`docs/SIDEBAR_MODEL.md`); the row's `expanded_groups` key is the opaque group id. The marker slot ranks three ways: `Group.marked` fills it with `?` and outranks everything else on the row, `Group.unbounded` fills it with `!` and outranks `Group.drifted`'s `~` (`gd-26r.23`, `gd-26r.41`)
 - `App::grouping_status()` is the sidebar header's grouping chip: one at a time, grouped-view only, ranked `Refining` > `RefineCancelled` / `HeuristicsOnly` > `Drift { percent }` and rendered plain after the filter qualifier (`docs/SIDEBAR_MODEL.md`)
 
 **InputMode** (`src/app/mod.rs`):
@@ -179,8 +180,9 @@ Repository-managed agent integrations:
 **ReviewSession** (`src/model/review.rs`):
 
 - Persisted review state with `files: HashMap<PathBuf, FileReview>`
-- Each `FileReview` has: `reviewed: bool`, `reviewed_hunks: BTreeSet<String>`, `file_comments: Vec<Comment>`, `line_comments: HashMap<u32, Vec<Comment>>`, `group_id: Option<String>`
+- Each `FileReview` has: `reviewed: bool`, `reviewed_hunks: BTreeSet<String>`, `file_comments: Vec<Comment>`, `line_comments: HashMap<u32, Vec<Comment>>`, `group_id: Option<String>`, `marked: bool`
 - The grouping is persisted state, not a derived view: `groups: Vec<SessionGroup>` (`id`, `name`, `order`, `source`, `new_since_full_pass`, `unbounded`) holds the table in reading order. `record_grouping()` writes it plus each file's `group_id`; `grouping_for(changeset)` rebuilds a `Grouping` from it, so reopening restores yesterday's groups instead of regrouping
+- Grouping feedback (`gd-26r.41`): `marked_groups: BTreeSet<String>` and `landing_count: u32`, with `is_file_marked`/`toggle_file_mark`, `is_group_marked`/`toggle_group_mark`/`clear_group_marks`, `marked_files`/`marked_group_ids`, and `record_landing()`. A landing clears `marked_groups` but leaves `FileReview::marked` alone: a landing mints fresh group ids wholesale, so a group mark would point at nothing recoverable, while a file mark stays true of a file that just moved
 - Release boundary: `release_count` (monotonic, bumped by `:send`), `released_at`, and per-comment `released_in: Option<u32>`. `ReviewSession::release()` stamps every unreleased comment with the new batch. `Comment::apply_edit()` clears `released_in` so an edited comment republishes. All three fields are `#[serde(default)]` for old session JSON.
 
 **ReviewStore** (`src/review_store.rs`):

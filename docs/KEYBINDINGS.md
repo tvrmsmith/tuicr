@@ -114,6 +114,7 @@ Shown below the file tree when local comments or visible remote PR threads exist
 |-----|--------|
 | `r` | Toggle file reviewed |
 | `R` | Toggle hunk reviewed |
+| `x` | Toggle a grouping mark on the group or file under the cursor |
 | `c` | Add line comment (or file comment if not on a diff line) |
 | `C` | Add file comment |
 | `<leader>c` | Add review comment |

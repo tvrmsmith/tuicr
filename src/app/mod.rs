@@ -206,6 +206,11 @@ pub enum FileTreeItem {
         /// (`gd-26r.23`), which fills the same marker slot with `!`. It
         /// outranks `drifted` there: one slot, one glyph.
         unbounded: bool,
+        /// Grouping feedback (`gd-26r.41`): whether the reader marked this
+        /// group as wrong. Outranks both `unbounded` and `drifted` in the
+        /// marker slot — those are engine facts, re-derivable at any time,
+        /// where a mark is the one thing on the row only the human knows.
+        marked: bool,
     },
 }
 

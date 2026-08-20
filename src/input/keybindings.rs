@@ -38,6 +38,9 @@ pub enum Action {
     // Review actions
     ToggleReviewed,
     ToggleHunkReviewed,
+    /// Grouping feedback (`gd-26r.41`): mark the sidebar row under the cursor
+    /// (a group or a file) as wrong.
+    ToggleGroupingMark,
     AddLineComment,
     AddFileComment,
     EditComment,
@@ -220,6 +223,7 @@ fn map_normal_mode(key: KeyEvent, leader_key: char) -> Action {
         // Review actions
         (KeyCode::Char('r'), KeyModifiers::NONE) => Action::ToggleReviewed,
         (KeyCode::Char('R'), _) => Action::ToggleHunkReviewed,
+        (KeyCode::Char('x'), KeyModifiers::NONE) => Action::ToggleGroupingMark,
         (KeyCode::Char('c'), KeyModifiers::NONE) => Action::AddLineComment,
         (KeyCode::Char('C'), _) => Action::AddFileComment,
         (KeyCode::Char('i'), KeyModifiers::NONE) => Action::EditComment,
@@ -707,6 +711,12 @@ mod tests {
     fn should_map_uppercase_r_to_toggle_hunk_reviewed_in_normal_mode() {
         let action = map_normal_mode(key_shift('R'), DEFAULT_LEADER_KEY);
         assert_eq!(action, Action::ToggleHunkReviewed);
+    }
+
+    #[test]
+    fn should_map_x_to_toggle_grouping_mark_in_normal_mode() {
+        let action = map_normal_mode(key(KeyCode::Char('x')), DEFAULT_LEADER_KEY);
+        assert_eq!(action, Action::ToggleGroupingMark);
     }
 
     #[test]

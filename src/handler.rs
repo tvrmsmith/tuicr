@@ -1463,6 +1463,14 @@ pub fn handle_file_list_action(app: &mut App, action: Action) {
                 app.set_warning("Select a file to toggle reviewed");
             }
         }
+        Action::ToggleGroupingMark => match app.get_selected_tree_item() {
+            Some(FileTreeItem::Group { id, .. }) => app.toggle_group_mark_by_id(&id),
+            Some(FileTreeItem::File { file_idx, .. }) => app.toggle_mark_for_file_idx(file_idx),
+            Some(FileTreeItem::Directory { .. }) => {
+                app.set_warning("A mark goes on a group or a file, not a directory");
+            }
+            None => app.set_warning("Select a group or a file to mark"),
+        },
         _ => handle_shared_normal_action(app, action),
     }
 }
@@ -1620,6 +1628,7 @@ fn handle_shared_normal_action(app: &mut App, action: Action) {
         Action::PrevComment => app.prev_comment(),
         Action::ToggleReviewed => app.toggle_reviewed(),
         Action::ToggleHunkReviewed => app.toggle_hunk_reviewed(),
+        Action::ToggleGroupingMark => app.toggle_mark_for_file_idx(app.diff_state.current_file_idx),
         Action::ToggleFocus => {
             let has_selector = app.has_inline_commit_selector();
             let has_comments = app.has_comment_navigator_items();

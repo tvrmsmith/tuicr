@@ -83,6 +83,13 @@ close calls (~14% of files). `gd-26r.7` deliberately does not surface them, and
 until a human can act on them they are dead weight in a file that lives forever.
 `gd-26r.18` may reverse this.
 
+Persisted alongside it since `gd-26r.41`: the reader's grouping feedback marks.
+`FileReview.marked` carries a file's, `ReviewSession.marked_groups` holds the
+marked group ids, and `landing_count` counts the landings the session has seen.
+Marks persist because reopening a long review is normal and a mark that died on
+close would be worthless. What survives a landing is below, under § What
+happens to review state across a regroup.
+
 **Persisted forever, or not at all.** Sessions are never swept — no TTL, no age
 pruning — and `discard_session_and_quit` is the normal exit for a comment-free
 review. So the grouping must tolerate both. It does: the group table is
@@ -214,6 +221,19 @@ The rejected alternative — clearing `reviewed` on group change, on the theory
 that the group is part of the context in which the file was approved — is
 unusable on the measured numbers. At 3–12% group-mate stability a single
 `:regroup` would clear substantially the entire review.
+
+**A grouping feedback mark (`gd-26r.41`) splits the other way: group marks are
+dropped on a landing, file marks are kept.** Every landing mints fresh group
+ids and rewrites the group table wholesale, so a group mark points at nothing
+recoverable once one happens. A file mark is path-keyed like `reviewed`, and
+"this file is in the wrong group" stays true of a file that just moved. The
+rule lives in `App::land` (`src/app/regroup.rs`) rather than in
+`record_grouping`, because that is the only place a landing is unconditional:
+the path through `sort_files_by_directory` is skipped whenever grouping is
+toggled off, and `<leader>g` can toggle it off while a `:regroup` refine call
+is still in flight. The same landing bumps `ReviewSession.landing_count`, which
+`gd-26r.43`'s log entry reads to tell an offline reader that the partition it
+is looking at was not the only one the human saw.
 
 ## What happens to UI state across a regroup
 
