@@ -1,5 +1,8 @@
 # The groups contract
 
+Part of the grouping design set. [`docs/GROUPING_INDEX.md`](GROUPING_INDEX.md)
+maps a question to the doc that owns the answer.
+
 What the grouping engine hands tuicr. Two shapes, one of which is not a
 contract at all any more.
 

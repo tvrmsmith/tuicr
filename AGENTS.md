@@ -96,7 +96,7 @@ src/
 │       ├── api.rs       # ForgeBackend impl, GerritHttp transport, remote/target parsing
 │       └── models.rs    # Gerrit REST response models (ChangeInfo, CommentInfo)
 │
-├── grouping/            # Changeset grouping engine (docs/GROUPING.md, docs/GROUPS_CONTRACT.md)
+├── grouping/            # Changeset grouping engine (docs/GROUPING_INDEX.md maps the design docs)
 │   ├── mod.rs           # Grouping, Group, group ids, the strict file-level partition
 │   ├── caps.rs          # Group size caps and the one directory split that enforces them
 │   ├── changeset.rs     # Tokenised view of the changeset the passes score
@@ -418,6 +418,7 @@ When adding user-facing features, update the relevant documentation:
 | `docs/KEYBINDINGS.md`  | Any keybinding or `:` command: add a row to the pane's key table and the `:` command table, plus prose for new behavior  |
 | `AGENTS.md`            | Module structure, repo-managed agent integrations, key types, data flow, dependencies, forge invariants and gotchas      |
 | `docs/CONFIG.md`       | Any `config.toml` key: add a row to the Options table and a line to the Full example block                               |
+| `docs/GROUPING_INDEX.md` | A grouping design doc: add a router row and a doc entry. Also when a fact moves from one grouping doc to another        |
 
 ---
 

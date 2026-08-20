@@ -1,5 +1,8 @@
 # Sidebar model: groups and directories
 
+Part of the grouping design set. [`docs/GROUPING_INDEX.md`](GROUPING_INDEX.md)
+maps a question to the doc that owns the answer.
+
 Design record for `gd-26r.7` on the wayfinder map `gd-26r` (grouped review of
 large changesets in tuicr). Prototype ticket: the candidates were drawn as
 ASCII mockups against a real changeset and reacted to, rather than argued in
