@@ -11,7 +11,8 @@ use crate::ui::file_list::render_file_list;
 use crate::ui::inline_commit_selector::render_inline_commit_selector;
 use crate::ui::selector::render_commit_select;
 use crate::ui::{
-    comment_panel, help_popup, status_bar, styles, submit_modals, summary_popup, theme_picker,
+    comment_panel, grouping_feedback, help_popup, status_bar, styles, submit_modals, summary_popup,
+    theme_picker,
 };
 
 const FILE_LIST_MIN_HEIGHT: u16 = 4;
@@ -95,6 +96,10 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     }
     if app.input_mode == InputMode::ThemePicker {
         theme_picker::render_theme_picker(frame, app);
+    }
+
+    if app.input_mode == InputMode::GroupingFeedback {
+        grouping_feedback::render_grouping_feedback(frame, app);
     }
 
     // Position terminal cursor for IME when in Comment mode

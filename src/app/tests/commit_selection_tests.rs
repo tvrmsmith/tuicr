@@ -727,6 +727,7 @@ fn should_comment_on_the_commit_message_of_a_commit_chosen_from_the_target_selec
             comment_type: CommentType::None,
             author: "user".to_string(),
             commit_id: None,
+            in_reply_to: None,
         },
     );
 

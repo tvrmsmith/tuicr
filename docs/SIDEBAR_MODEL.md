@@ -635,6 +635,34 @@ File rows get the mark too, which is new: they carry no marker slot of their
 own today, so `?` lands between the checkbox and the status char instead, the
 same glyph and the same reasoning as the group row's.
 
+### Revision (`gd-26r.42`): the verdict prompt
+
+The marks say which rows are wrong. The prompt asks what the grouping was worth
+as a whole, and it is the only thing this document owns that is not a sidebar
+row: a modal over the whole screen, opened by the first `:w` or `:send` of a
+grouped review and by `:grouping feedback` on demand.
+
+Three fields, moved between with Tab. The **verdict** is required and has three
+points, `1` useful, `2` mixed, `3` useless. The **tags** are seven fixed
+strings, multi-select, listed in `GROUPING_FEEDBACK_TAGS`
+(`src/app/grouping_feedback.rs`) and nowhere else, because a user-editable list
+makes the log unaggregatable over time. The **note** is optional free text, one
+line, so `Enter` can submit from every field without ever meaning a newline.
+`Esc` skips.
+
+The accumulated marks are **shown, not re-picked**: a count and a truncated list
+of the marked group names and file paths, snapshotted when the prompt opens.
+There is no group picker and no file picker, and there cannot be one — at 400
+files no widget can offer a list to tick, which is exactly why marking happens
+as you read. Anything the reader wants to say about a specific row was already
+said with `x`.
+
+What a key means depends on which field holds focus: `j` moves the tag cursor
+under Tags and types a literal `j` under Note. So the keymap
+(`map_grouping_feedback_mode`) only shapes keys and
+`handle_grouping_feedback_action` alone resolves them, which keeps the
+focus-dependence in one place instead of two.
+
 ### The drift number
 
 `Grouping::drift()` is the one drift number: files sitting in drifted groups
