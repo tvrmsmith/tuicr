@@ -1453,6 +1453,17 @@ pub struct App {
     /// longer answers "is the sidebar grouped": ask
     /// [`App::active_grouping`] for the grouping the sidebar is rendering.
     pub grouping: Option<crate::grouping::Grouping>,
+    /// The refine call that produced the installed [`Self::grouping`], or
+    /// `None` when no refine call did: a heuristic pass, the `gd-26r.36`
+    /// backstop, or a grouping restored from a previous sitting
+    /// (`gd-26r.43`).
+    ///
+    /// Adopted alongside the grouping itself, at the one place a grouping is
+    /// adopted: [`App::order_files_by_group`] moves
+    /// [`Self::pending_grouping_arm`] here when it takes a parked grouping,
+    /// and sets this to `None` on every other source. In-memory only, like
+    /// its `pending` counterpart.
+    pub(crate) grouping_arm: Option<crate::persistence::feedback_log::RefineAttempt>,
     /// A grouping computed out of band, parked for the next
     /// [`App::order_files_by_group`] to adopt in place of anything it would
     /// have derived itself.
@@ -1466,6 +1477,18 @@ pub struct App {
     /// auth, an unreadable body twice — simply leaves it `None`, which is the
     /// heuristic arm.
     pub(crate) pending_grouping: Option<crate::grouping::Grouping>,
+    /// The arm of the grouping parked in [`Self::pending_grouping`], adopted
+    /// with it by [`App::order_files_by_group`] (`gd-26r.43`).
+    ///
+    /// `None` beside a `Some` `pending_grouping` says a heuristic pass landed
+    /// it — `:regroup` with no refine configured, or the `gd-26r.36` backstop,
+    /// which never refines. `Some` beside it, on a fallback outcome, says a
+    /// refine call *was* made and did not land: the partition is the heuristic
+    /// fallback, but the attempt happened and the log needs to say so
+    /// (`docs/GROUPING_FEEDBACK.md`). In-memory only: never persisted onto
+    /// [`crate::model::ReviewSession`], so a reopened review honestly reports
+    /// `None`.
+    pub(crate) pending_grouping_arm: Option<crate::persistence::feedback_log::RefineAttempt>,
     /// A `:regroup` whose refine call is still in flight, collected by
     /// [`App::poll_regroup`] from the main loop.
     ///

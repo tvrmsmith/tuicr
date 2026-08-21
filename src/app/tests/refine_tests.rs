@@ -270,6 +270,50 @@ fn a_clean_answer_is_adopted_in_the_order_the_model_returned_it() {
     );
 }
 
+/// The arm the feedback log records (`gd-26r.43`) for a clean landing: the
+/// model and effort the call actually asked for, one attempt, and a prompt
+/// fingerprint over the exact bytes sent — independently recomputed here
+/// rather than copied out of the production code that built it.
+#[test]
+fn a_clean_answer_records_its_arm_as_landed() {
+    let mut app = app();
+    let changeset = crate::grouping::changeset::Changeset::from_diff_files(&app.diff_files);
+    let heuristic = crate::grouping::group_changeset(
+        &changeset,
+        crate::grouping::passes::GroupingConfig::default(),
+    );
+    let prompt = crate::grouping::refine::prompt(&changeset, &heuristic);
+    let expected_fingerprint = format!("fnv1a64:{:016x}", crate::hash::fnv1a_64(prompt.as_bytes()));
+
+    let (call, _) = answering(&[ANSWER]);
+    let outcome =
+        app.refine_grouping_with(PATIENT, call, &mut Recorder::default(), &mut Keys::silent());
+    assert!(matches!(outcome, RefineOutcome::Refined { repairs: 0 }));
+
+    app.enable_grouping();
+    let arm = app
+        .grouping_arm
+        .as_ref()
+        .expect("the landed refine's arm travels with the grouping it produced");
+    assert!(
+        matches!(
+            arm.outcome,
+            crate::persistence::feedback_log::RefineAttemptOutcome::Landed { repairs: 0 }
+        ),
+        "{:?}",
+        arm.outcome
+    );
+    assert_eq!(
+        arm.model,
+        crate::grouping::vertex::Endpoint::resolved_model(
+            &crate::grouping::vertex::Settings::default()
+        )
+    );
+    assert_eq!(arm.effort, crate::grouping::vertex::REFINE_EFFORT);
+    assert_eq!(arm.attempts, 1);
+    assert_eq!(arm.prompt_fingerprint, expected_fingerprint);
+}
+
 #[test]
 fn a_cancelled_wait_opens_a_working_heuristic_session() {
     let mut app = app();
@@ -292,6 +336,18 @@ fn a_cancelled_wait_opens_a_working_heuristic_session() {
 
     app.enable_grouping();
     assert_heuristic_session(&app);
+    let arm = app
+        .grouping_arm
+        .as_ref()
+        .expect("the attempt happened, even though nothing landed");
+    assert!(
+        matches!(
+            arm.outcome,
+            crate::persistence::feedback_log::RefineAttemptOutcome::Cancelled
+        ),
+        "{:?}",
+        arm.outcome
+    );
 }
 
 #[test]
@@ -319,6 +375,18 @@ fn a_timeout_opens_a_working_heuristic_session() {
 
     app.enable_grouping();
     assert_heuristic_session(&app);
+    let arm = app
+        .grouping_arm
+        .as_ref()
+        .expect("the attempt happened, even though nothing landed");
+    assert!(
+        matches!(
+            arm.outcome,
+            crate::persistence::feedback_log::RefineAttemptOutcome::TimedOut
+        ),
+        "{:?}",
+        arm.outcome
+    );
 }
 
 #[test]
@@ -344,6 +412,20 @@ fn a_body_that_is_not_json_is_retried_once_and_then_falls_back() {
 
     app.enable_grouping();
     assert_heuristic_session(&app);
+    let arm = app
+        .grouping_arm
+        .as_ref()
+        .expect("the attempt happened, even though nothing landed");
+    match &arm.outcome {
+        crate::persistence::feedback_log::RefineAttemptOutcome::Failed { reason: recorded } => {
+            assert_eq!(recorded, reason);
+        }
+        other => panic!("{other:?}"),
+    }
+    assert_eq!(
+        arm.attempts, 2,
+        "a body unparseable twice spent both attempts"
+    );
 }
 
 #[test]
@@ -363,6 +445,14 @@ fn a_retry_that_parses_is_adopted() {
     assert_eq!(
         group_names(&app),
         ["auth-token-rotation", "session-plumbing"]
+    );
+    assert_eq!(
+        app.grouping_arm
+            .as_ref()
+            .expect("the landed refine's arm travels with the grouping it produced")
+            .attempts,
+        2,
+        "the first answer being unparseable makes this the identical prompt's second attempt"
     );
 }
 
@@ -389,6 +479,16 @@ fn a_transport_failure_falls_back_and_says_why() {
 
     app.enable_grouping();
     assert_heuristic_session(&app);
+    let arm = app
+        .grouping_arm
+        .as_ref()
+        .expect("the attempt happened, even though nothing landed");
+    match &arm.outcome {
+        crate::persistence::feedback_log::RefineAttemptOutcome::Failed { reason } => {
+            assert!(reason.contains("credentials"));
+        }
+        other => panic!("{other:?}"),
+    }
 }
 
 /// A body the contract calls repairable — an invented path, a dropped one — is
@@ -518,6 +618,10 @@ fn a_session_that_already_holds_a_grouping_is_not_refined_again() {
 
     app.enable_grouping();
     assert_eq!(group_names(&app), names);
+    assert!(
+        app.grouping_arm.is_none(),
+        "a reopened review honestly reports no refine call, since none ran"
+    );
 }
 
 /// The keys the screen advertises, and only those. A wrong mapping here is a

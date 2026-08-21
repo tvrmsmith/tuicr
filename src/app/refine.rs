@@ -44,6 +44,7 @@ use crate::grouping::changeset::Changeset;
 use crate::grouping::passes::GroupingConfig;
 use crate::grouping::refine::{self, Refined};
 use crate::grouping::{Grouping, vertex};
+use crate::persistence::feedback_log::{RefineAttempt, RefineAttemptOutcome};
 
 /// Redraw cadence for the elapsed clock, and the longest the wait can go
 /// without noticing a keypress or an answer.
@@ -344,7 +345,28 @@ impl App {
         let heuristic = crate::grouping::group_changeset(&changeset, GroupingConfig::default());
         let prompt = refine::prompt(&changeset, &heuristic);
 
-        let outcome = await_refined(&changeset, &heuristic, prompt, timeout, call, screen, keys);
+        // Resolved from the same settings the live call was bound with
+        // (`self.refine_config` outlives the clone each caller moved into
+        // `call`), so the arm the feedback log records (`gd-26r.43`) can never
+        // name a different model than the one actually asked.
+        let settings = self
+            .refine_config
+            .as_ref()
+            .map(|config| config.settings.clone())
+            .unwrap_or_default();
+        let attempt_of = |attempts: u32, outcome: RefineAttemptOutcome| {
+            refine_attempt(&settings, &prompt, attempts, outcome)
+        };
+
+        let (outcome, attempts) = await_refined(
+            &changeset,
+            &heuristic,
+            prompt.clone(),
+            timeout,
+            call,
+            screen,
+            keys,
+        );
         screen.finish();
 
         // Every wait passes through here, so the header's cancelled state is
@@ -356,11 +378,43 @@ impl App {
             Waited::Refined(refined) => {
                 let repairs = refined.repairs.len();
                 self.pending_grouping = Some(refined.grouping);
+                self.pending_grouping_arm = Some(attempt_of(
+                    attempts,
+                    RefineAttemptOutcome::Landed { repairs },
+                ));
                 RefineOutcome::Refined { repairs }
             }
-            Waited::Cancelled => RefineOutcome::Cancelled,
-            Waited::TimedOut => RefineOutcome::TimedOut,
-            Waited::Failed(reason) => RefineOutcome::Failed(reason),
+            Waited::Cancelled => {
+                let attempt = attempt_of(attempts, RefineAttemptOutcome::Cancelled);
+                // No grouping is parked on a fallback — the heuristic partition
+                // already on screen (in-TUI) or about to be computed
+                // (pre-TUI) stands in for it — but the attempt still
+                // happened and the log needs to say so either way:
+                // `order_files_by_group`'s fresh-heuristic branch picks this
+                // up for the pre-TUI path, and setting `grouping_arm`
+                // directly here covers the in-TUI path, where no further
+                // adoption call follows a fallback.
+                self.grouping_arm = Some(attempt.clone());
+                self.pending_grouping_arm = Some(attempt);
+                RefineOutcome::Cancelled
+            }
+            Waited::TimedOut => {
+                let attempt = attempt_of(attempts, RefineAttemptOutcome::TimedOut);
+                self.grouping_arm = Some(attempt.clone());
+                self.pending_grouping_arm = Some(attempt);
+                RefineOutcome::TimedOut
+            }
+            Waited::Failed(reason) => {
+                let attempt = attempt_of(
+                    attempts,
+                    RefineAttemptOutcome::Failed {
+                        reason: reason.clone(),
+                    },
+                );
+                self.grouping_arm = Some(attempt.clone());
+                self.pending_grouping_arm = Some(attempt);
+                RefineOutcome::Failed(reason)
+            }
         }
     }
 }
@@ -368,6 +422,29 @@ impl App {
 /// The shipped call, bound to the arm `[grouping]` resolved.
 pub(crate) fn live_call(settings: vertex::Settings) -> RefineCall {
     Arc::new(move |prompt: &str, timeout| vertex::call(prompt, timeout, &settings))
+}
+
+/// The feedback-log entry (`gd-26r.43`) for one terminal refine call, shared by
+/// the blocking wait here and `:regroup`'s in `regroup.rs` so the two arms
+/// cannot drift into naming their fields differently.
+pub(crate) fn refine_attempt(
+    settings: &vertex::Settings,
+    prompt: &str,
+    attempts: u32,
+    outcome: RefineAttemptOutcome,
+) -> RefineAttempt {
+    RefineAttempt {
+        model: vertex::Endpoint::resolved_model(settings),
+        effort: vertex::REFINE_EFFORT.to_string(),
+        prompt_template_fingerprint: format!(
+            "fnv1a64:{:016x}",
+            refine::prompt_template_fingerprint()
+        ),
+        prompt_fingerprint: format!("fnv1a64:{:016x}", crate::hash::fnv1a_64(prompt.as_bytes())),
+        prompt_bytes: prompt.len(),
+        attempts,
+        outcome,
+    }
 }
 
 enum Waited {
@@ -391,7 +468,7 @@ fn await_refined(
     call: RefineCall,
     screen: &mut dyn Screen,
     keys: &mut dyn CancelKeys,
-) -> Waited {
+) -> (Waited, u32) {
     // Elapsed is reported from the start of the whole wait, not of the current
     // attempt: a retry doubles what the human sits through, and a clock that
     // restarted would hide exactly that.
@@ -415,32 +492,35 @@ fn await_refined(
         loop {
             match answer.try_recv() {
                 Ok(Ok(body)) => match refine::apply(&body, changeset, heuristic) {
-                    Ok(refined) => return Waited::Refined(refined),
+                    Ok(refined) => return (Waited::Refined(refined), attempt),
                     // The only retryable failure, and only once: a body that
                     // yields no JSON or no `groups` array. Everything else is
                     // terminal on the first attempt, and any *parseable* body
                     // is applied however much it had to be repaired.
                     Err(reason) => {
                         if attempt == ATTEMPTS {
-                            return Waited::Failed(reason);
+                            return (Waited::Failed(reason), attempt);
                         }
                         break;
                     }
                 },
-                Ok(Err(reason)) => return Waited::Failed(reason),
+                Ok(Err(reason)) => return (Waited::Failed(reason), attempt),
                 Err(TryRecvError::Disconnected) => {
-                    return Waited::Failed("the refine call ended without answering".to_string());
+                    return (
+                        Waited::Failed("the refine call ended without answering".to_string()),
+                        attempt,
+                    );
                 }
                 Err(TryRecvError::Empty) => {}
             }
 
             let now = Instant::now();
             if now >= deadline {
-                return Waited::TimedOut;
+                return (Waited::TimedOut, attempt);
             }
             screen.waiting(began.elapsed(), attempt);
             if keys.cancelled(TICK.min(deadline - now)) {
-                return Waited::Cancelled;
+                return (Waited::Cancelled, attempt);
             }
         }
     }
@@ -448,7 +528,10 @@ fn await_refined(
     // Unreachable: the loop above either returns or breaks, and the last
     // attempt cannot break. Stated as a failure rather than a panic because a
     // fallback is always safe and a startup crash never is.
-    Waited::Failed("the refine call ran out of attempts".to_string())
+    (
+        Waited::Failed("the refine call ran out of attempts".to_string()),
+        ATTEMPTS,
+    )
 }
 
 /// The shipped progress surface: one line on stderr, redrawn in place.

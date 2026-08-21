@@ -124,6 +124,12 @@ either way you are not asked again that session — `:grouping feedback` reopens
 you change your mind. Quitting never asks. `[grouping].feedback = false` turns off the
 prompt and the marks together.
 
+A submitted verdict appends one line of JSON to `grouping-feedback.jsonl` in tuicr's
+data directory (`~/Library/Application Support/tuicr` on macOS, `~/.local/share/tuicr`
+on Linux), never to a file in the repository you are reviewing. A skip writes nothing.
+Nothing reads the file back: it is there for a human working out where the grouping
+goes wrong. `docs/GROUPING_FEEDBACK.md` documents what is in a line.
+
 ## How it compares
 
 | | tuicr | [hunk](https://github.com/modem-dev/hunk) | [lumen](https://github.com/jnsahaj/lumen) | `gh pr review` | `git diff` |

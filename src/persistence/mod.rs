@@ -1,3 +1,4 @@
+pub mod feedback_log;
 pub mod manifest;
 pub mod storage;
 

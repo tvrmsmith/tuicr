@@ -580,6 +580,8 @@ impl App {
             grouping_enabled: false,
             grouping: None,
             pending_grouping: None,
+            pending_grouping_arm: None,
+            grouping_arm: None,
             pending_regroup: None,
             refine_config: None,
             regroup_threshold: crate::config::DEFAULT_REGROUP_THRESHOLD,
