@@ -1,6 +1,6 @@
 # Grouping design docs index
 
-Seven documents describe how tuicr cuts a changeset into groups. This file is
+Eight documents describe how tuicr cuts a changeset into groups. This file is
 the map from a question to the one that answers it.
 
 **One fact, one owner.** Every fact about grouping belongs to exactly one of
@@ -35,6 +35,9 @@ mean copying the doc's content here.
 | What do `~`, `!` and `?` on a group row mean? | [`SIDEBAR_MODEL.md`](SIDEBAR_MODEL.md) § The marker slot on group rows |
 | What does the prompt at `:w` and `:send` ask, and what are its keys? | [`SIDEBAR_MODEL.md`](SIDEBAR_MODEL.md) § Revision (`gd-26r.42`) |
 | When does the prompt fire, when does it stay quiet, and how do I turn it off? | [`CONFIG.md`](CONFIG.md) § Grouping |
+| Where does a submitted verdict end up, and what is in one line of it? | [`GROUPING_FEEDBACK.md`](GROUPING_FEEDBACK.md) § Where it lives, § The schema |
+| Can tuicr read past feedback back into a refine call, or expose it on the CLI? | [`GROUPING_FEEDBACK.md`](GROUPING_FEEDBACK.md) § Three rulings that shape it |
+| What can I conclude from a pile of these votes, and what can I not? | [`GROUPING_FEEDBACK.md`](GROUPING_FEEDBACK.md) § The known bias, § Append-only |
 | What exactly is the `n% new` number counting? | [`SIDEBAR_MODEL.md`](SIDEBAR_MODEL.md) § The drift number |
 | What invariant must `build_visible_items` hold under grouping? | [`SIDEBAR_MODEL.md`](SIDEBAR_MODEL.md) § What this demands of `build_visible_items` |
 | Which parts of the grouping survive into the session file? | [`REGROUPING_STATE.md`](REGROUPING_STATE.md) § What is persisted |
@@ -156,7 +159,19 @@ them, so find your bead here:
 | Tokenising the group name | `gd-o7s` |
 | The size caps sit after every number above | `gd-26r.23`, built in `gd-26r.38` |
 
-### Facts that live outside these seven
+### [`GROUPING_FEEDBACK.md`](GROUPING_FEEDBACK.md)
+
+**Decision record and schema.** `gd-26r.43`, building on `gd-26r.18`.
+
+Owns the append-only feedback log: its path in the user data dir, the meaning
+of every field in one line, the no-injection, no-CLI and skips-write-nothing
+rulings, the obligation on a reader to skip a line it cannot parse, and the
+missing denominator that makes a rate out of these lines meaningless.
+
+Does not own the marks the entry carries, the prompt that collects the vote, or
+the config key that switches the prompt off.
+
+### Facts that live outside these eight
 
 - `AGENTS.md` is the code-level view for someone editing `src/`: modules, key
   types, and the startup data flow.
@@ -221,9 +236,9 @@ contradicts a closed bead, both sides stand and the bead is the record.
 `gd-26r.18` closed on 2026-08-19 rejecting its own premise: nothing in the
 reader's hands edits the partition, so there is no move-to-group, no merge, no
 split, and no accept or reject on a flagged ambiguous call. What ships instead
-is a grouping feedback mechanism: `gd-26r.41` and `gd-26r.42` shipped, and
-`gd-26r.43` is still open. Five of the seven docs were written before that
-close and still read as though a corrections UI is coming:
+is a grouping feedback mechanism, and all three of its beads have now shipped:
+`gd-26r.41`, `gd-26r.42` and `gd-26r.43`. Five of these docs were written
+before that close and still read as though a corrections UI is coming:
 
 - `GROUPING.md:135-139`, `:146`
 - `GROUPS_CONTRACT.md:134-137`, `:143-144`, `:328-355`, `:357-359`, `:370`
@@ -249,12 +264,13 @@ correction. `REGROUPING_STATE.md:14-16` and `MID_SESSION_REGROUP.md:113`,
 says contract approval covers the refine exchange, which
 `GROUPS_CONTRACT.md`'s ruling reverses. Trust the contract.
 
-**Open build work.** `gd-26r.40` and `gd-26r.43` are open. `gd-26r.41` and
-`gd-26r.42` shipped: the marks, their glyph, its ranking and the verdict prompt
-are now `SIDEBAR_MODEL.md`'s facts, what a landing does to a mark is
-`REGROUPING_STATE.md`'s, and `[grouping].feedback` is `CONFIG.md`'s. When the
-rest ship, `gd-26r.40`'s facts land in `REGROUPING_STATE.md` and
-`SIDEBAR_MODEL.md`, and `gd-26r.43`'s log lands in `CONFIG.md` for anything
-configurable and `REGROUPING_STATE.md` for anything persisted. Nothing about
-their behaviour is described anywhere in these docs yet, and nothing should be
-until it ships.
+**Open build work.** `gd-26r.40` is open, and `gd-26r.45` owns rewriting the
+five docs listed above. Everything else in the feedback mechanism has shipped:
+the marks, their glyph, its ranking and the verdict prompt are
+`SIDEBAR_MODEL.md`'s facts, what a landing does to a mark is
+`REGROUPING_STATE.md`'s, `[grouping].feedback` is `CONFIG.md`'s, and the log is
+[`GROUPING_FEEDBACK.md`](GROUPING_FEEDBACK.md)'s. `gd-26r.43` added no config
+key and persists nothing to the session, so it leaves `CONFIG.md` and
+`REGROUPING_STATE.md` alone. When `gd-26r.40` ships, its facts land in
+`REGROUPING_STATE.md` and `SIDEBAR_MODEL.md`; nothing about its behaviour
+should be described here until then.

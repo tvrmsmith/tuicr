@@ -8,6 +8,7 @@ use crate::app::grouping_feedback::{
     FeedbackField, GROUPING_FEEDBACK_TAGS, GroupingFeedbackDraft, GroupingVerdict,
 };
 use crate::app::*;
+use crate::persistence::feedback_log::with_test_feedback_log;
 
 use super::grouping_tests::{PATHS, grouped_paths, make_file, ungrouped_app};
 
@@ -282,6 +283,7 @@ fn feedback_off_disables_the_prompt_and_the_marks() {
 
 #[test]
 fn submitting_feedback_writes_no_session_state() {
+    let _log = with_test_feedback_log();
     let mut app = grouped_paths(PATHS);
     // `ReviewSession` carries no `PartialEq` (nested `Comment` values don't
     // need one for anything else), so the "unchanged" assertion compares its
@@ -297,8 +299,7 @@ fn submitting_feedback_writes_no_session_state() {
     let after = serde_json::to_value(&app.session).expect("session serializes");
     assert_eq!(
         after, before,
-        "record_grouping_feedback writes no file and touches no session state; \
-         gd-26r.43 owns the log"
+        "the vote goes to the log in the data dir and nowhere near the session"
     );
 }
 
@@ -321,6 +322,223 @@ fn the_prompt_never_moves_drift() {
     let after_skip = app.grouping.as_ref().expect("grouping computed");
     assert_eq!(after_skip.drift(), before.drift());
     assert_eq!(after_skip.drift_percent(), before.drift_percent());
+}
+
+// The log itself (`gd-26r.43`). The payload's own shape is tested in
+// `persistence::feedback_log`; these are about the submit path — what reaches
+// the file, what never does, and what happens when the write fails.
+mod log {
+    use super::*;
+
+    fn entries(path: &std::path::Path) -> Vec<serde_json::Value> {
+        std::fs::read_to_string(path)
+            .expect("the log exists")
+            .lines()
+            .filter(|line| !line.is_empty())
+            .map(|line| serde_json::from_str(line).expect("each line is one JSON object"))
+            .collect()
+    }
+
+    fn vote(app: &mut App, verdict: GroupingVerdict) {
+        app.open_grouping_feedback();
+        app.feedback_set_verdict(verdict);
+        app.submit_grouping_feedback();
+    }
+
+    #[test]
+    fn a_submitted_verdict_appends_one_line_carrying_the_vote_and_its_snapshot() {
+        let log = with_test_feedback_log();
+        let mut app = grouped_paths(PATHS);
+
+        app.open_grouping_feedback();
+        app.feedback_set_verdict(GroupingVerdict::Mixed);
+        app.feedback_toggle_tag();
+        for ch in "reads oddly".chars() {
+            app.feedback_note_insert_char(ch);
+        }
+        app.submit_grouping_feedback();
+
+        let entries = entries(&log.path);
+        assert_eq!(entries.len(), 1, "one vote is one line");
+        let entry = &entries[0];
+        assert_eq!(entry["verdict"], "mixed");
+        assert_eq!(
+            entry["tags"],
+            serde_json::json!([GROUPING_FEEDBACK_TAGS[0]])
+        );
+        assert_eq!(entry["note"], "reads oddly");
+        assert_eq!(entry["schema_version"], 1);
+        assert_eq!(entry["tuicr_version"], env!("CARGO_PKG_VERSION"));
+        assert_eq!(
+            entry["files"].as_array().expect("a file array").len(),
+            PATHS.len(),
+            "the snapshot places every file the reader was looking at"
+        );
+        assert!(
+            !entry["groups"]
+                .as_array()
+                .expect("a group array")
+                .is_empty()
+        );
+        assert_eq!(entry["arm"]["config_now"]["refine_enabled"], false);
+        assert!(
+            entry["arm"]["attempt"].is_null(),
+            "the fixture's grouping is heuristics-only, so no refine call produced it"
+        );
+    }
+
+    #[test]
+    fn a_skip_writes_nothing_at_all() {
+        let log = with_test_feedback_log();
+        let mut app = grouped_paths(PATHS);
+
+        app.open_grouping_feedback();
+        app.feedback_set_verdict(GroupingVerdict::Useless);
+        app.skip_grouping_feedback();
+
+        assert!(
+            !log.path.exists(),
+            "a skip leaves no entry, not even an empty file: `gd-26r.18` ruled \
+             that an unanswered prompt is not data"
+        );
+    }
+
+    #[test]
+    fn a_missing_verdict_writes_nothing_and_keeps_the_prompt_open() {
+        let log = with_test_feedback_log();
+        let mut app = grouped_paths(PATHS);
+
+        app.open_grouping_feedback();
+        app.submit_grouping_feedback();
+
+        assert!(!log.path.exists());
+        assert_eq!(app.input_mode, InputMode::GroupingFeedback);
+    }
+
+    #[test]
+    fn a_second_vote_appends_beside_the_first_rather_than_replacing_it() {
+        let log = with_test_feedback_log();
+        let mut app = grouped_paths(PATHS);
+
+        vote(&mut app, GroupingVerdict::Useful);
+        // `:grouping feedback` is the only way back in after the session has
+        // settled, and the log deduplicates nothing: the offline pass decides
+        // which of the two wins.
+        vote(&mut app, GroupingVerdict::Useless);
+
+        let entries = entries(&log.path);
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0]["verdict"], "useful");
+        assert_eq!(entries[1]["verdict"], "useless");
+        assert_eq!(
+            entries[0]["review"]["session_id"], entries[1]["review"]["session_id"],
+            "both are about the same review"
+        );
+    }
+
+    #[test]
+    fn the_entry_carries_the_marks_the_reader_left_as_they_read() {
+        let log = with_test_feedback_log();
+        let mut app = grouped_paths(PATHS);
+        let group_id = first_group_id(&app);
+        let file_idx = file_idx_at(&app, 0);
+        let path = app.diff_files[file_idx].display_path().clone();
+        let group_name = app
+            .session
+            .groups
+            .iter()
+            .find(|group| group.id == group_id)
+            .expect("the group exists")
+            .name
+            .clone();
+
+        app.toggle_mark_for_file_idx(file_idx);
+        app.toggle_group_mark_by_id(&group_id);
+        vote(&mut app, GroupingVerdict::Mixed);
+
+        let entries = entries(&log.path);
+        assert_eq!(
+            entries[0]["marks"]["groups"],
+            serde_json::json!([{ "id": group_id, "name": group_name }]),
+            "a group mark is logged with the name it was marked under, since \
+             the id is minted fresh on every landing"
+        );
+        assert_eq!(
+            entries[0]["marks"]["files"],
+            serde_json::json!([path.to_string_lossy()])
+        );
+    }
+
+    #[test]
+    fn a_verdict_cast_with_grouping_switched_off_says_so() {
+        let log = with_test_feedback_log();
+        let mut app = grouped_paths(PATHS);
+        app.toggle_grouping();
+        assert!(!app.grouping_enabled);
+
+        // `:grouping feedback` still opens: the grouping exists, the reader is
+        // just not looking at it. The flag is what stops an offline reader
+        // treating this as a verdict on the rows that were on screen.
+        vote(&mut app, GroupingVerdict::Useless);
+
+        let entries = entries(&log.path);
+        assert_eq!(entries[0]["grouping_enabled"], false);
+    }
+
+    #[test]
+    fn a_write_that_fails_warns_and_still_closes_the_prompt() {
+        let blocker =
+            std::env::temp_dir().join(format!("tuicr-feedback-blocker-{}", uuid::Uuid::new_v4()));
+        std::fs::write(&blocker, b"not a directory").expect("the blocker is written");
+        // A regular file where the log's parent directory should be: the
+        // `create_dir_all` inside the append fails, and nothing downstream of
+        // it runs.
+        crate::persistence::feedback_log::set_test_feedback_log(Some(
+            blocker.join("grouping-feedback.jsonl"),
+        ));
+        let mut app = grouped_paths(PATHS);
+
+        vote(&mut app, GroupingVerdict::Useful);
+
+        assert_eq!(
+            app.input_mode,
+            InputMode::Normal,
+            "the reader is on their way out; a log they will never read does \
+             not get to refuse their vote"
+        );
+        assert!(app.grouping_feedback_settled);
+        let message = app.message.as_ref().expect("a warning");
+        assert!(
+            message
+                .content
+                .contains("Could not write the grouping feedback"),
+            "{message:?}"
+        );
+
+        crate::persistence::feedback_log::set_test_feedback_log(None);
+        let _ = std::fs::remove_file(&blocker);
+    }
+
+    #[test]
+    fn the_log_does_not_depend_on_the_session_surviving() {
+        let log = with_test_feedback_log();
+        let mut app = grouped_paths(PATHS);
+
+        vote(&mut app, GroupingVerdict::Useful);
+        // The normal exit for a review that left no comments: it deletes the
+        // session file unconditionally.
+        app.discard_session_and_quit();
+
+        assert!(app.should_quit);
+        if let Some(path) = app.session_path.as_ref() {
+            assert!(!path.exists(), "the session file is the thing that goes");
+        }
+        assert_eq!(
+            entries(&log.path).len(),
+            1,
+            "the vote outlives the session it was cast in"
+        );
+    }
 }
 
 // Assignment 2 (`gd-26r.42`): the key handler resolves a focus-agnostic

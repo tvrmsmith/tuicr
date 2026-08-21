@@ -40,11 +40,12 @@ use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::time::{Duration, Instant};
 
 use super::App;
-use super::refine::{ATTEMPTS, RefineCall, RefineOutcome, live_call};
+use super::refine::{ATTEMPTS, RefineCall, RefineOutcome, live_call, refine_attempt};
 use crate::grouping::changeset::Changeset;
 use crate::grouping::passes::GroupingConfig;
 use crate::grouping::refine;
 use crate::grouping::{Grouping, group_changeset};
+use crate::persistence::feedback_log::{RefineAttempt, RefineAttemptOutcome};
 
 /// A refine call in flight for a `:regroup`, and everything needed to retry it,
 /// to time it out, and to fall back without asking the passes twice.
@@ -96,7 +97,7 @@ impl App {
 
         let Some(call) = call.filter(|_| self.refine_config.is_some()) else {
             let groups = heuristic.groups().len();
-            self.land(heuristic);
+            self.land(heuristic, None);
             self.set_message(format!("Regrouped: {groups} groups."));
             return;
         };
@@ -160,7 +161,18 @@ impl App {
                     }
                     Ok(refined) => {
                         let repairs = refined.repairs.len();
-                        self.land(refined.grouping);
+                        let settings = self
+                            .refine_config
+                            .as_ref()
+                            .map(|config| config.settings.clone())
+                            .unwrap_or_default();
+                        let attempt = refine_attempt(
+                            &settings,
+                            &pending.prompt,
+                            pending.attempt,
+                            RefineAttemptOutcome::Landed { repairs },
+                        );
+                        self.land(refined.grouping, Some(attempt));
                         RefineOutcome::Refined { repairs }
                     }
                     // The one retryable failure, and only once: a body that
@@ -270,8 +282,9 @@ impl App {
         let groups = regrouped.groups().len();
         // Slice C's landing, not a second one: all groups collapse, the diff
         // pane does not move, and selection lands on the collapsed group row
-        // holding the current file (`docs/MID_SESSION_REGROUP.md`).
-        self.land(regrouped);
+        // holding the current file (`docs/MID_SESSION_REGROUP.md`). Heuristics
+        // only, never refine, so there is no arm to record.
+        self.land(regrouped, None);
         // Said out loud, and said as an explanation. A sidebar that rearranged
         // itself is worth a sentence naming what crossed and what it cost,
         // which is nothing.
@@ -287,7 +300,26 @@ impl App {
     /// carries the within-group sort.
     fn fall_back(&mut self, pending: PendingRegroup, outcome: RefineOutcome) -> RefineOutcome {
         if self.still_holds(&pending.changeset) {
-            self.land(pending.heuristic);
+            let settings = self
+                .refine_config
+                .as_ref()
+                .map(|config| config.settings.clone())
+                .unwrap_or_default();
+            // A refine call was made and did not land, but the heuristic
+            // partition about to be landed is still that call's attempt as
+            // far as the feedback log (`gd-26r.43`) is concerned.
+            let recorded = match &outcome {
+                RefineOutcome::Cancelled => RefineAttemptOutcome::Cancelled,
+                RefineOutcome::TimedOut => RefineAttemptOutcome::TimedOut,
+                RefineOutcome::Failed(reason) => RefineAttemptOutcome::Failed {
+                    reason: reason.clone(),
+                },
+                RefineOutcome::Refined { .. } | RefineOutcome::Skipped(_) => {
+                    unreachable!("fall_back only ever receives a failed refine outcome")
+                }
+            };
+            let attempt = refine_attempt(&settings, &pending.prompt, pending.attempt, recorded);
+            self.land(pending.heuristic, Some(attempt));
             return outcome;
         }
         RefineOutcome::Failed(
@@ -342,7 +374,7 @@ impl App {
     /// landing and dropping group marks — **not** file marks, which are
     /// path-keyed and stay true of a file that just moved — has to happen
     /// exactly once per landing, on every path that produces one.
-    fn land(&mut self, grouping: Grouping) {
+    fn land(&mut self, grouping: Grouping, arm: Option<RefineAttempt>) {
         self.session.record_landing();
         self.session.clear_group_marks();
         // `landing_count` and a cleared `marked_groups` are session state like
@@ -361,6 +393,7 @@ impl App {
 
         self.pending_regroup = None;
         self.pending_grouping = Some(grouping);
+        self.pending_grouping_arm = arm;
         self.sort_files_by_directory(false);
         // `line_annotations` is built by walking `diff_files` in order, so the
         // repartition above left every annotation pointing at the file that

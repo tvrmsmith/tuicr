@@ -298,7 +298,9 @@ impl App {
         let changeset = Changeset::from_diff_files(&self.diff_files);
         if changeset.is_empty() {
             self.grouping = None;
+            self.grouping_arm = None;
             self.pending_grouping = None;
+            self.pending_grouping_arm = None;
             self.refine_wanted = false;
             self.order_files_by_directory();
             return;
@@ -311,16 +313,34 @@ impl App {
         // never grouped has to be refinable, and a reopened one must not be.
         let covered = self.session.covers(&changeset);
 
-        let (grouping, from_saved_session) = match self.pending_grouping.take() {
-            Some(parked) => (parked, false),
+        let (grouping, from_saved_session, arm) = match self.pending_grouping.take() {
+            Some(parked) => (parked, false, self.pending_grouping_arm.take()),
             None => match self.session.grouping_for(&changeset) {
-                Some(saved) => (saved, covered),
+                // The session already held a grouping of this changeset, so no
+                // refine the wait would have dispatched could be the parked
+                // arm's: `refine_changeset` only ever parks one over a fresh
+                // heuristic pass. Taken and dropped, rather than left to leak
+                // into whatever reorder runs next.
+                Some(saved) => {
+                    self.pending_grouping_arm.take();
+                    (saved, covered, None)
+                }
+                // A fallback arm — cancelled, timed out, failed — parks here
+                // with no grouping alongside it, because the pre-TUI path has
+                // not run this method yet when `refine_changeset` returns.
+                // This is the heuristic pass it was parked for.
                 None => (
                     crate::grouping::group_changeset(&changeset, GroupingConfig::default()),
                     false,
+                    self.pending_grouping_arm.take(),
                 ),
             },
         };
+        // The grouping installed and the arm that produced it travel together,
+        // except for the one case they must not: the session's own saved
+        // table is never a refine call's grouping, whatever was parked
+        // alongside it.
+        self.grouping_arm = arm;
 
         // Picking a target is the whole gate, and the only one. A refine costs
         // a blocking billed call, so it is spent on the one question the human

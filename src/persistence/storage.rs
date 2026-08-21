@@ -401,11 +401,13 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
     Ok(())
 }
 
-struct ReviewsDirLock {
+/// An exclusive lock held for as long as this value lives; the lock file goes
+/// away when it drops.
+pub(crate) struct FileLock {
     path: PathBuf,
 }
 
-impl Drop for ReviewsDirLock {
+impl Drop for FileLock {
     fn drop(&mut self) {
         let _ = fs::remove_file(&self.path);
     }
@@ -416,9 +418,19 @@ fn with_reviews_dir_lock<T>(reviews_dir: &Path, f: impl FnOnce() -> Result<T>) -
     f()
 }
 
-fn acquire_reviews_dir_lock(reviews_dir: &Path) -> Result<ReviewsDirLock> {
+fn acquire_reviews_dir_lock(reviews_dir: &Path) -> Result<FileLock> {
     fs::create_dir_all(reviews_dir)?;
-    let path = reviews_dir.join(STORAGE_LOCK_FILENAME);
+    acquire_file_lock(&reviews_dir.join(STORAGE_LOCK_FILENAME))
+}
+
+/// Takes `lock_path` by creating it exclusively, reaping it first if whoever
+/// created it is gone. The parent directory must already exist.
+///
+/// One implementation for every lock tuicr takes: the reviews dir and the
+/// grouping feedback log both write a whole file's worth of bytes that must not
+/// interleave with another process's.
+pub(crate) fn acquire_file_lock(lock_path: &Path) -> Result<FileLock> {
+    let path = lock_path.to_path_buf();
     let started = Instant::now();
     loop {
         match fs::OpenOptions::new()
@@ -429,10 +441,10 @@ fn acquire_reviews_dir_lock(reviews_dir: &Path) -> Result<ReviewsDirLock> {
             Ok(mut file) => {
                 let _ = writeln!(file, "{} {}", std::process::id(), Utc::now());
                 let _ = file.sync_all();
-                return Ok(ReviewsDirLock { path });
+                return Ok(FileLock { path });
             }
             Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {
-                if remove_stale_reviews_dir_lock(&path)? {
+                if remove_stale_lock(&path)? {
                     continue;
                 }
                 if started.elapsed() >= STORAGE_LOCK_TIMEOUT {
@@ -451,7 +463,7 @@ fn acquire_reviews_dir_lock(reviews_dir: &Path) -> Result<ReviewsDirLock> {
     }
 }
 
-fn remove_stale_reviews_dir_lock(path: &Path) -> Result<bool> {
+fn remove_stale_lock(path: &Path) -> Result<bool> {
     let metadata = match fs::metadata(path) {
         Ok(metadata) => metadata,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(false),
@@ -722,14 +734,20 @@ pub(crate) fn get_reviews_dir() -> Result<PathBuf> {
 
     #[cfg(not(test))]
     {
-        let proj_dirs = ProjectDirs::from("", "", "tuicr").ok_or_else(|| {
-            TuicrError::Io(std::io::Error::other("Could not determine data directory"))
-        })?;
-
-        let data_dir = proj_dirs.data_dir().join("reviews");
-        fs::create_dir_all(&data_dir)?;
-        Ok(data_dir)
+        let reviews_dir = data_dir()?.join("reviews");
+        fs::create_dir_all(&reviews_dir)?;
+        Ok(reviews_dir)
     }
+}
+
+/// tuicr's platform data directory: the parent of `reviews/` and of the
+/// grouping feedback log. Not created here; each caller creates what it needs.
+#[cfg(not(test))]
+pub(crate) fn data_dir() -> Result<PathBuf> {
+    let proj_dirs = ProjectDirs::from("", "", "tuicr").ok_or_else(|| {
+        TuicrError::Io(std::io::Error::other("Could not determine data directory"))
+    })?;
+    Ok(proj_dirs.data_dir().to_path_buf())
 }
 
 /// On first run under the flat layout, move any pre-existing reviews dir
