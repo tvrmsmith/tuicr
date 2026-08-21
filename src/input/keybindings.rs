@@ -154,6 +154,38 @@ pub enum Action {
     /// `/` — open the file-tree search prompt.
     FileTreeSearch,
 
+    // Grouping feedback prompt (`gd-26r.42`). Focus-agnostic: what a key
+    // means depends on which field has focus, and only the handler knows
+    // that, so these carry the key's shape (Tab, a char, an arrow) rather
+    // than its meaning. `map_grouping_feedback_mode` produces them;
+    // `handle_grouping_feedback_action` in `src/handler.rs` resolves them.
+    /// Tab — focus the next field.
+    FeedbackTab,
+    /// Shift-Tab — focus the previous field.
+    FeedbackBackTab,
+    /// Enter — submit, from any field.
+    FeedbackSubmit,
+    /// Esc — skip, from any field.
+    FeedbackSkip,
+    /// A printable character. Verdict focused: `1`/`2`/`3` set the verdict,
+    /// `h`/`l` move it. Tags focused: `j`/`k` move the cursor, ` ` toggles.
+    /// Note focused: inserted literally.
+    FeedbackChar(char),
+    /// Down arrow — move the tag cursor down (Tags focus only).
+    FeedbackNext,
+    /// Up arrow — move the tag cursor up (Tags focus only).
+    FeedbackPrev,
+    /// Left arrow — move the verdict left (Verdict focus) or the note
+    /// cursor left (Note focus).
+    FeedbackLeft,
+    /// Right arrow — move the verdict right (Verdict focus) or the note
+    /// cursor right (Note focus).
+    FeedbackRight,
+    /// Backspace — delete the character before the note cursor.
+    FeedbackBackspace,
+    /// Ctrl-W — delete the word before the note cursor.
+    FeedbackDeleteWord,
+
     // No-op
     None,
 }
@@ -175,6 +207,7 @@ pub fn map_key_to_action(key: KeyEvent, mode: InputMode, leader_key: char) -> Ac
         InputMode::SubmitResolver => map_submit_resolver_mode(key),
         InputMode::SubmitConfirm => map_submit_confirm_mode(key),
         InputMode::SubmitActionPicker => map_submit_action_picker_mode(key),
+        InputMode::GroupingFeedback => map_grouping_feedback_mode(key),
     }
 }
 
@@ -490,6 +523,30 @@ pub fn map_target_filter_mode(key: KeyEvent) -> Action {
     }
 }
 
+/// Key map for the grouping-feedback prompt (`gd-26r.42`). Deliberately
+/// shallow: which field has focus decides what a key means (`j` moves a
+/// tag cursor in `Tags` but types a literal `j` in `Note`), and only
+/// `handle_grouping_feedback_action` in `src/handler.rs` knows the focus.
+/// So printable characters all arrive as `Action::FeedbackChar` here, and
+/// the handler resolves them. Enter and Esc submit/skip from every field,
+/// including `Note` — the note is single-line and never inserts a newline.
+fn map_grouping_feedback_mode(key: KeyEvent) -> Action {
+    match (key.code, key.modifiers) {
+        (KeyCode::Tab, KeyModifiers::NONE) => Action::FeedbackTab,
+        (KeyCode::BackTab, _) => Action::FeedbackBackTab,
+        (KeyCode::Enter, KeyModifiers::NONE) => Action::FeedbackSubmit,
+        (KeyCode::Esc, KeyModifiers::NONE) => Action::FeedbackSkip,
+        (KeyCode::Char('w'), KeyModifiers::CONTROL) => Action::FeedbackDeleteWord,
+        (KeyCode::Backspace, KeyModifiers::NONE) => Action::FeedbackBackspace,
+        (KeyCode::Left, KeyModifiers::NONE) => Action::FeedbackLeft,
+        (KeyCode::Right, KeyModifiers::NONE) => Action::FeedbackRight,
+        (KeyCode::Down, KeyModifiers::NONE) => Action::FeedbackNext,
+        (KeyCode::Up, KeyModifiers::NONE) => Action::FeedbackPrev,
+        (KeyCode::Char(c), KeyModifiers::NONE | KeyModifiers::SHIFT) => Action::FeedbackChar(c),
+        _ => Action::None,
+    }
+}
+
 fn map_visual_mode(key: KeyEvent) -> Action {
     match (key.code, key.modifiers) {
         // Extend selection
@@ -717,6 +774,57 @@ mod tests {
     fn should_map_x_to_toggle_grouping_mark_in_normal_mode() {
         let action = map_normal_mode(key(KeyCode::Char('x')), DEFAULT_LEADER_KEY);
         assert_eq!(action, Action::ToggleGroupingMark);
+    }
+
+    #[test]
+    fn should_map_control_keys_in_grouping_feedback_mode() {
+        assert_eq!(
+            map_key_to_action(
+                key(KeyCode::Tab),
+                InputMode::GroupingFeedback,
+                DEFAULT_LEADER_KEY
+            ),
+            Action::FeedbackTab
+        );
+        assert_eq!(
+            map_key_to_action(
+                KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT),
+                InputMode::GroupingFeedback,
+                DEFAULT_LEADER_KEY,
+            ),
+            Action::FeedbackBackTab
+        );
+        assert_eq!(
+            map_key_to_action(
+                key(KeyCode::Enter),
+                InputMode::GroupingFeedback,
+                DEFAULT_LEADER_KEY
+            ),
+            Action::FeedbackSubmit
+        );
+        assert_eq!(
+            map_key_to_action(
+                key(KeyCode::Esc),
+                InputMode::GroupingFeedback,
+                DEFAULT_LEADER_KEY
+            ),
+            Action::FeedbackSkip
+        );
+    }
+
+    #[test]
+    fn should_leave_the_meaning_of_j_to_the_focused_field_in_grouping_feedback_mode() {
+        // The keymap cannot decide whether `j` moves a tag cursor or types a
+        // literal `j` into the note — that depends on focus, which only the
+        // handler knows. So it always arrives as the char action.
+        assert_eq!(
+            map_key_to_action(
+                key(KeyCode::Char('j')),
+                InputMode::GroupingFeedback,
+                DEFAULT_LEADER_KEY
+            ),
+            Action::FeedbackChar('j')
+        );
     }
 
     #[test]

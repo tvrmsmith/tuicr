@@ -69,6 +69,7 @@ refine_model = "claude-opus-5"
 # vertex_project = "my-project"   # defaults to your credentials' project
 vertex_location = "global"
 regroup_threshold = 75
+feedback = true
 
 [forge]
 comment_type_prefix = true
@@ -246,6 +247,7 @@ refine_model = "claude-opus-5"
 vertex_project = "my-project"
 vertex_location = "global"
 regroup_threshold = 75
+feedback = true
 ```
 
 | Key                 | Default            | Description                                                                                                                                                        |
@@ -255,6 +257,7 @@ regroup_threshold = 75
 | `refine_model`      | `claude-opus-5`    | Publisher model id. Anthropic (`claude-*`) and Google (`gemini-*`) models are both understood.                                                                     |
 | `vertex_project`    | (from credentials) | Google Cloud project billed for the call. Falls back to `GOOGLE_CLOUD_PROJECT`, then to the `quota_project_id` in your credentials file.                           |
 | `vertex_location`   | `global`           | Vertex region.                                                                                                                                                     |
+| `feedback`          | `true`             | Ask what you made of the grouping, once per session, on the first `:w` or `:send`. `false` turns off the prompt and the `x` mark together: the whole mechanism, nothing half-on. |
 | `regroup_threshold` | `75`               | The drift percentage — the `n% new` the sidebar header counts — at which tuicr regroups on its own. Heuristics-only whatever `refine` says: the automatic regroup is instant, offline and free, and never costs a model call. `0` turns it off; values above `100` are refused with a warning. |
 
 How much the model thinks is not configurable. Low effort is what the shipped model was measured at; the alternative is slower, dearer, and better on only some changesets, which is not a setting anyone can be advised on.
@@ -283,6 +286,12 @@ Starting with `--no-grouping` and then pressing `<leader>g` computes the groupin
 **A very drifted review regroups itself.** Files that appear while a review is open — a `:reload`, a switch to a different range of commits — are filed into the existing groups without disturbing what you are reading, and the header counts how much of the review that accounts for (`42% new`). When that number reaches `regroup_threshold`, tuicr runs a full heuristic pass rather than letting you read a grouping that no longer describes the changeset. It lands the way `:regroup` does: all groups collapse, the cursor moves to the collapsed group holding the file you are on, and the diff pane does not move.
 
 The threshold is deliberately high, and the backstop never refines: it is free, instant and offline, so a crossing cannot spend money or make you wait. It also fires on the same number the header shows, so it can only happen after you have watched it approach — and never on the frame a session reopens, because reopening shows you yesterday's groups.
+
+**tuicr asks what you made of the grouping.** Press `x` on a group or file row that looks wrong and it carries a `?`; that costs one keystroke and says nothing about where the file belongs. Then the first `:w` or `:send` of a grouped review opens a prompt: a verdict of useful, mixed or useless, which is required, up to seven tags, and a note if you want to leave one. The marks you made along the way are shown there, not re-picked — on a 400-file review no prompt can offer you a list to tick, which is the whole reason marking happens while you read.
+
+Enter submits and `Esc` skips, and either answer settles the session: you are not asked again until you reopen the review. `:grouping feedback` reopens the prompt whenever grouping is on, which is the way back in if you skipped and then changed your mind. Quitting never asks, whatever is unsaid. Reviews with no grouping at all are never asked either, and a heuristics-only review is — that is the free path most reviews take and its verdict counts.
+
+`feedback = false` turns all of it off, the prompt and the marks together. A prompt that fires on `:w` with no way to silence it is how you teach someone to stop hitting `:w`.
 
 ### Credentials for refine
 

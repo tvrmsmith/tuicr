@@ -66,6 +66,11 @@ pub const MAX_REFINE_TIMEOUT_MS: usize = 86_400_000;
 /// changeset switch `docs/REGROUPING_STATE.md` wants noticed.
 pub const DEFAULT_REGROUP_THRESHOLD: usize = 75;
 
+/// Grouping feedback (`gd-26r.42`), default on. Shared between
+/// [`GroupingConfig::default`] and the `App`-side seed (`src/app/init.rs`) so
+/// the two cannot drift, following [`DEFAULT_REGROUP_THRESHOLD`]'s precedent.
+pub const DEFAULT_GROUPING_FEEDBACK_ENABLED: bool = true;
+
 /// `[grouping]` section settings: whether startup blocks on a refine call, how
 /// long it may block for, and which Vertex arm answers it.
 ///
@@ -107,6 +112,11 @@ pub struct GroupingConfig {
     /// Vertex region. `None` ships `global`; `TUICR_VERTEX_LOCATION` overrides
     /// both.
     pub vertex_location: Option<String>,
+    /// Grouping feedback (`gd-26r.42`): the verdict prompt on `:send`/`:w` and
+    /// the two mark toggles from `gd-26r.41`. Default on; `false` disables the
+    /// whole mechanism — prompt and marks alike, per the ruling that a prompt
+    /// with no way to silence it teaches someone to stop hitting `:w`.
+    pub feedback: bool,
 }
 
 impl Default for GroupingConfig {
@@ -118,6 +128,7 @@ impl Default for GroupingConfig {
             refine_model: None,
             vertex_project: None,
             vertex_location: None,
+            feedback: DEFAULT_GROUPING_FEEDBACK_ENABLED,
         }
     }
 }
@@ -318,6 +329,7 @@ const GROUPING_KNOWN_KEYS: &[&str] = &[
     "refine_model",
     "vertex_project",
     "vertex_location",
+    "feedback",
 ];
 
 const EXPORT_KNOWN_KEYS: &[&str] = &[
@@ -633,6 +645,10 @@ fn parse_grouping(value: &Value, warnings: &mut Vec<String>) -> Option<GroupingC
 
     if let Some(refine) = read_section_bool(table, "grouping", "refine", warnings) {
         cfg.refine = refine;
+        any_override = true;
+    }
+    if let Some(feedback) = read_section_bool(table, "grouping", "feedback", warnings) {
+        cfg.feedback = feedback;
         any_override = true;
     }
     if let Some(timeout) = read_section_usize(table, "grouping", "refine_timeout_ms", warnings) {
@@ -2367,6 +2383,25 @@ scope_line = "no"
             .grouping
             .expect("refine = true still set the section");
         assert!(grouping.vertex_project.is_none());
+    }
+
+    #[test]
+    fn should_default_grouping_feedback_on() {
+        // `gd-26r.42`: a prompt with no way to turn it off teaches someone to
+        // stop hitting `:w`, so the mechanism ships on and off is opt-in.
+        assert!(GroupingConfig::default().feedback);
+        let cfg = parse_config("[grouping]\nrefine = true\n")
+            .config
+            .expect("config should parse");
+        assert!(cfg.grouping.expect("the section is set").feedback);
+    }
+
+    #[test]
+    fn should_read_grouping_feedback_off() {
+        let cfg = parse_config("[grouping]\nfeedback = false\n")
+            .config
+            .expect("config should parse");
+        assert!(!cfg.grouping.expect("the section is set").feedback);
     }
 
     #[test]

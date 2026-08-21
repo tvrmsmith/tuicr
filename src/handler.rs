@@ -1,6 +1,7 @@
 use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
 use ratatui::layout::Position;
 
+use crate::app::grouping_feedback::{FeedbackField, GroupingVerdict};
 use crate::app::{
     self, App, CommandCompletionState, ExpandDirection, FileTreeItem, FileTreePrompt, FocusedPanel,
     GapCursorHit, InputMode, TargetTab, VisualSelection,
@@ -96,6 +97,7 @@ const COMMAND_SPECS: &[CommandSpec] = &[
         &["comments hide"],
         CommandKind::Comments(PrCommentsVisibility::Hide),
     ),
+    CommandSpec::new(&["grouping feedback"], CommandKind::GroupingFeedback),
 ];
 
 /// CommandSpec is the single registry entry used by both completion and
@@ -148,6 +150,7 @@ enum CommandKind {
     SubmitPicker,
     Submit(SubmitEvent),
     Comments(PrCommentsVisibility),
+    GroupingFeedback,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -643,6 +646,74 @@ mod release_command_tests {
             Some(CommandKind::Write)
         );
     }
+
+    #[test]
+    fn parses_the_on_demand_grouping_feedback_command() {
+        assert_eq!(
+            command_spec_for("grouping feedback").map(|spec| spec.kind),
+            Some(CommandKind::GroupingFeedback)
+        );
+        assert_eq!(command_spec_for("grouping"), None);
+    }
+}
+
+#[cfg(test)]
+mod grouping_feedback_command_tests {
+    //! `:w` and `:send` fire the prompt on success; `:wq` and `:q` never do
+    //! (`gd-26r.18`: quit should quit). Driven through `dispatch_command`
+    //! directly, the same call `Action::SubmitInput` makes once `command_spec_for`
+    //! resolves the buffer.
+    use super::{CommandKind, dispatch_command};
+    use crate::app::App;
+    use crate::app::InputMode;
+    use crate::app::tests::grouping_tests::{
+        build_app_over, empty_session, make_file, stub_vcs_info,
+    };
+
+    /// A real, grouped `App`, built from the `pub(crate)` fixture helpers
+    /// `grouping_tests` exposes beyond its own module (`grouped_paths` and
+    /// `PATHS` itself stay `pub(super)`, so this rebuilds their shape here).
+    fn grouped_app_for_test() -> App {
+        let paths = ["src/auth/login.rs", "src/auth/session.rs", "README.md"];
+        let files: Vec<_> = paths.iter().map(|p| make_file(p)).collect();
+        let vcs_info = stub_vcs_info();
+        let mut session = empty_session(&vcs_info);
+        for file in &files {
+            session.add_file(file.display_path().clone(), file.status, file.content_hash);
+        }
+        let mut app = build_app_over(files, session);
+        app.enable_grouping();
+        app.expand_all_dirs();
+        app
+    }
+
+    #[test]
+    fn write_opens_the_prompt_on_a_grouped_review() {
+        let mut app = grouped_app_for_test();
+        dispatch_command(&mut app, CommandKind::Write);
+        assert_eq!(app.input_mode, InputMode::GroupingFeedback);
+    }
+
+    #[test]
+    fn write_quit_never_opens_the_prompt() {
+        let mut app = grouped_app_for_test();
+        dispatch_command(&mut app, CommandKind::WriteQuit);
+        assert_ne!(app.input_mode, InputMode::GroupingFeedback);
+    }
+
+    #[test]
+    fn quit_never_opens_the_prompt() {
+        let mut app = grouped_app_for_test();
+        dispatch_command(&mut app, CommandKind::Quit);
+        assert_ne!(app.input_mode, InputMode::GroupingFeedback);
+    }
+
+    #[test]
+    fn release_opens_the_prompt_on_a_grouped_review() {
+        let mut app = grouped_app_for_test();
+        dispatch_command(&mut app, CommandKind::Release);
+        assert_eq!(app.input_mode, InputMode::GroupingFeedback);
+    }
 }
 
 /// CommandCompleter computes command-buffer replacements without mutating App.
@@ -816,6 +887,13 @@ fn dispatch_command(app: &mut App, kind: CommandKind) -> CommandAfterDispatch {
             match app.save_current_session_merging_external() {
                 Ok(path) => {
                     app.set_message(format!("Saved to {}", path.display()));
+                    // `:w` is one of the two prompts named in `gd-26r.18`;
+                    // `:wq` and `:q` are not (quit should quit), which is why
+                    // this lives here and not inside
+                    // `save_current_session_merging_external` itself.
+                    app.exit_command_mode();
+                    app.maybe_prompt_grouping_feedback();
+                    return CommandAfterDispatch::KeepMode;
                 }
                 Err(e) => app.set_error(format!("Save failed: {e}")),
             }
@@ -830,6 +908,12 @@ fn dispatch_command(app: &mut App, kind: CommandKind) -> CommandAfterDispatch {
                         1 => format!("Released batch {batch} (1 comment)"),
                         n => format!("Released batch {batch} ({n} comments)"),
                     });
+                    // See the `Write` arm above: `:send` is the other prompt
+                    // trigger, and the hook lives at the call sites, not
+                    // inside `release_comments`, so `:wq` stays prompt-free.
+                    app.exit_command_mode();
+                    app.maybe_prompt_grouping_feedback();
+                    return CommandAfterDispatch::KeepMode;
                 }
                 Err(e) => app.set_error(format!("Release failed: {e}")),
             }
@@ -974,6 +1058,11 @@ fn dispatch_command(app: &mut App, kind: CommandKind) -> CommandAfterDispatch {
         CommandKind::Comments(visibility) => {
             set_remote_comments_visibility(app, visibility);
             CommandAfterDispatch::ExitCommandMode
+        }
+        CommandKind::GroupingFeedback => {
+            app.exit_command_mode();
+            app.open_grouping_feedback();
+            CommandAfterDispatch::KeepMode
         }
     }
 }
@@ -1750,6 +1839,82 @@ pub fn handle_submit_resolver_action(app: &mut App, action: Action) {
         Action::Quit => app.should_quit = true,
         _ => {}
     }
+}
+
+/// Handle a key inside the grouping-feedback prompt (`gd-26r.42`). The
+/// keymap only knows the key's shape (`FeedbackChar('j')`, an arrow, Tab);
+/// this handler is the one place that knows what the shape means for the
+/// field currently focused.
+pub fn handle_grouping_feedback_action(app: &mut App, action: Action) {
+    let focus = app.grouping_feedback.as_ref().map(|draft| draft.focus);
+    match action {
+        Action::FeedbackTab => app.feedback_focus_next(),
+        Action::FeedbackBackTab => app.feedback_focus_prev(),
+        Action::FeedbackSubmit => app.submit_grouping_feedback(),
+        Action::FeedbackSkip => app.skip_grouping_feedback(),
+        Action::FeedbackBackspace => app.feedback_note_delete_char_before(),
+        Action::FeedbackDeleteWord => app.feedback_note_delete_word_before(),
+        Action::FeedbackLeft => match focus {
+            Some(FeedbackField::Verdict) => feedback_move_verdict(app, -1),
+            Some(FeedbackField::Note) => app.feedback_note_cursor_left(),
+            _ => {}
+        },
+        Action::FeedbackRight => match focus {
+            Some(FeedbackField::Verdict) => feedback_move_verdict(app, 1),
+            Some(FeedbackField::Note) => app.feedback_note_cursor_right(),
+            _ => {}
+        },
+        Action::FeedbackNext if focus == Some(FeedbackField::Tags) => {
+            app.feedback_tag_cursor_down();
+        }
+        Action::FeedbackPrev if focus == Some(FeedbackField::Tags) => {
+            app.feedback_tag_cursor_up();
+        }
+        Action::FeedbackChar(c) => match focus {
+            Some(FeedbackField::Verdict) => match c {
+                '1' => app.feedback_set_verdict(GroupingVerdict::Useful),
+                '2' => app.feedback_set_verdict(GroupingVerdict::Mixed),
+                '3' => app.feedback_set_verdict(GroupingVerdict::Useless),
+                'h' => feedback_move_verdict(app, -1),
+                'l' => feedback_move_verdict(app, 1),
+                _ => {}
+            },
+            Some(FeedbackField::Tags) => match c {
+                'j' => app.feedback_tag_cursor_down(),
+                'k' => app.feedback_tag_cursor_up(),
+                ' ' => app.feedback_toggle_tag(),
+                _ => {}
+            },
+            Some(FeedbackField::Note) => app.feedback_note_insert_char(c),
+            None => {}
+        },
+        _ => {}
+    }
+}
+
+/// `h`/`Left` and `l`/`Right` move the verdict selection across its three
+/// points and, moving, set it: there is no hovered-but-unset state, so the
+/// first press from `None` lands on `Useful` in either direction.
+fn feedback_move_verdict(app: &mut App, delta: i32) {
+    const ORDER: [GroupingVerdict; 3] = [
+        GroupingVerdict::Useful,
+        GroupingVerdict::Mixed,
+        GroupingVerdict::Useless,
+    ];
+    let Some(draft) = app.grouping_feedback.as_ref() else {
+        return;
+    };
+    let next = match draft.verdict {
+        None => 0,
+        Some(current) => {
+            let idx = ORDER
+                .iter()
+                .position(|&v| v == current)
+                .expect("verdict is one of ORDER's three points");
+            (idx as i32 + delta).clamp(0, ORDER.len() as i32 - 1) as usize
+        }
+    };
+    app.feedback_set_verdict(ORDER[next]);
 }
 
 /// Handle actions in the bare-`:submit` action picker. Up/down move the

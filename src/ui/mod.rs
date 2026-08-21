@@ -6,6 +6,7 @@ pub mod diff_side_by_side;
 pub mod diff_unified;
 pub mod diff_view;
 pub mod file_list;
+pub mod grouping_feedback;
 pub mod help_popup;
 pub mod inline_commit_selector;
 pub mod pr_info_panel;

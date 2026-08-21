@@ -117,6 +117,13 @@ row that looks wrong to flag it as you read, with no need to say where it belong
 outranks `~` and `!` in the group row's marker slot, since those are facts tuicr can
 re-derive at any time and your mark is the one thing on the row only you know.
 
+The first `:w` or `:send` of a grouped review then asks what you made of the grouping:
+a verdict of useful, mixed or useless, any of seven tags, and a note if you have one.
+Your marks are shown there rather than re-picked. Enter submits, `Esc` skips, and
+either way you are not asked again that session — `:grouping feedback` reopens it if
+you change your mind. Quitting never asks. `[grouping].feedback = false` turns off the
+prompt and the marks together.
+
 ## How it compares
 
 | | tuicr | [hunk](https://github.com/modem-dev/hunk) | [lumen](https://github.com/jnsahaj/lumen) | `gh pr review` | `git diff` |
@@ -316,6 +323,7 @@ A first-session cheatsheet. Press `?` inside tuicr for the full reference.
 | `:copy-url` | Copy the open PR URL (PR mode) |
 | `:submit` | Push review to GitHub, GitLab, or Bitbucket |
 | `:send` | Release this batch of comments to a polling agent |
+| `:grouping feedback` | Rate the grouping (reopens the prompt after a skip) |
 | `Tab` in `:` prompt | Complete or cycle commands |
 | `?` | Toggle full help |
 

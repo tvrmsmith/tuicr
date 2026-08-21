@@ -436,6 +436,12 @@ impl App {
     /// (`docs/TOTAL_COVERAGE.md` Decision 1) and so cannot be "in the wrong
     /// group".
     pub fn toggle_mark_for_file_idx(&mut self, file_idx: usize) {
+        if !self.grouping_feedback_enabled {
+            self.set_warning(
+                "Grouping feedback is off (`[grouping].feedback = false`); nothing to mark.",
+            );
+            return;
+        }
         if self.grouping.is_none() {
             self.set_warning("This review has no grouping; there is nothing to mark.");
             return;
@@ -458,6 +464,12 @@ impl App {
     /// Refuses when the review has no grouping at all, for the same reason
     /// [`App::toggle_mark_for_file_idx`] does.
     pub fn toggle_group_mark_by_id(&mut self, id: &str) {
+        if !self.grouping_feedback_enabled {
+            self.set_warning(
+                "Grouping feedback is off (`[grouping].feedback = false`); nothing to mark.",
+            );
+            return;
+        }
         if self.grouping.is_none() {
             self.set_warning("This review has no grouping; there is nothing to mark.");
             return;

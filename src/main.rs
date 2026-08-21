@@ -15,8 +15,9 @@ use tuicr::editor::{EditorCommand, EditorError, EditorLaunch, EditorSurface, Edi
 use tuicr::handler::{
     handle_command_action, handle_comment_action, handle_comment_navigator_action,
     handle_commit_select_action, handle_commit_selector_action, handle_confirm_action,
-    handle_diff_action, handle_file_list_action, handle_help_action, handle_mouse_event,
-    handle_search_action, handle_submit_action_picker_action, handle_submit_confirm_action,
+    handle_diff_action, handle_file_list_action, handle_grouping_feedback_action,
+    handle_help_action, handle_mouse_event, handle_search_action,
+    handle_submit_action_picker_action, handle_submit_confirm_action,
     handle_submit_resolver_action, handle_visual_action,
 };
 use tuicr::input::{
@@ -299,6 +300,14 @@ fn main() -> anyhow::Result<()> {
             .map(|grouping| grouping.regroup_threshold)
         {
             app.regroup_threshold = threshold;
+        }
+        if let Some(feedback) = config_outcome
+            .config
+            .as_ref()
+            .and_then(|cfg| cfg.grouping.as_ref())
+            .map(|grouping| grouping.feedback)
+        {
+            app.grouping_feedback_enabled = feedback;
         }
         if let Some(grouping) = config_outcome
             .config
@@ -919,6 +928,7 @@ fn dispatch_action(app: &mut App, action: Action) {
         InputMode::SubmitResolver => handle_submit_resolver_action(app, action),
         InputMode::SubmitConfirm => handle_submit_confirm_action(app, action),
         InputMode::SubmitActionPicker => handle_submit_action_picker_action(app, action),
+        InputMode::GroupingFeedback => handle_grouping_feedback_action(app, action),
         InputMode::Normal => match app.focused_panel {
             FocusedPanel::FileList => handle_file_list_action(app, action),
             FocusedPanel::Comments => handle_comment_navigator_action(app, action),

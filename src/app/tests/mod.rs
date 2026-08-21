@@ -10,6 +10,7 @@ mod diff_watch_tests;
 mod expand_gap_tests;
 mod file_filter_tests;
 mod find_source_line_tests;
+mod grouping_feedback_tests;
 mod grouping_status_tests;
 pub(crate) mod grouping_tests;
 mod grouping_toggle_tests;

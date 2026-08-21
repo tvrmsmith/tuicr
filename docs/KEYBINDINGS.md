@@ -176,6 +176,7 @@ In command mode,
 | `:send` (`:release`) | Release this batch of comments to a polling agent |
 | `:e` (`:reload`) | Reload diff files |
 | `:regroup` | Recompute the groups for this review (refines when configured) |
+| `:grouping feedback` | Rate the grouping; reopens the prompt `:w` and `:send` ask once per session |
 | `:edit` | Open focused file in `$EDITOR` |
 | `:clip` (`:export`) | Copy review to clipboard |
 | `:copy-url` | Copy the open PR URL to clipboard (PR mode) |
@@ -236,6 +237,23 @@ commit an approval covered, so no commits are preselected there.
 | `Space` / `Enter` | Toggle commit selection (updates diff) |
 | `(` / `)` | Cycle through individual commits |
 | `Esc` | Return focus to diff |
+
+## Grouping feedback prompt
+
+Opened by the first `:w` or `:send` of a grouped review, and by
+`:grouping feedback` on demand. The verdict is required; the tags and the note
+are not.
+
+| Key | Action |
+|-----|--------|
+| `Tab` / `Shift-Tab` | Move between the verdict, the tags and the note |
+| `1` / `2` / `3` (verdict) | Useful / mixed / useless |
+| `h` / `l`, `←` / `→` (verdict) | Move the verdict along the three points |
+| `j` / `k`, `↓` / `↑` (tags) | Move the tag cursor |
+| `Space` (tags) | Toggle the tag under the cursor |
+| `Ctrl-W` (note) | Delete the word before the cursor |
+| `Enter` | Submit |
+| `Esc` | Skip, and stay silent for the rest of the session |
 
 ## Confirm dialogs
 

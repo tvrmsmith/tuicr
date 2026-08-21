@@ -722,6 +722,13 @@ pub fn render_help(frame: &mut Frame, app: &mut App) {
         ]),
         Line::from(vec![
             Span::styled(
+                "  :grouping feedback ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("Rate the grouping (:w and :send ask once a session)"),
+        ]),
+        Line::from(vec![
+            Span::styled(
                 "  :edit     ",
                 Style::default().add_modifier(Modifier::BOLD),
             ),

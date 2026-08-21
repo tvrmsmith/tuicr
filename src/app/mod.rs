@@ -659,6 +659,11 @@ pub enum InputMode {
     /// no `SubmitConfirm` follows (resolver still runs if any comment is
     /// unmappable).
     SubmitActionPicker,
+    /// Grouping feedback (`gd-26r.42`): the verdict prompt fired by `:send`,
+    /// `:w`, or `:grouping feedback`. Input handling and rendering are
+    /// assignment 2's; this variant only exists so `App::grouping_feedback`
+    /// has a mode to sit in.
+    GroupingFeedback,
 }
 
 /// CommandCompletionState keeps one Tab-completion run anchored to the text
@@ -1526,6 +1531,19 @@ pub struct App {
     /// call failed or was walked away from, and blaming the environment for a
     /// decision the reader made is the one reading of it that is wrong.
     pub(crate) refine_cancelled: bool,
+    /// `[grouping].feedback` (`gd-26r.42`), default on. Off disables the whole
+    /// mechanism: the prompt below never opens, and the two mark toggles
+    /// (`src/app/tree.rs`) refuse and warn instead of flipping a mark.
+    pub grouping_feedback_enabled: bool,
+    /// The open verdict prompt, or `None` when it is closed. Transient —
+    /// `App` is never serialized, so a prompt left open on quit is simply
+    /// gone, which matches the ruling that quit never prompts.
+    pub grouping_feedback: Option<crate::app::grouping_feedback::GroupingFeedbackDraft>,
+    /// Whether this session has already been asked for or given grouping
+    /// feedback. Set by a submit or a skip, never unset, so `:send`/`:w`
+    /// ask at most once per session; `:grouping feedback` ignores it, which
+    /// is the only path back in after a skip.
+    grouping_feedback_settled: bool,
     /// Stores lines expanded downward from the upper boundary of each gap
     pub expanded_top: HashMap<GapId, Vec<DiffLine>>,
     /// Stores lines expanded upward from the lower boundary of each gap (in ascending line order)
@@ -1897,6 +1915,7 @@ mod diff_load;
 mod file_filter;
 mod gaps;
 mod grouping;
+pub mod grouping_feedback;
 mod init;
 mod modes;
 mod navigation;
