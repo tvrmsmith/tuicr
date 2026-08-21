@@ -201,6 +201,13 @@ pub struct RefineAttempt {
     /// 1, or 2 when the first answer was unparseable and the identical prompt
     /// was resent. A call that needed the retry is a materially worse call.
     pub attempts: u32,
+    /// Flattened, so `outcome` and its payload sit beside `model` and
+    /// `attempts` rather than one level down. The enum is internally tagged on
+    /// the same key the field is named, so without this the line reads
+    /// `"outcome":{"outcome":"landed","repairs":2}` — a doubled key, and a
+    /// `repairs` an offline reader following `docs/GROUPING_FEEDBACK.md`'s
+    /// field table would look for beside `attempts` and not find.
+    #[serde(flatten)]
     pub outcome: RefineAttemptOutcome,
 }
 
@@ -1031,6 +1038,109 @@ mod tests {
                     file.pass.as_str()
                 ))
                 .collect::<Vec<_>>()
+        );
+    }
+
+    fn an_attempt(outcome: RefineAttemptOutcome) -> RefineAttempt {
+        RefineAttempt {
+            model: "claude-opus-5".to_string(),
+            effort: "low".to_string(),
+            prompt_template_fingerprint: "fnv1a64:00000000000000aa".to_string(),
+            prompt_fingerprint: "fnv1a64:00000000000000bb".to_string(),
+            prompt_bytes: 4096,
+            attempts: 1,
+            outcome,
+        }
+    }
+
+    /// The one shape in this module tuicr itself never reads. `gd-26r.18` ruled
+    /// out reading the log back, so `docs/GROUPING_FEEDBACK.md`'s field table is
+    /// the whole contract an offline pass has, and the log is append-only: a
+    /// line written under a wrong shape can never be rewritten. So the bytes are
+    /// asserted literally rather than through a round-trip, which would agree
+    /// with itself whatever serde did.
+    #[test]
+    fn should_write_the_outcome_beside_its_payload_the_way_the_schema_doc_says() {
+        let cases = [
+            (
+                RefineAttemptOutcome::Landed { repairs: 2 },
+                serde_json::json!({"outcome": "landed", "repairs": 2}),
+            ),
+            (
+                RefineAttemptOutcome::Cancelled,
+                serde_json::json!({"outcome": "cancelled"}),
+            ),
+            (
+                RefineAttemptOutcome::TimedOut,
+                serde_json::json!({"outcome": "timed_out"}),
+            ),
+            (
+                RefineAttemptOutcome::Failed {
+                    reason: "unauthenticated".to_string(),
+                },
+                serde_json::json!({"outcome": "failed", "reason": "unauthenticated"}),
+            ),
+        ];
+
+        for (outcome, expected_tail) in cases {
+            let mut expected = serde_json::json!({
+                "model": "claude-opus-5",
+                "effort": "low",
+                "prompt_template_fingerprint": "fnv1a64:00000000000000aa",
+                "prompt_fingerprint": "fnv1a64:00000000000000bb",
+                "prompt_bytes": 4096,
+                "attempts": 1,
+            });
+            let object = expected.as_object_mut().expect("an object");
+            for (key, value) in expected_tail.as_object().expect("an object") {
+                object.insert(key.clone(), value.clone());
+            }
+
+            assert_eq!(
+                serde_json::to_value(an_attempt(outcome)).unwrap(),
+                expected,
+                "`outcome` and its payload are peers of `model` and `attempts`, \
+                 not a nested object under a doubled key"
+            );
+        }
+    }
+
+    /// The whole line, once, with an attempt present. Every other test here
+    /// leaves `arm.attempt` null, which is the shape that says no refine call
+    /// produced the partition — so on its own it pins nothing about the arm.
+    #[test]
+    fn should_carry_an_attempt_through_the_log_and_back() {
+        let guard = with_test_feedback_log();
+        let mut written = an_entry(None);
+        written.arm.attempt = Some(an_attempt(RefineAttemptOutcome::Landed { repairs: 3 }));
+        written.arm.refine_in_flight = true;
+
+        append(&written).unwrap();
+
+        let line = &lines(&guard.path)[0];
+        let value: serde_json::Value = serde_json::from_str(line).unwrap();
+        assert_eq!(value["arm"]["attempt"]["outcome"], "landed");
+        assert_eq!(value["arm"]["attempt"]["repairs"], 3);
+        assert_eq!(value["arm"]["refine_in_flight"], true);
+
+        let read_back: GroupingFeedbackEntry = serde_json::from_str(line).unwrap();
+        let attempt = read_back
+            .arm
+            .attempt
+            .expect("the attempt survives the trip");
+        assert_eq!(
+            (
+                attempt.model.as_str(),
+                attempt.effort.as_str(),
+                attempt.prompt_bytes,
+                attempt.attempts,
+            ),
+            ("claude-opus-5", "low", 4096, 1)
+        );
+        assert!(
+            matches!(attempt.outcome, RefineAttemptOutcome::Landed { repairs: 3 }),
+            "{:?}",
+            attempt.outcome
         );
     }
 }
