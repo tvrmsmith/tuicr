@@ -317,13 +317,24 @@ impl App {
             Some(parked) => (parked, false, self.pending_grouping_arm.take()),
             None => match self.session.grouping_for(&changeset) {
                 // The session already held a grouping of this changeset, so no
-                // refine the wait would have dispatched could be the parked
+                // refine the wait would have dispatched could be the *parked*
                 // arm's: `refine_changeset` only ever parks one over a fresh
                 // heuristic pass. Taken and dropped, rather than left to leak
                 // into whatever reorder runs next.
+                //
+                // The *installed* arm is a different question and carries
+                // through. Every reorder within a sitting re-reads the table
+                // this method wrote at the end of the last one, so the saved
+                // grouping here is usually the one already on screen — and the
+                // call that produced it, landed or fallen back, still produced
+                // it. Clearing it would make the log say `attempt: null` beside
+                // `heuristics` groups, which `docs/GROUPING_FEEDBACK.md` defines
+                // as "refine never ran": a cancel the human sat through, denied.
+                // A review reopened from disk starts with `grouping_arm` already
+                // `None`, so it still reports honestly.
                 Some(saved) => {
                     self.pending_grouping_arm.take();
-                    (saved, covered, None)
+                    (saved, covered, self.grouping_arm.take())
                 }
                 // A fallback arm — cancelled, timed out, failed — parks here
                 // with no grouping alongside it, because the pre-TUI path has

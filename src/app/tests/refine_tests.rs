@@ -618,10 +618,107 @@ fn a_session_that_already_holds_a_grouping_is_not_refined_again() {
 
     app.enable_grouping();
     assert_eq!(group_names(&app), names);
+}
+
+/// The arm the log records travels with the grouping it describes, and the
+/// saved-session branch of `order_files_by_group` is where the two can come
+/// apart: it re-reads a table this sitting wrote, so it cannot tell a grouping
+/// it produced from one rehydrated off disk without being told.
+///
+/// Driven from the in-TUI cancel because that is the only path that leaves an
+/// arm installed with no adoption call behind it: `refine_loaded_with` reorders
+/// on `Refined` alone.
+#[test]
+fn a_reorder_keeps_the_fallback_arm_of_the_partition_it_is_still_showing() {
+    let mut app = configured_app();
+    app.reorder_for_load(TargetPick::NewTarget);
+    app.enable_grouping();
+
+    let mut overlay = Overlay::default();
+    let outcome = app.refine_loaded_with(
+        PATIENT,
+        never(),
+        &mut overlay.paint(),
+        &mut Keys::cancelling(),
+    );
+    assert!(matches!(outcome, RefineOutcome::Cancelled), "{outcome:?}");
+    let names = group_names(&app);
+
+    // The file set moves under the review the human already has open — a
+    // `:reload`, a filter, a save on disk. The partition does not change.
+    app.reorder_for_load(TargetPick::SameReview);
+    app.enable_grouping();
+
+    assert_eq!(group_names(&app), names, "the same partition is on screen");
+    assert!(
+        matches!(
+            app.grouping_arm.as_ref().map(|arm| &arm.outcome),
+            Some(crate::persistence::feedback_log::RefineAttemptOutcome::Cancelled)
+        ),
+        "a cancel the human sat through survives the reorder; dropping it \
+         would log `attempt: null` beside heuristic groups, which reads as \
+         refine never having run: {:?}",
+        app.grouping_arm
+    );
+    assert!(
+        app.pending_grouping_arm.is_none(),
+        "the park is still consumed: only one arm describes what is installed"
+    );
+}
+
+/// The other half of that branch. A review reopened from disk holds a saved
+/// table and no arm, and must not adopt one a later dispatch parked: the
+/// attempt is in-memory state the session file deliberately never keeps, so
+/// the honest answer for a rehydrated grouping is `None`.
+#[test]
+fn a_rehydrated_grouping_adopts_no_arm_that_was_parked_beside_it() {
+    let mut app = app();
+    app.enable_grouping();
+    let names = group_names(&app);
+    assert!(app.grouping_arm.is_none(), "nothing has refined yet");
+
+    // Parked with no grouping alongside it and nothing that produced the saved
+    // table, which is exactly the leak the branch exists to stop.
+    app.pending_grouping_arm = Some(cancelled_arm());
+
+    app.enable_grouping();
+
+    assert_eq!(group_names(&app), names);
     assert!(
         app.grouping_arm.is_none(),
-        "a reopened review honestly reports no refine call, since none ran"
+        "a table off disk reports no refine call: {:?}",
+        app.grouping_arm
     );
+    assert!(app.pending_grouping_arm.is_none(), "the park is consumed");
+}
+
+/// A target pick that turns out to have no files clears the arm with the
+/// grouping. An arm outliving its own changeset would be attributed to
+/// whatever the next reorder happened to be looking at.
+#[test]
+fn an_empty_changeset_clears_the_arm_with_the_grouping() {
+    let mut app = app();
+    app.enable_grouping();
+    app.grouping_arm = Some(cancelled_arm());
+    app.pending_grouping_arm = Some(cancelled_arm());
+
+    app.diff_files.clear();
+    app.enable_grouping();
+
+    assert!(app.grouping.is_none());
+    assert!(app.grouping_arm.is_none());
+    assert!(app.pending_grouping_arm.is_none());
+}
+
+/// A terminal refine attempt to plant, for the branches that care only that an
+/// arm is present rather than what it says.
+fn cancelled_arm() -> crate::persistence::feedback_log::RefineAttempt {
+    crate::app::refine::refine_attempt(
+        &crate::grouping::vertex::Settings::default(),
+        "prompt",
+        1,
+        crate::persistence::feedback_log::RefineAttemptOutcome::Cancelled,
+    )
 }
 
 /// The keys the screen advertises, and only those. A wrong mapping here is a

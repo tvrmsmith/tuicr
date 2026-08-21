@@ -524,15 +524,24 @@ mod log {
         let log = with_test_feedback_log();
         let mut app = grouped_paths(PATHS);
 
+        // Saved first, because the claim is that the log survives a session
+        // file being deleted, and a file that was never written cannot
+        // demonstrate that.
+        let session_path = app
+            .save_current_session_merging_external()
+            .expect("the session is written");
+        assert!(session_path.exists(), "the session file is on disk to lose");
+
         vote(&mut app, GroupingVerdict::Useful);
         // The normal exit for a review that left no comments: it deletes the
         // session file unconditionally.
         app.discard_session_and_quit();
 
         assert!(app.should_quit);
-        if let Some(path) = app.session_path.as_ref() {
-            assert!(!path.exists(), "the session file is the thing that goes");
-        }
+        assert!(
+            !session_path.exists(),
+            "the session file is the thing that goes"
+        );
         assert_eq!(
             entries(&log.path).len(),
             1,
