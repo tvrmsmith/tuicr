@@ -191,6 +191,23 @@ pub fn prompt(changeset: &Changeset, heuristic: &Grouping) -> String {
     )
 }
 
+/// FNV-1a of the prompt's *invariant* text: the instructions, the rules and
+/// the size guidance, with the two changeset-derived substitutions —
+/// [`render_groups`]'s listing and the file count — emptied out.
+///
+/// [`prompt`] embeds the whole changeset, so hashing a real prompt gives a
+/// per-call id that changes on every review whether or not anyone touched the
+/// prompt itself. The feedback log (`gd-26r.43`) exists to drive an offline
+/// loop — read the log, revise the prompt, re-score — which needs entries
+/// grouped by which prompt was in force, not by which changeset was reviewed.
+/// An empty changeset over [`Grouping::default`] is the cheap way to render
+/// that invariant text with the real `format!` this module ships, rather than
+/// keeping a second copy of it to hash.
+pub fn prompt_template_fingerprint() -> u64 {
+    let empty = prompt(&Changeset::from_diff_files(&[]), &Grouping::default());
+    crate::hash::fnv1a_64(empty.as_bytes())
+}
+
 /// A refined grouping and what had to be fixed to obtain it.
 #[derive(Debug, Clone)]
 pub struct Refined {
@@ -641,6 +658,25 @@ mod tests {
             .files_in(&group.id)
             .map(|path| path.to_string_lossy().to_string())
             .collect()
+    }
+
+    /// Stable across changesets — the offline loop groups log entries by this
+    /// value, so two calls made under the same prompt text must fingerprint
+    /// identically whatever they were sent about — and different from the
+    /// fingerprint of a real, non-empty prompt, which is what proves the
+    /// changeset-derived substitutions actually changed something to blank
+    /// out.
+    #[test]
+    fn the_template_fingerprint_is_stable_and_excludes_the_changeset() {
+        let one = prompt_template_fingerprint();
+        let other = prompt_template_fingerprint();
+        assert_eq!(one, other, "the same invariant text hashes the same twice");
+
+        let full = crate::hash::fnv1a_64(prompt(&changeset(), &heuristic()).as_bytes());
+        assert_ne!(
+            one, full,
+            "a real changeset's prompt must not collide with the template"
+        );
     }
 
     #[test]

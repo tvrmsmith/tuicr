@@ -37,6 +37,18 @@ pub const DEFAULT_MODEL: &str = "claude-opus-5";
 /// regional surcharge `global` does not.
 pub const DEFAULT_LOCATION: &str = "global";
 
+/// The reasoning effort both publishers are pinned to, read by
+/// [`request_body`] at both its call sites so the value sent can never drift
+/// from the value the feedback log (`gd-26r.43`) records against it.
+///
+/// The two publishers happen to spell the same value today: Anthropic's
+/// `output_config.effort` and Gemini's `thinkingLevel` floor. That is a
+/// coincidence of the current model generations, not a promise — Gemini's
+/// floor is versioned independently of Anthropic's effort levels, and the
+/// day they part ways this constant must be split into one per publisher
+/// rather than stretched to cover both.
+pub const REFINE_EFFORT: &str = "low";
+
 /// Has to cover the answer *and* the thinking, and it is a hard stop: too small
 /// truncates the JSON and the call scores as a parse failure rather than as the
 /// model being wrong. The largest recorded answer is ~8K tokens.
@@ -108,14 +120,25 @@ impl Endpoint {
         let location = from(env("TUICR_VERTEX_LOCATION"), "`TUICR_VERTEX_LOCATION`")
             .or_else(|| from(settings.location.clone(), "`[grouping].vertex_location`"))
             .unwrap_or((DEFAULT_LOCATION.to_string(), "the default location"));
-        let model = from(env("TUICR_REFINE_MODEL"), "`TUICR_REFINE_MODEL`")
-            .or_else(|| from(settings.model.clone(), "`[grouping].refine_model`"))
-            .unwrap_or((DEFAULT_MODEL.to_string(), "the default model"));
+        let model = (resolved_model_with(settings, lookup), "the resolved model");
         Ok(Self {
             project: segment(project)?,
             location: label(location)?,
             model: segment(model)?,
         })
+    }
+
+    /// The model this arm asks for: `TUICR_REFINE_MODEL`, then
+    /// `[grouping].refine_model`, then [`DEFAULT_MODEL`].
+    ///
+    /// This is what the arm *asked* for, not necessarily what answered: an
+    /// invalid model id still reaches here and is only rejected afterwards, by
+    /// [`segment`] inside [`Self::resolve_with`], and [`Self::resolve`] can
+    /// fail on the project before the model is even looked at. Kept apart from
+    /// `resolve` so the feedback log (`gd-26r.43`) can record the model an
+    /// attempt was made under even when the whole resolution goes on to fail.
+    pub fn resolved_model(settings: &Settings) -> String {
+        resolved_model_with(settings, &env)
     }
 
     /// Which API this model speaks. Vertex fronts both publishers and they
@@ -149,6 +172,17 @@ impl Endpoint {
             publisher.verb(),
         )
     }
+}
+
+/// The model line of [`Endpoint::resolve_with`], pulled out so
+/// [`Endpoint::resolved_model`] can resolve just the model without a
+/// `Credentials` to resolve the project against.
+fn resolved_model_with(settings: &Settings, lookup: &dyn Fn(&str) -> Option<String>) -> String {
+    let env = |name: &str| lookup(name).filter(|value| !value.is_empty());
+    from(env("TUICR_REFINE_MODEL"), "`TUICR_REFINE_MODEL`")
+        .or_else(|| from(settings.model.clone(), "`[grouping].refine_model`"))
+        .unwrap_or((DEFAULT_MODEL.to_string(), "the default model"))
+        .0
 }
 
 /// A resolved setting paired with where it came from. Four places can supply
@@ -429,11 +463,11 @@ fn request_body(publisher: Publisher, prompt: &str) -> Value {
             "max_tokens": MAX_TOKENS,
             "messages": [{"role": "user", "content": prompt}],
             "thinking": {"type": "adaptive"},
-            "output_config": {"effort": "low"},
+            "output_config": {"effort": REFINE_EFFORT},
         }),
         Publisher::Google => json!({
             "contents": [{"role": "user", "parts": [{"text": prompt}]}],
-            "generationConfig": {"thinkingConfig": {"thinkingLevel": "low"}},
+            "generationConfig": {"thinkingConfig": {"thinkingLevel": REFINE_EFFORT}},
         }),
     }
 }
@@ -786,6 +820,38 @@ mod tests {
         let ok = body_json(respond(200, r#"{"content": []}"#), "the refine call")
             .expect("2xx reads its body");
         assert_eq!(ok, serde_json::json!({"content": []}));
+    }
+
+    /// The arm the feedback log records (`gd-26r.43`) has to ask through the
+    /// same precedence the call itself resolves through, so
+    /// `resolved_model_with` — the seam behind [`Endpoint::resolved_model`] —
+    /// is pinned to the identical order the endpoint resolution above already
+    /// covers: env beats config beats [`DEFAULT_MODEL`].
+    #[test]
+    fn resolved_model_follows_env_then_config_then_default() {
+        assert_eq!(
+            resolved_model_with(&Settings::default(), &bare),
+            DEFAULT_MODEL,
+            "nothing configured falls back to the shipped default"
+        );
+
+        let configured = Settings {
+            model: Some("gemini-3-flash-preview".into()),
+            ..Settings::default()
+        };
+        assert_eq!(
+            resolved_model_with(&configured, &bare),
+            "gemini-3-flash-preview",
+            "the config file beats the default"
+        );
+
+        assert_eq!(
+            resolved_model_with(&configured, &|name| {
+                (name == "TUICR_REFINE_MODEL").then(|| "claude-opus-5".into())
+            }),
+            "claude-opus-5",
+            "the environment beats the config file"
+        );
     }
 
     #[test]

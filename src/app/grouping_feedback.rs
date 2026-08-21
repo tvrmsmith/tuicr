@@ -8,9 +8,12 @@
 //! offer a list to tick, which is exactly why marking happens as you read.
 
 use std::collections::BTreeSet;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+
+use chrono::Utc;
 
 use super::{App, InputMode};
+use crate::persistence::{feedback_log, storage};
 use crate::text_edit::{
     delete_char_before, delete_word_before, next_char_boundary, prev_char_boundary,
 };
@@ -23,6 +26,19 @@ pub enum GroupingVerdict {
     Useful,
     Mixed,
     Useless,
+}
+
+impl GroupingVerdict {
+    /// The wire form the log records. Lowercase and stable: an offline pass
+    /// aggregates over these strings across builds, so renaming one splits a
+    /// year of votes in two.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            GroupingVerdict::Useful => "useful",
+            GroupingVerdict::Mixed => "mixed",
+            GroupingVerdict::Useless => "useless",
+        }
+    }
 }
 
 /// A source constant, never a config key: a user-editable list makes the
@@ -202,12 +218,102 @@ impl App {
         self.input_mode = InputMode::Normal;
     }
 
-    /// The seam `gd-26r.43` consumes. Today it only confirms receipt: it
-    /// writes no file and touches no session state, so a test asserting
-    /// nothing changed under a submit needs nothing beyond this doc comment
-    /// to trust.
-    fn record_grouping_feedback(&mut self, _feedback: GroupingFeedback) {
-        self.set_message("Grouping feedback recorded.");
+    /// Appends the vote to the log (`gd-26r.43`) and says so.
+    ///
+    /// Only a submit reaches here: a skip writes nothing, not even a bare
+    /// entry. The write is off the session's path entirely — `:q!` deletes the
+    /// session file unconditionally on the way out, and a vote cast in a
+    /// review that left no comments has to outlive that.
+    ///
+    /// A failed write warns and is dropped. The reader has finished reviewing
+    /// and is on their way out; refusing the submit over a log they will never
+    /// read would spend their attention on our problem.
+    fn record_grouping_feedback(&mut self, feedback: GroupingFeedback) {
+        let marked_group_ids = self.session.marked_group_ids();
+        let marked_files = self.session.marked_files();
+        let entry = feedback_log::GroupingFeedbackEntry::build(self.entry_sources(
+            &feedback,
+            &marked_group_ids,
+            &marked_files,
+        ));
+        match feedback_log::append(&entry) {
+            Ok(()) => self.set_message("Grouping feedback recorded."),
+            Err(err) => self.set_warning(format!("Could not write the grouping feedback: {err}")),
+        }
+    }
+
+    /// The vote plus the snapshot it was cast on. Split out so the whole
+    /// payload can be built in a test without going through the prompt.
+    fn entry_sources<'a>(
+        &'a self,
+        feedback: &'a GroupingFeedback,
+        marked_group_ids: &'a [&'a str],
+        marked_files: &'a [&'a Path],
+    ) -> feedback_log::EntrySources<'a> {
+        feedback_log::EntrySources {
+            verdict: feedback.verdict.as_str(),
+            tags: &feedback.tags,
+            note: feedback.note.as_deref(),
+            marked_group_ids,
+            marked_files,
+            arm: feedback_log::Arm {
+                config_now: self.arm_config_now(),
+                attempt: self.grouping_arm.clone(),
+                refine_in_flight: self.pending_regroup.is_some(),
+            },
+            grouping_enabled: self.grouping_enabled,
+            review: self.review_identity(),
+            diff_files: &self.diff_files,
+            grouping: self
+                .grouping
+                .as_ref()
+                .expect("the prompt only opens over a grouping"),
+            recorded_at: Utc::now(),
+        }
+    }
+
+    /// `[grouping]`'s refine settings **as they are now**, which is not
+    /// necessarily what produced the grouping: the arm's `attempt` beside it
+    /// says that.
+    fn arm_config_now(&self) -> feedback_log::ArmConfig {
+        match self.refine_config.as_ref() {
+            Some(config) => feedback_log::ArmConfig {
+                refine_enabled: true,
+                model: Some(crate::grouping::vertex::Endpoint::resolved_model(
+                    &config.settings,
+                )),
+                timeout_ms: Some(config.timeout.as_millis() as u64),
+            },
+            None => feedback_log::ArmConfig {
+                refine_enabled: false,
+                model: None,
+                timeout_ms: None,
+            },
+        }
+    }
+
+    /// How an offline reader finds this review again. The slug derivation
+    /// reads the repo's `origin` remote, so it can fail on a checkout that has
+    /// none; that costs the entry one field, never the whole vote.
+    fn review_identity(&self) -> feedback_log::ReviewIdentity {
+        let session = &self.session;
+        feedback_log::ReviewIdentity {
+            session_id: session.id.clone(),
+            session_version: session.version.clone(),
+            slug: storage::slug_for_session(session)
+                .ok()
+                .map(|slug| slug.to_string()),
+            repo_path: session
+                .repo_path
+                .canonicalize()
+                .unwrap_or_else(|_| session.repo_path.clone()),
+            branch: session.branch_name.clone(),
+            base_commit: session.base_commit.clone(),
+            commit_range: session.commit_range.clone(),
+            diff_source: session.diff_source,
+            pr: session.pr_session_key.clone(),
+            landing_count: session.landing_count,
+        }
     }
 
     /// No-op when the prompt is closed.

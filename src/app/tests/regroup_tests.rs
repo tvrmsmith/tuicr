@@ -15,6 +15,7 @@ use crate::app::App;
 use crate::app::FileTreeItem;
 use crate::app::refine::{RefineCall, RefineConfig};
 use crate::grouping::GroupSource;
+use crate::persistence::feedback_log::RefineAttemptOutcome;
 
 const PATHS: &[&str] = &[
     "src/auth/login.rs",
@@ -162,6 +163,10 @@ fn a_regroup_under_a_reader_in_a_surviving_group_lands_on_that_group() {
     );
     assert_landed_on_group_of_current_file(&app);
     assert_eq!(visible_files_after_expanding(&mut app).len(), PATHS.len());
+    assert!(
+        app.grouping_arm.is_none(),
+        "no refine was configured, so no refine call produced this pass"
+    );
 }
 
 /// The reader is inside a group the refined grouping dissolves. Same promise:
@@ -193,6 +198,46 @@ fn a_regroup_under_a_reader_whose_group_dissolves_lands_on_the_new_one() {
     );
     assert_landed_on_group_of_current_file(&app);
     assert_eq!(visible_files_after_expanding(&mut app).len(), PATHS.len());
+    let arm = app
+        .grouping_arm
+        .as_ref()
+        .expect("the refine that produced this grouping is its arm");
+    assert!(
+        matches!(arm.outcome, RefineAttemptOutcome::Landed { repairs: 0 }),
+        "{:?}",
+        arm.outcome
+    );
+}
+
+/// The `gd-26r.36` backstop is heuristics-only and never refine — landing
+/// through it after a refined grouping was on screen has to clear the arm,
+/// not leave a stale refine call attributed to a partition it never touched.
+#[test]
+fn the_backstop_clears_the_arm_a_refine_call_left_behind() {
+    let mut app = refining_app(Duration::from_secs(30));
+    app.regroup_with(Some(answering(ANSWER)));
+    drain(&mut app);
+    assert!(
+        app.grouping_arm.is_some(),
+        "the refine landed, so an arm is parked to start with"
+    );
+
+    // The backstop's first poll only latches a baseline; drift has to move
+    // under the reader before a second poll can fire.
+    app.poll_regroup_backstop();
+    app.diff_files.push(make_file("infra/terraform/network.tf"));
+    app.sort_files_by_directory(false);
+    app.regroup_threshold = 1;
+
+    assert!(
+        app.poll_regroup_backstop(),
+        "one dissimilar arrival among seven crosses a threshold of 1%"
+    );
+    assert!(
+        app.grouping_arm.is_none(),
+        "the backstop is heuristics-only; it must not leave the old refine's \
+         arm attributed to the pass it just replaced"
+    );
 }
 
 /// A refine arm that refuses still leaves the review regrouped: the heuristic
@@ -215,6 +260,16 @@ fn a_regroup_whose_refine_arm_fails_lands_the_heuristic_pass() {
     );
     assert_landed_on_group_of_current_file(&app);
     assert_eq!(visible_files_after_expanding(&mut app).len(), PATHS.len());
+    let arm = app
+        .grouping_arm
+        .as_ref()
+        .expect("the refuse was still a refine attempt, and the log has to say so");
+    match &arm.outcome {
+        RefineAttemptOutcome::Failed { reason } => {
+            assert_eq!(reason, "vertex said no");
+        }
+        other => panic!("{other:?}"),
+    }
 }
 
 /// And so does one that never answers.
@@ -230,6 +285,17 @@ fn a_regroup_whose_refine_arm_times_out_lands_the_heuristic_pass() {
     assert!(app.grouping.is_some());
     assert_landed_on_group_of_current_file(&app);
     assert_eq!(visible_files_after_expanding(&mut app).len(), PATHS.len());
+    assert!(
+        matches!(
+            app.grouping_arm
+                .as_ref()
+                .expect("the call was made")
+                .outcome,
+            RefineAttemptOutcome::TimedOut
+        ),
+        "{:?}",
+        app.grouping_arm
+    );
 }
 
 /// An answer that arrives after the review moved on is dropped whole. Landing
@@ -238,6 +304,10 @@ fn a_regroup_whose_refine_arm_times_out_lands_the_heuristic_pass() {
 fn an_answer_that_arrives_after_the_review_moved_is_discarded() {
     let mut app = refining_app(Duration::from_secs(30));
     app.regroup_with(Some(answering(ANSWER)));
+    assert!(
+        app.grouping_arm.is_none(),
+        "nothing has landed yet at dispatch time"
+    );
 
     app.diff_files.push(make_file("src/auth/refresh.rs"));
     let before: Vec<String> = group_ids_of(&app);
@@ -247,6 +317,10 @@ fn an_answer_that_arrives_after_the_review_moved_is_discarded() {
         group_ids_of(&app),
         before,
         "the grouping on screen was left exactly as it was"
+    );
+    assert!(
+        app.grouping_arm.is_none(),
+        "the discard branch never lands, so it never touches the arm either"
     );
 }
 
