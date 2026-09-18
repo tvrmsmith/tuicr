@@ -11,10 +11,12 @@ because there is no grouping engine in `src/` yet to attach it to.
 Assumed, settled elsewhere: grouping is file-level with a **strict partition**
 (`gd-26r.5`); groups are collapsible top-level sidebar nodes with
 `expanded_groups` keyed on the group id (`gd-26r.7`, revised by `gd-26r.31` and
-`gd-26r.35`); the engine lives in tuicr with an optional async refine pass
+`gd-26r.35`); the engine lives in tuicr with an optional refine pass
 (`gd-26r.4`) that makes one synchronous Vertex AI call over HTTPS with ADC
 credentials, no agent CLI and no subprocess anywhere (`gd-26r.13`, measured in
-`gd-26r.24`); refine's run-to-run movement is measured in
+`gd-26r.24`); which refine blocks the TUI and which runs behind it is
+[`MID_SESSION_REGROUP.md`](MID_SESSION_REGROUP.md)'s (`gd-26r.14`, upheld by
+`gd-26r.27`); refine's run-to-run movement is measured in
 `docs/GROUPING_PASSES.md` (`gd-26r.11`).
 
 ## Correction to the ticket's own premise
