@@ -132,16 +132,18 @@ the engine knowing.
 ### Provenance is two-tiered
 
 - **`Group.source` is contract and is persisted.** `gd-26r.15` needs it to say
-  *heuristics only, refine unavailable* per group rather than globally, and
-  `gd-26r.18` needs somewhere to record a human correction as a first-class
-  provenance value rather than an indistinguishable overwrite.
+  *heuristics only, refine unavailable* per group rather than globally. It was
+  also to carry a human-corrected group as a first-class provenance value;
+  `gd-26r.18` rejected corrections, so the `gd-26r.15` reason now stands alone
+  and is enough on its own.
 - **`Assignment.pass` and `Assignment.runner_up` are debug-only.** In-memory
   derived state, recomputed every regroup, exposed only through a debug surface
   and the fixture harness's `pass_hits`. Never persisted, never in the sidebar.
   This is `REGROUPING_STATE.md`'s existing ruling ("Not persisted: the runner-up
   group and one-line reason") and `SIDEBAR_MODEL.md`'s, restated rather than
-  reopened. `gd-26r.18` may reverse the `runner_up` half if a correction UI
-  gives a human something to act on.
+  reopened. `gd-26r.18` was the ticket that might have reversed the `runner_up`
+  half, by giving a human something to act on; it rejected corrections instead,
+  so nothing does, and `runner_up` stays debug-only.
 
 ---
 
@@ -325,38 +327,49 @@ of the response needs to preserve, describe or remap file positions.
 
 ---
 
-## What this settles for `gd-26r.18` (human corrections)
+## What this settled for `gd-26r.18`, and what `gd-26r.18` did with it
 
-Stated here, not absorbed — the correction UX is that ticket's to design.
+This section used to hand a correction UX five hooks to build on. `gd-26r.18`
+was grilled on 2026-08-19 and **rejected its own premise**: nothing in the
+reader's hands edits the partition — no move-to-group, no merge, no split, no
+accept or reject on a flagged ambiguous call. What ships instead is grouping
+feedback, an opinion that changes no assignment (`gd-26r.41` marks, `gd-26r.42`
+the verdict prompt, `gd-26r.43` the log). Read `bd show gd-26r.18` for the
+reasoning.
 
-1. **A correction has a place to live in the type, and it is `GroupSource`.**
-   The enum ships as `Heuristics | Refined | Incremental`; `gd-26r.18` adds a
-   human variant so a corrected group is distinguishable from a generated one
-   rather than an indistinguishable overwrite. `source` is already per-group and
-   already persisted, so this costs no new field.
-2. **The rejoin rule is where a correction must survive a regroup.**
-   Membership-then-name means a refine run that renames an intact group keeps
-   its id — but a run that *moves files* into or out of a corrected group does
-   not, and will take the correction with it. Deciding whether a corrected
-   group is pinned against that is `gd-26r.18`'s, and this contract deliberately
-   leaves the hook rather than choosing.
-3. **`runner_up` is available but unpersisted.** The engine records the rejected
-   alternative and a one-line reason on close calls (~14% of files) as
-   in-memory debug state. If the correction UI wants to offer "did you mean
-   X?", `gd-26r.18` is the ticket that flips it to persisted — that reversal is
-   explicitly sanctioned here and by `REGROUPING_STATE.md`.
-4. **Corrections are the only input that cannot be regenerated**, and
-   `discard_session_and_quit` is the normal exit for a comment-free review
-   (`GROUPING.md`). Nothing in this contract stores them yet; `gd-26r.18` must
-   not put them anywhere that path destroys.
-5. **The engine proposes, tuicr closes.** Every repair here writes into the same
-   place a human correction will: the applied partition, after the response is
-   read. A correction is not a different mechanism, it is the same one with a
-   different source.
+The five hooks are kept here rather than deleted, because a reader who meets one
+of them in the type or in an older doc should be able to see it was offered and
+declined. None of them is live:
+
+1. ~~**A human variant on `GroupSource`**~~, so a corrected group is
+   distinguishable from a generated one. Never added. The enum ships as
+   `Heuristics | Refined | Incremental` and there is no corrected group to name.
+2. ~~**Pinning a corrected group against the rejoin rule**~~, so a refine run
+   that moves files across it does not take the correction with it. The
+   analogous question was answered for marks instead, and the other way:
+   `gd-26r.18` drops group marks on every landing and keeps file marks, because
+   a landing mints fresh ids and the group a mark described is gone
+   (`REGROUPING_STATE.md` § What happens to review state across a regroup).
+3. ~~**Flipping `runner_up` to persisted**~~ so a correction UI could offer "did
+   you mean X?". The reversal this contract sanctioned was never taken; nothing
+   acts on a flagged call, so the rejected alternative and its one-line reason
+   stay in-memory debug state.
+4. **The non-regenerable input is real, and it is not a correction.** A verdict
+   and its note cannot be regenerated, and `discard_session_and_quit` is still
+   the normal exit for a comment-free review (`REGROUPING_STATE.md` § What is
+   persisted). `gd-26r.18`
+   answered that the same way it would have answered it for corrections: the
+   submitted entry goes to the user data dir, never into the session and never
+   into an in-repo `.tuicr/` (`GROUPING_FEEDBACK.md` § Where it lives).
+5. **The engine proposes, tuicr closes** — the one point that survives intact,
+   and now says less. Every repair here writes into the applied partition after
+   the response is read, and that is the only thing that ever writes there.
 
 **Not settled here, and deliberately not absorbed:** the accepted cost
 `gd-26r.12` recorded — a fixture-2-shaped changeset showing 29 rows with 10
-one-file `dir:` groups. `gd-26r.18` owns that revisit.
+one-file `dir:` groups. `gd-26r.18` was to own that revisit and no longer can.
+No bead owns it; the evidence that would reopen it is a `useless` verdict in the
+feedback log carrying a note about a screen of `dir:` rows.
 
 ## Deliberately not decided here
 
@@ -367,4 +380,5 @@ one-file `dir:` groups. `gd-26r.18` owns that revisit.
   in the prompt, hard caps 25 (refined) and 30 (heuristic) enforced after
   `apply` and outside the repair count, all three constants rather than config.
 - Vertex credential types beyond `authorized_user` ADC (map fog).
-- How a human reassigns a file (`gd-26r.18`).
+- ~~How a human reassigns a file~~ — rejected by `gd-26r.18`; see the section
+  above.

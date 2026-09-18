@@ -149,9 +149,13 @@ one-file groups. `GROUPING.md` rule 1 says groups are concern-shaped, not
 directory-shaped, and a `dir:` group is by construction the latter. That is the
 accepted price of not polluting concern groups, and it is visible: a screen of
 `dir:` rows reads as "the heuristics gave up here", which is exactly the signal
-rule 6 wants a residual group to send. If `gd-26r.18`'s human corrections or a
-third fixture change the balance, this is the decision to revisit — the merged
-bucket is a one-line change to the fallback pass.
+rule 6 wants a residual group to send. This is the decision to revisit if the
+balance changes, and the merged bucket is a one-line change to the fallback
+pass. The evidence that would change it was to be `gd-26r.18`'s human
+corrections; that ticket rejected corrections outright, so the evidence is now a
+third fixture, or a `useless` verdict in the feedback log carrying a note about
+a screen of `dir:` rows (`gd-26r.43`,
+[`GROUPING_FEEDBACK.md`](GROUPING_FEEDBACK.md)).
 
 ## Decision 3 — the heuristic arm emits an order
 
@@ -228,5 +232,8 @@ Stated here rather than absorbed. Answering the ticket's own framing directly:
 - **`gd-26r.22`** inherits Decision 3 as the floor to beat: size-descending with
   leftovers last is what an intent-centrality order has to improve on, on the
   heuristic side.
-- **`gd-26r.18`** owns the revisit on Decision 2: human corrections are the first
-  evidence that will say whether a screen of `dir:` rows is legible or noise.
+- **`gd-26r.18`** was to own the revisit on Decision 2, on the theory that human
+  corrections would be the first evidence saying whether a screen of `dir:` rows
+  is legible or noise. It rejected corrections, so that evidence never arrives
+  and no bead owns the revisit. What can still answer it is above, under
+  Decision 2's known cost.
