@@ -190,7 +190,11 @@ launch_tuicr_pane() {
   # bash, not sh: $tuicr_cmd carries bash's printf %q quoting, which can emit
   # non-POSIX $'...' forms that dash (the default /bin/sh on many Linux
   # distros) does not understand.
-  zellij_args+=(-- bash -c "$tuicr_cmd; echo done > '$fifo'")
+  #
+  # The FIFO carries tuicr's exit status, not just the fact that it exited:
+  # --close-on-exit takes the pane down with it, so this is the only channel
+  # left for the status, and the caller gets a silent 0 without it.
+  zellij_args+=(-- bash -c "$tuicr_cmd; echo \$? > '$fifo'")
 
   "$ZELLIJ_BIN" run\
     "${zellij_args[@]}"
@@ -200,12 +204,26 @@ launch_tuicr_pane() {
   log_info "Waiting for tuicr to exit..."
 
   # Block until the spawned command writes to the FIFO
-  read -r _ < "$fifo"
+  # `|| tuicr_status=""` so a writer that dies before its newline reaches the
+  # check below rather than tripping `set -e` with no explanation.
+  local tuicr_status
+  read -r tuicr_status < "$fifo" || tuicr_status=""
   rm -f "$fifo"
 
-  log_info "tuicr finished"
+  if [[ ! "$tuicr_status" =~ ^[0-9]+$ ]]; then
+    log_error "Could not read tuicr exit status from the FIFO"
+    return 1
+  fi
+
+  if [[ "$tuicr_status" -eq 0 ]]; then
+    log_info "tuicr finished"
+  else
+    log_error "tuicr exited with status $tuicr_status"
+  fi
 
   tuicr_report_stdout_output "$use_stdout" "$output_file"
+
+  return "$tuicr_status"
 }
 
 main() {
