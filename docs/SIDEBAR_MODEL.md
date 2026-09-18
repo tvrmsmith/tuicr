@@ -396,15 +396,18 @@ the only cheap signal that the grouping is bad there.
 ### Ambiguous assignments
 
 The engine records a chosen group, a runner-up, and a one-line reason on close
-calls — roughly 14% of files. **The sidebar does not surface any of it yet.**
-No glyph, no marker, no status-bar line. It stays on the group record for the
-human-corrections work (`gd-26r.18`) to consume.
+calls — roughly 14% of files. **The sidebar surfaces none of it.** No glyph, no
+marker, no status-bar line. It stays in-memory debug state on the assignment
+(`GROUPS_CONTRACT.md` § Provenance is two-tiered).
 
 This is an explicit decision, not an omission. A marker on one row in seven is
-noise at 161 files, and until a human can *act* on the flag by reassigning the
-file, the marker offers nothing to do. When it does surface, it goes in the
-marker slot the revision below defines rather than inventing a second glyph
-convention.
+noise at 161 files, and the marker offers nothing to do unless a human can *act*
+on the flag. It was written expecting the human-corrections work (`gd-26r.18`)
+to be what gave them something to act on. `gd-26r.18` rejected corrections
+outright — nothing in the reader's hands edits the partition — so no
+reassignment is coming, and the decision hardens rather than waits. The reader's
+answer to a bad call is to mark the row wrong (`x`) and say so in the verdict,
+which is the revision below and changes no assignment.
 
 ## What this demands of `build_visible_items`
 
@@ -616,11 +619,21 @@ and the number does not tell them apart. A group the pass *did* split carries no
 marker at all: those pieces are ordinary groups of the pass, named
 `parent · suffix`, and there is no soft-cap signal anywhere.
 
+**What `!` does not say.** It says the split pass could not bound this group. It
+does not say the group is over its cap right now. A group pushed past its cap by
+arrivals since the last full pass carries no marker at all — no split pass ran,
+so none gave up — and it can stay that way for the rest of the session
+(`gd-26r.39`, reasoned in `docs/REGROUPING_STATE.md` § The staleness indicator
+and the auto backstop). The count column is what tells the reader a row is fat.
+The marker only ever tells them the engine tried and failed.
+
 Before the label, never between the label and the count: the count is flush
 right and that column is what makes the 13-row collapsed overview scannable.
 Restyling the label instead was rejected — invisible on a theme without
-italics, unreadable to anyone comparing two shades. **`gd-26r.18` reuses this
-slot** for whatever it surfaces about ambiguous assignments.
+italics, unreadable to anyone comparing two shades. This slot was reserved for
+whatever `gd-26r.18` surfaced about ambiguous assignments; it surfaced nothing,
+because it rejected corrections and left the reader nothing to act on. The
+slot's next occupant is the reader's own mark, in the revision below.
 
 **Revision (`gd-26r.41`): `?` in the same slot, outranking both.** The reader
 marks a group with `x`, and the mark takes `? ` in the same one slot, ahead of
@@ -690,4 +703,6 @@ marker, so the header and the rows agree.
   20 (refine prompt only), hard caps 25 refined and 30 heuristic, enforced by a
   directory split at the end of each full pass. `github-client-plumbing` at 38
   files was one of the two groups the cap was written for.
-- How a human reassigns a file to a different group (`gd-26r.18`).
+- ~~How a human reassigns a file to a different group~~ — rejected by
+  `gd-26r.18`: nothing in the reader's hands edits the partition. The sidebar
+  gained the `?` mark and the verdict prompt instead, both above.

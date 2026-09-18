@@ -11,10 +11,11 @@ because there is no grouping engine in `src/` yet to attach it to.
 Assumed, settled elsewhere: grouping is file-level with a **strict partition**
 (`gd-26r.5`); groups are collapsible top-level sidebar nodes with
 `expanded_groups` keyed on the group id (`gd-26r.7`, revised by `gd-26r.31` and
-`gd-26r.35`); the engine lives in
-tuicr with an
-optional async refine that shells out to an agent CLI (`gd-26r.4`); refine's
-run-to-run movement is measured in `docs/GROUPING_PASSES.md` (`gd-26r.11`).
+`gd-26r.35`); the engine lives in tuicr with an optional async refine pass
+(`gd-26r.4`) that makes one synchronous Vertex AI call over HTTPS with ADC
+credentials, no agent CLI and no subprocess anywhere (`gd-26r.13`, measured in
+`gd-26r.24`); refine's run-to-run movement is measured in
+`docs/GROUPING_PASSES.md` (`gd-26r.11`).
 
 ## Correction to the ticket's own premise
 
@@ -75,13 +76,16 @@ moving, and all group-keyed UI state dies for nothing. This **amends
 
 **Why `source` is load-bearing.** It is what lets the status indicator
 (`gd-26r.15`) say *heuristics only, refine unavailable* per group rather than
-globally, and it gives `gd-26r.18` somewhere to record a human correction as a
-first-class provenance value rather than an indistinguishable overwrite.
+globally. It was to carry a second value too, marking a group a human had
+corrected; `gd-26r.18` rejected corrections, so the indicator reason stands
+alone and is enough on its own.
 
 Not persisted: the runner-up group and one-line reason the engine records on
 close calls (~14% of files). `gd-26r.7` deliberately does not surface them, and
 until a human can act on them they are dead weight in a file that lives forever.
-`gd-26r.18` may reverse this.
+`gd-26r.18` was the ticket that might have reversed this, and did not: it
+rejected accept-or-reject on a flagged call along with every other correction,
+so nothing acts on them and they stay unpersisted.
 
 Persisted alongside it since `gd-26r.41`: the reader's grouping feedback marks.
 `FileReview.marked` carries a file's, `ReviewSession.marked_groups` holds the
@@ -123,9 +127,10 @@ something the human had approved.
 pushes a group past the hard cap for its arm is left where it belongs: a group
 row splitting in two under a reader mid-review is worse than a row that is
 briefly too big, and refusing the arrival would mint groups by arrival order.
-The drift the arrivals add carries the review to the `gd-26r.36` backstop's full
-pass, and that pass splits. The cap is therefore an invariant of each full pass,
-not of every frame.
+The cap is therefore an invariant of each full pass, not of every frame. Whether
+a next full pass ever arrives depends on how the group grew, and for one that
+grew by joins the answer is that it does not: see § The staleness indicator and
+the auto backstop.
 
 **A new group is appended last and marked new.** It is by definition unranked —
 intent-centrality order is a property of a full pass — so it sits at the bottom
@@ -184,6 +189,26 @@ that this record left open:
   never regroups* holds literally, and a full pass would otherwise mint fresh
   ids over exactly the groups the reader came back to. The next arrival, which
   they are present for, fires it.
+
+**A group grown past its cap purely by joins is never re-split.** Accepted as a
+known limitation by `gd-26r.39`, not an oversight. It follows from the first
+bullet above: drift is group-derived, so an arrival that joins an established
+group adds nothing to it, and a group can cross its cap without moving the
+number a single point. Nothing else watches group size, so the backstop may
+never fire and that group can sit over its cap for the rest of the session.
+
+This corrects one clause of `gd-26r.23`, which said drift accumulates until the
+backstop's full pass re-splits the group. That holds for an arrival that mints a
+new group and fails for one that joins. The reader's signal is the flush-right
+count column on the group row, and their recourse is `:regroup`.
+
+Both of those are deliberate. A mid-session marker was rejected because the
+count column already says the row is fat and `!` means something else
+(`docs/SIDEBAR_MODEL.md` § The marker slot on group rows). A second backstop
+trigger on group size was rejected on frequency: drift rarely approaches 75 in
+real sessions, so a size trigger would become the backstop's normal firing
+condition rather than its backstop, and mid-review reshuffles would go from
+near-never to routine.
 
 ## How a human forces a regroup
 
@@ -290,9 +315,14 @@ Stated here rather than absorbed.
   `new_since_full_pass` on the group record, alongside the global
   incrementally-assigned fraction. And the fraction must account for
   commit-selection carry-over misses, which can spike it in one step.
-- **`gd-26r.18` (human corrections)** gets `source` on the group record as the
-  natural place to mark a correction as human-made, and inherits the decision
-  *not* to persist runner-up/reason — which it may reverse.
+- **`gd-26r.18` (human corrections)** was to get `source` on the group record as
+  the natural place to mark a correction as human-made, and to inherit the
+  decision *not* to persist runner-up/reason with the option of reversing it.
+  It took neither: it **rejected corrections outright**, so nothing in the
+  reader's hands edits the partition and no provenance value or reversal is
+  owed. What it constrains here instead is the marks it does ship: they are
+  persisted alongside `source` (above), and a landing drops the group ones and
+  keeps the file ones (below).
 - **`gd-26r.11`'s consensus-of-three is worth re-examining.** Voting buys
   determinism given fixed inputs, and determinism mattered most under the
   assumption that grouping was recomputed. With grouping computed once and kept,

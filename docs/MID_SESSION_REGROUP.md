@@ -110,7 +110,7 @@ decision, not an optional nicety.
 
 ### The escape: cancel key and timeout
 
-30–70s is a typical case, not a bound; a slow, rate-limited or hung agent CLI
+30–70s is a typical case, not a bound; a slow, rate-limited or hung Vertex call
 can sit far longer. Two escapes, both landing in the same place:
 
 - **Cancel key** during the wait abandons refine and opens immediately on the
@@ -234,8 +234,15 @@ anything derived from file positions or group membership belongs in it.
 
 ## What this settles for `gd-26r.10` (groups contract shape)
 
-Stated here rather than absorbed. Only the refine request/response crosses a
-process boundary, so only it is in scope for contract approval.
+Stated here rather than absorbed. The refine request and response are the only
+shape this ticket constrains.
+
+This paragraph used to add that the exchange crosses a process boundary and is
+therefore in scope for contract approval. Both halves are dead. `gd-26r.13`
+moved refine onto a direct Vertex AI call, so no process boundary is crossed,
+and [`GROUPS_CONTRACT.md`](GROUPS_CONTRACT.md) § Ruling settled that
+`contract-approval` does not apply to a vendor HTTPS call this repo does not
+own. That ruling is the record; nothing here reopens it.
 
 1. **The exchange is single-shot, bounded and cancellable.** Blocking startup
    means the contract needs a request, one response, a timeout, and a way to
@@ -254,7 +261,8 @@ process boundary, so only it is in scope for contract approval.
    rebuilt in one shot, groups collapsed. There is no partial or progressive
    application, so the response is never consumed in pieces.
 4. **Falling back is a first-class outcome, and it is reachable by the human.**
-   Timed out, cancelled, unparseable, CLI absent: all produce the same result —
+   Timed out, cancelled, unparseable, credentials missing: all produce the same
+   result —
    keep the heuristic partition, mark `source = heuristics`, apply nothing
    partial. Cancellation makes this an outcome a human *causes*, not only an
    environment fact.
@@ -276,6 +284,7 @@ Stated here, not absorbed — the indicator is that ticket's to design.
   The ticket's assumption of one slot for three states does not survive
   blocking startup.
 - **"Refine unavailable" is now human-causable.** Cancelling the startup wait
-  produces the same state as a missing CLI, and the indicator should not imply
-  the environment failed when the human simply chose not to wait.
+  produces the same state as missing credentials or a failed Vertex call, and
+  the indicator should not imply the environment failed when the human simply
+  chose not to wait.
 - **Staleness is unaffected** by anything decided here.

@@ -132,15 +132,19 @@ of a changeset is noise and defeats the purpose.
 The flags are derived state: recomputed on every regroup, cheap to throw away,
 and stored with the rest of the grouping on the session.
 
-Human *corrections* to those calls are a different matter — they are the only
-input in this system that cannot be regenerated — and are deliberately out of
-scope here. See the follow-up ticket; note in particular that
-`discard_session_and_quit` is the normal exit for a review that left no
-comments, so corrections must not be stored where that path can destroy them.
+A human never corrects one of these calls. `gd-26r.18` asked how a reader
+reassigns a file and rejected its own premise: nothing in the reader's hands
+edits the partition, so there is no move-to-group, no merge, no split, and no
+accept or reject on a flagged call. What ships instead is grouping feedback —
+the reader marks a row wrong with `x` and says why in a verdict at `:w` and
+`:send`, which changes no assignment. Read `bd show gd-26r.18` for the
+reasoning, and [`GROUPING_FEEDBACK.md`](GROUPING_FEEDBACK.md) for what a
+submitted verdict carries.
 
 ## What is not decided here
 
 - The on-disk or in-memory shape of a group record, including how the
   ambiguity flag is represented.
 - How groups and flags are presented in the sidebar.
-- How a human reassigns a file to a different group.
+- ~~How a human reassigns a file to a different group~~ — rejected outright by
+  `gd-26r.18`. There is no reassignment to decide.

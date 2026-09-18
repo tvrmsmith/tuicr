@@ -230,47 +230,20 @@ so in its own preamble.
 ## Where the docs lag the record
 
 Nothing below has been rewritten in the docs it describes. Where a passage
-contradicts a closed bead, both sides stand and the bead is the record.
+contradicts a closed bead, both sides stand and the bead is the record. Every
+line number here goes stale as soon as anyone edits the doc, so check one before
+you trust it.
 
-**Human corrections were rejected, and the docs still anticipate them.**
-`gd-26r.18` closed on 2026-08-19 rejecting its own premise: nothing in the
-reader's hands edits the partition, so there is no move-to-group, no merge, no
-split, and no accept or reject on a flagged ambiguous call. What ships instead
-is a grouping feedback mechanism, and all three of its beads have now shipped:
-`gd-26r.41`, `gd-26r.42` and `gd-26r.43`. Five of these docs were written
-before that close and still read as though a corrections UI is coming:
+**`REGROUPING_STATE.md`'s preamble calls refine async.** `gd-26r.14`, upheld on
+narrower grounds by `gd-26r.27`, decided refine blocks the whole TUI at startup
+and only `:regroup` stays async, so the blanket word is wrong for the path the
+default config takes. `gd-26r.46` is the open ticket. The same doc's mention of
+"the async refine result arriving" in its sibling-tickets section is correct:
+that one is `:regroup`'s landing.
 
-- `GROUPING.md:135-139`, `:146`
-- `GROUPS_CONTRACT.md:134-137`, `:143-144`, `:328-355`, `:357-359`, `:370`
-- `SIDEBAR_MODEL.md:396-407`, `:622-623`, `:693`
-- `REGROUPING_STATE.md:78-79`, `:84`, `:293-295`
-- `TOTAL_COVERAGE.md:152-154`, `:231-232`
-
-Read `bd show gd-26r.18` for the close reason.
-
-**An over-cap group grown by joins is never re-split.** `gd-26r.39` closed on
-2026-08-19 accepting this as a known limitation. It corrects one clause of
-`gd-26r.23`, which said drift accumulates until the backstop's full pass
-re-splits the group. That holds for an arrival that mints a new group and fails
-for one that joins an established group, because a join moves neither the drift
-number nor any marker. `REGROUPING_STATE.md:115-121` still carries the
-uncorrected clause. `gd-26r.40` is the open ticket that will add the missing
-paragraph there and in `SIDEBAR_MODEL.md`'s marker-slot section.
-
-**Refine no longer shells out to an agent CLI.** `gd-26r.13` moved it to a
-direct Vertex AI call over HTTPS, recorded in `GROUPS_CONTRACT.md`'s opening
-correction. `REGROUPING_STATE.md:14-16` and `MID_SESSION_REGROUP.md:113`,
-`:257` still describe an agent CLI, and `MID_SESSION_REGROUP.md:235-238` still
-says contract approval covers the refine exchange, which
-`GROUPS_CONTRACT.md`'s ruling reverses. Trust the contract.
-
-**Open build work.** `gd-26r.40` is open, and `gd-26r.45` owns rewriting the
-five docs listed above. Everything else in the feedback mechanism has shipped:
-the marks, their glyph, its ranking and the verdict prompt are
-`SIDEBAR_MODEL.md`'s facts, what a landing does to a mark is
-`REGROUPING_STATE.md`'s, `[grouping].feedback` is `CONFIG.md`'s, and the log is
-[`GROUPING_FEEDBACK.md`](GROUPING_FEEDBACK.md)'s. `gd-26r.43` added no config
-key and persists nothing to the session, so it leaves `CONFIG.md` and
-`REGROUPING_STATE.md` alone. When `gd-26r.40` ships, its facts land in
-`REGROUPING_STATE.md` and `SIDEBAR_MODEL.md`; nothing about its behaviour
-should be described here until then.
+**This file's own per-doc entries predate the feedback mechanism.** § The docs,
+one entry each still gives `SIDEBAR_MODEL.md` a revision list ending at
+`gd-26r.23` and `REGROUPING_STATE.md` one ending at `gd-26r.36`, though both
+docs now carry `gd-26r.41` and `gd-26r.42` material that neither "Owns"
+paragraph names. § Which doc answers this was updated and is fine. `gd-26r.47`
+is the open ticket, and it covers checking the other six entries too.
