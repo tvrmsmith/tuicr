@@ -98,27 +98,32 @@ response's obligations, or what a `dir:` group looks like on screen.
 ### [`SIDEBAR_MODEL.md`](SIDEBAR_MODEL.md)
 
 **Decision record.** `gd-26r.7`, revised by `gd-26r.31`, `gd-26r.35`,
-`gd-26r.15` and `gd-26r.23`.
+`gd-26r.15`, `gd-26r.23`, `gd-26r.41` and `gd-26r.42`.
 
 Owns everything the reader sees: group rows, no directory rows inside a group,
 tree modes as an ungrouped-only feature, row costs, the header chip and its
-ranking, the marker slot, the definition of the drift number, and what
+ranking, the marker slot and the `?` mark that outranks the rest of it, the
+verdict prompt's fields and keys, the definition of the drift number, and what
 `build_visible_items` must hold.
 
-Does not own what triggers a regroup, what the backstop does with the drift
-number, or the caps' own constants and enforcement.
+Does not own what triggers a regroup, what a landing does to a mark, where a
+submitted verdict is written, what the backstop does with the drift number, or
+the caps' own constants and enforcement.
 
 ### [`REGROUPING_STATE.md`](REGROUPING_STATE.md)
 
-**Decision record.** `gd-26r.8`, extended by `gd-26r.36`.
+**Decision record.** `gd-26r.8`, extended by `gd-26r.36` and `gd-26r.41`.
 
-Owns review state when the grouping changes: what is persisted, incremental
-assignment as the only automatic change, the trigger table for what regroups
-and what refines, review and UI state across a regroup, and the auto-regroup
-backstop.
+Owns review state when the grouping changes: what is persisted, including the
+reader's marks (`FileReview.marked`, `ReviewSession.marked_groups`,
+`landing_count`); incremental assignment as the only automatic change; the
+trigger table for what regroups and what refines; review and UI state across a
+regroup, including the split that drops group marks on a landing and keeps file
+marks; and the auto-regroup backstop.
 
-Does not own the decision to block startup, the definition of the drift number
-the backstop reads, or the sidebar shape a landing resets to.
+Does not own the decision to block startup, the glyph a mark draws, the
+definition of the drift number the backstop reads, or the sidebar shape a
+landing resets to.
 
 ### [`MID_SESSION_REGROUP.md`](MID_SESSION_REGROUP.md)
 
@@ -226,24 +231,3 @@ behaviour has to answer both.
 [`GROUPING.md`](GROUPING.md)'s preamble and worked out in
 [`TOTAL_COVERAGE.md`](TOTAL_COVERAGE.md). Every other doc assumes it and says
 so in its own preamble.
-
-## Where the docs lag the record
-
-Nothing below has been rewritten in the docs it describes. Where a passage
-contradicts a closed bead, both sides stand and the bead is the record. Every
-line number here goes stale as soon as anyone edits the doc, so check one before
-you trust it.
-
-**`REGROUPING_STATE.md`'s preamble calls refine async.** `gd-26r.14`, upheld on
-narrower grounds by `gd-26r.27`, decided refine blocks the whole TUI at startup
-and only `:regroup` stays async, so the blanket word is wrong for the path the
-default config takes. `gd-26r.46` is the open ticket. The same doc's mention of
-"the async refine result arriving" in its sibling-tickets section is correct:
-that one is `:regroup`'s landing.
-
-**This file's own per-doc entries predate the feedback mechanism.** § The docs,
-one entry each still gives `SIDEBAR_MODEL.md` a revision list ending at
-`gd-26r.23` and `REGROUPING_STATE.md` one ending at `gd-26r.36`, though both
-docs now carry `gd-26r.41` and `gd-26r.42` material that neither "Owns"
-paragraph names. § Which doc answers this was updated and is fine. `gd-26r.47`
-is the open ticket, and it covers checking the other six entries too.
