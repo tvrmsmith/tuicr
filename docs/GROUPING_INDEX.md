@@ -98,27 +98,32 @@ response's obligations, or what a `dir:` group looks like on screen.
 ### [`SIDEBAR_MODEL.md`](SIDEBAR_MODEL.md)
 
 **Decision record.** `gd-26r.7`, revised by `gd-26r.31`, `gd-26r.35`,
-`gd-26r.15` and `gd-26r.23`.
+`gd-26r.15`, `gd-26r.23`, `gd-26r.41` and `gd-26r.42`.
 
 Owns everything the reader sees: group rows, no directory rows inside a group,
 tree modes as an ungrouped-only feature, row costs, the header chip and its
-ranking, the marker slot, the definition of the drift number, and what
+ranking, the marker slot and the `?` mark that outranks the rest of it, the
+verdict prompt's fields and keys, the definition of the drift number, and what
 `build_visible_items` must hold.
 
-Does not own what triggers a regroup, what the backstop does with the drift
-number, or the caps' own constants and enforcement.
+Does not own what triggers a regroup, what a landing does to a mark, where a
+submitted verdict is written, what the backstop does with the drift number, or
+the caps' own constants and enforcement.
 
 ### [`REGROUPING_STATE.md`](REGROUPING_STATE.md)
 
-**Decision record.** `gd-26r.8`, extended by `gd-26r.36`.
+**Decision record.** `gd-26r.8`, extended by `gd-26r.36` and `gd-26r.41`.
 
-Owns review state when the grouping changes: what is persisted, incremental
-assignment as the only automatic change, the trigger table for what regroups
-and what refines, review and UI state across a regroup, and the auto-regroup
-backstop.
+Owns review state when the grouping changes: what is persisted, including the
+reader's marks (`FileReview.marked`, `ReviewSession.marked_groups`,
+`landing_count`); incremental assignment as the only automatic change; the
+trigger table for what regroups and what refines; review and UI state across a
+regroup, including the split that drops group marks on a landing and keeps file
+marks; and the auto-regroup backstop.
 
-Does not own the decision to block startup, the definition of the drift number
-the backstop reads, or the sidebar shape a landing resets to.
+Does not own the decision to block startup, the glyph a mark draws, the
+definition of the drift number the backstop reads, or the sidebar shape a
+landing resets to.
 
 ### [`MID_SESSION_REGROUP.md`](MID_SESSION_REGROUP.md)
 
@@ -226,51 +231,3 @@ behaviour has to answer both.
 [`GROUPING.md`](GROUPING.md)'s preamble and worked out in
 [`TOTAL_COVERAGE.md`](TOTAL_COVERAGE.md). Every other doc assumes it and says
 so in its own preamble.
-
-## Where the docs lag the record
-
-Nothing below has been rewritten in the docs it describes. Where a passage
-contradicts a closed bead, both sides stand and the bead is the record.
-
-**Human corrections were rejected, and the docs still anticipate them.**
-`gd-26r.18` closed on 2026-08-19 rejecting its own premise: nothing in the
-reader's hands edits the partition, so there is no move-to-group, no merge, no
-split, and no accept or reject on a flagged ambiguous call. What ships instead
-is a grouping feedback mechanism, and all three of its beads have now shipped:
-`gd-26r.41`, `gd-26r.42` and `gd-26r.43`. Five of these docs were written
-before that close and still read as though a corrections UI is coming:
-
-- `GROUPING.md:135-139`, `:146`
-- `GROUPS_CONTRACT.md:134-137`, `:143-144`, `:328-355`, `:357-359`, `:370`
-- `SIDEBAR_MODEL.md:396-407`, `:622-623`, `:693`
-- `REGROUPING_STATE.md:78-79`, `:84`, `:293-295`
-- `TOTAL_COVERAGE.md:152-154`, `:231-232`
-
-Read `bd show gd-26r.18` for the close reason.
-
-**An over-cap group grown by joins is never re-split.** `gd-26r.39` closed on
-2026-08-19 accepting this as a known limitation. It corrects one clause of
-`gd-26r.23`, which said drift accumulates until the backstop's full pass
-re-splits the group. That holds for an arrival that mints a new group and fails
-for one that joins an established group, because a join moves neither the drift
-number nor any marker. `REGROUPING_STATE.md:115-121` still carries the
-uncorrected clause. `gd-26r.40` is the open ticket that will add the missing
-paragraph there and in `SIDEBAR_MODEL.md`'s marker-slot section.
-
-**Refine no longer shells out to an agent CLI.** `gd-26r.13` moved it to a
-direct Vertex AI call over HTTPS, recorded in `GROUPS_CONTRACT.md`'s opening
-correction. `REGROUPING_STATE.md:14-16` and `MID_SESSION_REGROUP.md:113`,
-`:257` still describe an agent CLI, and `MID_SESSION_REGROUP.md:235-238` still
-says contract approval covers the refine exchange, which
-`GROUPS_CONTRACT.md`'s ruling reverses. Trust the contract.
-
-**Open build work.** `gd-26r.40` is open, and `gd-26r.45` owns rewriting the
-five docs listed above. Everything else in the feedback mechanism has shipped:
-the marks, their glyph, its ranking and the verdict prompt are
-`SIDEBAR_MODEL.md`'s facts, what a landing does to a mark is
-`REGROUPING_STATE.md`'s, `[grouping].feedback` is `CONFIG.md`'s, and the log is
-[`GROUPING_FEEDBACK.md`](GROUPING_FEEDBACK.md)'s. `gd-26r.43` added no config
-key and persists nothing to the session, so it leaves `CONFIG.md` and
-`REGROUPING_STATE.md` alone. When `gd-26r.40` ships, its facts land in
-`REGROUPING_STATE.md` and `SIDEBAR_MODEL.md`; nothing about its behaviour
-should be described here until then.

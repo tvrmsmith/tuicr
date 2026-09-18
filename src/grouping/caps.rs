@@ -588,7 +588,59 @@ mod tests {
                     ("auth \u{b7} api".to_string(), 20),
                     ("auth \u{b7} ui".to_string(), 14)
                 ],
-                "the full pass the `gd-26r.36` backstop eventually lands is what splits it"
+                "a full pass does split it, but `gd-26r.39` found that joining arrivals never \
+                 move drift, so the `gd-26r.36` backstop may never land that pass — the \
+                 reader's recourse in the meantime is `:regroup`"
+            );
+        }
+
+        /// `gd-26r.39`: an arrival that *joins* an established group and pushes
+        /// it past its cap leaves the group whole and unmarked, and moves
+        /// neither `Grouping::drift()` nor the `gd-26r.36` backstop threshold.
+        /// The two tests above each pin half of this; this one walks a cap
+        /// crossing end to end.
+        #[test]
+        fn an_arrival_that_joins_a_group_past_its_cap_moves_nothing_the_engine_watches() {
+            let before = group_changeset(&changeset_of(15), GroupingConfig::default());
+            assert_eq!(
+                sizes(&before, "auth"),
+                vec![("auth".to_string(), 30)],
+                "30 files is exactly the heuristic hard cap: the group starts at its cap and \
+                 bounded"
+            );
+
+            let mut text = String::new();
+            for dir in ["src/api", "src/ui"] {
+                for index in 0..15 {
+                    text.push_str(&format!("M\t{dir}/auth-{index:03}.rs\n"));
+                }
+            }
+            text.push_str("A\tsrc/api/auth-new-000.rs\n");
+            text.push_str(&filler());
+            let grown = Changeset::parse(&text);
+
+            let after = assign_incrementally(&grown, as_kept(&before), GroupingConfig::default());
+
+            assert_eq!(
+                sizes(&after, "auth"),
+                vec![("auth".to_string(), 31)],
+                "31 is over the heuristic cap of 30 and the group is still one row"
+            );
+            assert!(
+                after.groups().iter().all(|group| !group.unbounded),
+                "not marked either: no split pass ran, so none gave up — `!` does not mean \
+                 \"over its cap right now\""
+            );
+            assert!(
+                after.groups().iter().all(|group| !group.drifted()),
+                "no `~` marker: the arrival joined a group a full pass ranked"
+            );
+            assert_eq!(after.drift(), 0.0);
+            assert_eq!(
+                after.drift_percent(),
+                0,
+                "drift is unmoved, so the `gd-26r.36` backstop is never reached and the group \
+                 can sit over its cap for the rest of the session"
             );
         }
     }
