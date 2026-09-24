@@ -493,3 +493,35 @@ fn review_comments_header_hidden_while_empty() {
     app.is_single_file_view = true;
     assert!(!app.show_review_comments_header());
 }
+
+/// Narrowing keeps the wider review's files in the session, so their marks
+/// survive. The tree title's `reviewed/total` must still count only the files
+/// the narrowed diff shows, or it reads as `116/87`.
+#[test]
+fn should_count_only_the_narrowed_diffs_files_as_reviewed() {
+    let mut app = build_app(vec![normal_commit("c2"), normal_commit("c1")]);
+    app.review_commits = app.commit_list.clone();
+    let in_c2 = PathBuf::from("src/in_c2.rs");
+    let in_c1 = PathBuf::from("src/in_c1.rs");
+    app.range_diff_files = Some(vec![
+        commit_only_file(&in_c2, Vec::new()),
+        commit_only_file(&in_c1, Vec::new()),
+    ]);
+    app.commit_diff_cache
+        .insert((0, 0), vec![commit_only_file(&in_c2, Vec::new())]);
+
+    app.commit_selection_range = Some((0, 1));
+    app.reload_inline_selection()
+        .expect("reload should succeed");
+    app.toggle_reviewed_for_file_idx(loaded_file_idx(&app, &in_c2), true);
+    app.toggle_reviewed_for_file_idx(loaded_file_idx(&app, &in_c1), true);
+
+    // when: the user narrows the pane to c2 alone
+    app.commit_selection_range = Some((0, 0));
+    app.reload_inline_selection()
+        .expect("reload should succeed");
+
+    // then
+    assert!(app.session.is_file_reviewed(&in_c1));
+    assert_eq!(app.reviewed_count(), 1);
+}
