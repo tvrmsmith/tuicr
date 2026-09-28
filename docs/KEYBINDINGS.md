@@ -145,6 +145,7 @@ Shown below the file tree when local comments or visible remote PR threads exist
 | `e` | Open focused file in `$EDITOR` |
 | `y` | Copy review to clipboard |
 | `Y` | Copy the comment at cursor to clipboard |
+| `Enter` | On a media placeholder in the PR description: open the media viewer, or the OS viewer when the terminal cannot draw images |
 
 `e` opens the file at the cursor's line. Terminal editors (`vim`, `nvim`, `nano`, …)
 take over the screen and tuicr reloads the diff once they exit. Windowed editors
@@ -161,6 +162,18 @@ to a temp directory and opens that, so the text and the line the cursor sits on
 match the diff. The status bar names which one you got, e.g.
 `Opened src/main.rs @ 1a2b3c4 (read-only PR copy)`. Binary files are only opened
 from the checkout, never copied.
+
+## Media viewer
+
+Opened by `Enter` on a PR-description media placeholder row, when the terminal
+can draw images.
+
+| Key | Action |
+|-----|--------|
+| `→` / `l` | Next media item |
+| `←` / `h` | Previous media item |
+| `o` | Open the current item with the external opener |
+| `Esc` / `q` | Close the viewer |
 
 ## Visual mode
 

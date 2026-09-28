@@ -641,6 +641,14 @@ impl App {
             saved_inline_selection: None,
             path_filter: path_filter.map(|s| s.to_string()),
             export: ExportConfig::default(),
+            media_jobs: Box::new(crate::app::media::ThreadMediaJobs),
+            image_protocol: crate::media::graphics::ImageProtocolSetting::Auto,
+            image_picker: None,
+            media_viewer: None,
+            media_load_rx: None,
+            media_open_rx: None,
+            media_open_label: None,
+            force_full_repaint: false,
         };
         // Auto-hide file list when path filter matches exactly one file
         if app.path_filter.is_some() && app.diff_files.len() == 1 {

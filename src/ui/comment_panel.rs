@@ -434,6 +434,36 @@ fn forge_badge_label(kind: Option<ForgeKind>) -> &'static str {
     }
 }
 
+/// Render `content` as markdown-highlighted, pre-wrapped lines, grouped per
+/// source line (`content` split on `'\n'`): `result.len() ==
+/// content.split('\n').count()`. Colors come from the active syntect theme.
+pub(crate) fn markdown_body_line_groups(
+    theme: &Theme,
+    content: &str,
+    content_area: usize,
+) -> Vec<Vec<Line<'static>>> {
+    let lines: Vec<&str> = content.split('\n').collect();
+    // Highlight the body as a whole so multi-line constructs (e.g. fenced code)
+    // carry state across lines.
+    let highlighted = theme.syntax_highlighter().highlight_markdown_body(content);
+
+    let mut out = Vec::with_capacity(lines.len());
+    for (idx, text) in lines.iter().enumerate() {
+        let runs = highlighted.get(idx).and_then(|o| o.as_deref());
+        let mut seg_start = 0usize;
+        let mut group = Vec::new();
+        for seg in wrap_segments(text, content_area) {
+            let seg_end = seg_start + seg.len();
+            group.push(Line::from(highlighted_window_spans(
+                runs, text, seg_start, seg_end,
+            )));
+            seg_start = seg_end;
+        }
+        out.push(group);
+    }
+    out
+}
+
 /// Render `content` as markdown-highlighted, pre-wrapped lines. Colors come
 /// from the active syntect theme.
 pub(crate) fn markdown_body_lines(
@@ -441,24 +471,10 @@ pub(crate) fn markdown_body_lines(
     content: &str,
     content_area: usize,
 ) -> Vec<Line<'static>> {
-    let lines: Vec<&str> = content.split('\n').collect();
-    // Highlight the body as a whole so multi-line constructs (e.g. fenced code)
-    // carry state across lines.
-    let highlighted = theme.syntax_highlighter().highlight_markdown_body(content);
-
-    let mut out = Vec::new();
-    for (idx, text) in lines.iter().enumerate() {
-        let runs = highlighted.get(idx).and_then(|o| o.as_deref());
-        let mut seg_start = 0usize;
-        for seg in wrap_segments(text, content_area) {
-            let seg_end = seg_start + seg.len();
-            out.push(Line::from(highlighted_window_spans(
-                runs, text, seg_start, seg_end,
-            )));
-            seg_start = seg_end;
-        }
-    }
-    out
+    markdown_body_line_groups(theme, content, content_area)
+        .into_iter()
+        .flatten()
+        .collect()
 }
 
 /// Format a comment as multiple lines with a box border (themed version).
@@ -635,6 +651,31 @@ mod tests {
                     "width={viewport_width} body={body:?}"
                 );
             }
+        }
+    }
+
+    // -- markdown_body_line_groups tests --
+
+    #[test]
+    fn markdown_body_line_groups_has_one_group_per_source_line() {
+        let theme = test_theme();
+        let content = "Intro\nsecond line\nOutro";
+        let groups = markdown_body_line_groups(&theme, content, 80);
+        assert_eq!(groups.len(), content.split('\n').count());
+    }
+
+    #[test]
+    fn markdown_body_line_groups_flattened_matches_markdown_body_lines() {
+        let theme = test_theme();
+        let content = "# Heading\n**bold** and `code`\n- item";
+        let groups = markdown_body_line_groups(&theme, content, 80);
+        let flattened: Vec<Line<'static>> = groups.into_iter().flatten().collect();
+        let expected = markdown_body_lines(&theme, content, 80);
+        assert_eq!(flattened.len(), expected.len());
+        for (a, b) in flattened.iter().zip(expected.iter()) {
+            let a_text: String = a.spans.iter().map(|s| s.content.as_ref()).collect();
+            let b_text: String = b.spans.iter().map(|s| s.content.as_ref()).collect();
+            assert_eq!(a_text, b_text);
         }
     }
 

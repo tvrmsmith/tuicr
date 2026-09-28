@@ -9,6 +9,7 @@ pub mod grouping;
 pub mod handler;
 pub mod hash;
 pub mod input;
+pub mod media;
 pub mod model;
 pub mod output;
 pub mod persistence;

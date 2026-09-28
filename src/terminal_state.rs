@@ -151,6 +151,14 @@ impl<W: Write> TerminalSession<W> {
         self.terminal.resize(area)?;
         Ok(())
     }
+
+    /// Forces the next draw to redo the whole screen from scratch. The media
+    /// viewer needs this on close or item change: a sixel or Kitty graphics
+    /// escape only clears when the terminal repaints the cells under it,
+    /// which a plain diffed `Terminal::draw` won't do on its own.
+    pub fn repaint(&mut self) -> anyhow::Result<()> {
+        self.repaint_from_scratch()
+    }
 }
 
 impl<W: Write> Drop for TerminalSession<W> {

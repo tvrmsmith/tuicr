@@ -689,6 +689,10 @@ pub enum InputMode {
     /// assignment 2's; this variant only exists so `App::grouping_feedback`
     /// has a mode to sit in.
     GroupingFeedback,
+
+    /// Full-screen media viewer opened by Enter on a PR-description media
+    /// placeholder row (`gd-lc6.1`).
+    MediaViewer,
 }
 
 /// CommandCompletionState keeps one Tab-completion run anchored to the text
@@ -1677,6 +1681,35 @@ pub struct App {
     pub path_filter: Option<String>,
     /// Resolved `[export]` settings shaping the generated review markdown.
     pub export: ExportConfig,
+
+    /// Loader port for the media viewer (`gd-lc6.1`): probes for graphics
+    /// support and fetches/decodes media off the UI thread. Defaults to
+    /// `media::ThreadMediaJobs`; tests install a fake.
+    pub(crate) media_jobs: Box<dyn media::MediaJobs>,
+    /// In-TUI image protocol from config (`image_protocol`); `main.rs` sets
+    /// it from `AppConfig.image_protocol` after `App::build`.
+    pub image_protocol: crate::media::graphics::ImageProtocolSetting,
+    /// Outer `None` = not probed yet. Inner `None` = probed, but no readable
+    /// graphics protocol (Enter falls back to the external opener).
+    pub(crate) image_picker: Option<Option<ratatui_image::picker::Picker>>,
+    /// Open media viewer, or `None` when `input_mode != MediaViewer`.
+    pub(crate) media_viewer: Option<media::MediaViewer>,
+    /// Background-thread channel for the in-flight `media_jobs.load` call.
+    pub(crate) media_load_rx: Option<std::sync::mpsc::Receiver<media::LoadResult>>,
+    /// Background-thread channel for the in-flight `media_jobs.open_external`
+    /// call, from either the Enter handler or `MediaOpenExternal`.
+    pub(crate) media_open_rx: Option<
+        std::sync::mpsc::Receiver<
+            std::result::Result<crate::media::open::Opened, crate::media::open::MediaError>,
+        >,
+    >,
+    /// Label of the item behind the in-flight `media_open_rx` call, so the
+    /// poll can report "Opened <label>" once the result carries no label.
+    pub(crate) media_open_label: Option<String>,
+    /// Set when the media viewer closes or changes item: the sixel/kitty
+    /// escape it drew only clears on a full repaint, so the main loop must
+    /// call `TerminalSession::repaint` before the next normal render.
+    pub force_full_repaint: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2106,6 +2139,7 @@ mod gaps;
 mod grouping;
 pub mod grouping_feedback;
 mod init;
+pub(crate) mod media;
 mod modes;
 mod navigation;
 mod pr;

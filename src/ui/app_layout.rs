@@ -30,6 +30,11 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         return;
     }
 
+    if app.input_mode == InputMode::MediaViewer {
+        crate::ui::media_viewer::render(frame, app);
+        return;
+    }
+
     let selector_background = app.input_mode == InputMode::CommitSelect
         || (app.input_mode == InputMode::Command
             && app.command_return_mode == InputMode::CommitSelect)
