@@ -102,8 +102,8 @@ review when that metadata is available; commits already covered by that review a
 there.)
 While a pull request is open, tuicr checks its head about once a minute. When someone pushes, it
 reloads onto the new head the way `:e` does and names the move (`PR head moved abc1234 → def5678`).
-If you are mid-comment, the reload waits until you leave the comment editor, and the status bar
-shows it is pending.
+If you are mid-comment or in a dialog, the reload waits until you are back in normal mode, and the
+status bar shows it is pending.
 Use `:summary` during a review to show every pending local-draft comment. The summary replaces the
 diff while leaving the file sidebar visible when it is open. The first
 comment is selected when the view opens; use `j`/`k` to select the next or previous comment, and
