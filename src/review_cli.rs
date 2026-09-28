@@ -658,6 +658,7 @@ fn lifecycle_id(state: CommentLifecycleState) -> &'static str {
 struct SessionSummaryOutput {
     slug: String,
     kind: &'static str,
+    head_sha: Option<String>,
     path: String,
     updated_at: String,
     comment_count: usize,
@@ -676,6 +677,7 @@ impl From<SessionSummary> for SessionSummaryOutput {
         Self {
             slug: summary.slug,
             kind: summary.kind.id(),
+            head_sha: summary.kind.head_sha().map(str::to_string),
             path: summary.session_ref.path().display().to_string(),
             updated_at: summary.updated_at.to_rfc3339(),
             comment_count: summary.comment_count,
@@ -907,7 +909,7 @@ mod tests {
             .unwrap();
         assert_eq!(listed.len(), 1);
         assert_eq!(listed[0].slug, "gh:slatedb/slatedb/pr/1745");
-        assert_eq!(listed[0].kind, crate::review_store::SessionKind::Pr);
+        assert_eq!(listed[0].kind.id(), "pr");
 
         // The emitted slug resolves the same way regardless of --repo.
         let resolved =
@@ -1346,6 +1348,66 @@ mod tests {
         assert_eq!(listed["release_count"], 1);
         assert_eq!(listed["unreleased_count"], 0);
         assert!(listed["released_at"].is_string());
+    }
+
+    #[test]
+    fn should_emit_reviewed_head_sha_for_pr_session() {
+        let temp = tempdir().unwrap();
+        let store = ReviewStore::with_reviews_dir(temp.path().join("reviews"));
+        save_pr_session(&store);
+
+        let listed = listed_json(&store, Path::new("slatedb/slatedb"));
+
+        assert_eq!(listed["kind"], "pr");
+        assert_eq!(
+            listed["head_sha"],
+            "43e3566924690c06a45b2177b4dd2df59a0f09c6"
+        );
+    }
+
+    #[test]
+    fn should_emit_new_head_sha_with_fresh_release_count_after_head_moves() {
+        use crate::forge::traits::{ForgeRepository, PrSessionKey};
+
+        let temp = tempdir().unwrap();
+        let store = ReviewStore::with_reviews_dir(temp.path().join("reviews"));
+        let old_ref = save_pr_session(&store);
+        let mut old = store.get_review(&old_ref).unwrap();
+        old.release();
+        store.save_review(&old).unwrap();
+
+        // A push moves the head; the reload saves a session keyed on it.
+        let new_head = "9f1c2b7d4e5a60718293a4b5c6d7e8f901234567".to_string();
+        let key = PrSessionKey::new(
+            ForgeRepository::github("github.com", "slatedb", "slatedb"),
+            1745,
+            new_head.clone(),
+        );
+        let mut session = ReviewSession::new(
+            PathBuf::from("forge:github.com/slatedb/slatedb"),
+            new_head.clone(),
+            Some("reviews".to_string()),
+            SessionDiffSource::PullRequest,
+        );
+        session.pr_session_key = Some(key);
+        store.save_review(&session).unwrap();
+
+        let listed = listed_json(&store, Path::new("slatedb/slatedb"));
+
+        assert_eq!(listed["head_sha"], new_head.as_str());
+        assert_eq!(listed["release_count"], 0);
+    }
+
+    #[test]
+    fn should_emit_null_head_sha_for_local_session() {
+        let temp = tempdir().unwrap();
+        let (store, _session_ref, _parent) = session_with_human_comment(&temp);
+
+        let listed = listed_json(&store, &temp.path().join("repo"));
+
+        assert_eq!(listed["kind"], "local");
+        assert_eq!(listed["head_sha"], serde_json::Value::Null);
+        assert!(listed.as_object().unwrap().contains_key("head_sha"));
     }
 
     #[test]

@@ -50,9 +50,10 @@ impl App {
         self.forge_review_summaries = Vec::new();
         self.forge_review_threads_loading = false;
         self.pr_threads_rx = None;
-        // Latest known remote head — equal to the session head at open time;
-        // refreshed by future `gh pr view` calls in PR 6.
+        // Latest known remote head: the session head at open time, then
+        // refreshed by the head poll.
         self.current_pr_head = Some(details.head_sha.clone());
+        self.rearm_pr_head_watch();
         self.input_mode = InputMode::Normal;
         self.focused_panel = FocusedPanel::Diff;
         self.clear_expanded_gaps();
@@ -601,8 +602,19 @@ impl App {
             let previous_message = self.message.clone();
             self.enter_pr_diff_mode(backend, opened, TargetPick::SameReview)?;
             self.spawn_pr_threads_fetch(&details_for_threads, local_checkout);
-            if self.message == previous_message {
-                self.set_message("Reloaded PR at new head".to_string());
+            let moved = PrHeadMove {
+                from: request.head_sha.clone(),
+                to: details_for_threads.head_sha.clone(),
+            };
+            let reloaded = format!("Reloaded PR at new head {}", moved.describe());
+            // Entering the new head may have set its own message (read-only,
+            // since-last-review); keep it, but still name the move.
+            let entered_message = self.message != previous_message;
+            match self.message.as_mut() {
+                Some(message) if entered_message => {
+                    message.content = format!("{reloaded}. {}", message.content);
+                }
+                _ => self.set_message(reloaded),
             }
         } else {
             self.set_pr_last_reviewed_commit_from_metadata(

@@ -100,6 +100,10 @@ review when that metadata is available; commits already covered by that review a
 `✓` in the inline selector.
 (Bitbucket does not record which commit an approval covered, so that preselection does not apply
 there.)
+While a pull request is open, tuicr checks its head about once a minute. When someone pushes, it
+reloads onto the new head the way `:e` does and names the move (`PR head moved abc1234 → def5678`).
+If you are mid-comment, the reload waits until you leave the comment editor, and the status bar
+shows it is pending.
 Use `:summary` during a review to show every pending local-draft comment. The summary replaces the
 diff while leaving the file sidebar visible when it is open. The first
 comment is selected when the view opens; use `j`/`k` to select the next or previous comment, and
@@ -268,6 +272,8 @@ what tells a polling agent the batch is ready: it bumps a monotonic
 `release_count` on the session and stamps each comment with the batch it went
 out in. `tuicr review list` reports `release_count`, `released_at`, and
 `unreleased_count`; `tuicr review comments` reports `released_in` per comment.
+For a PR session, `review list` also reports `head_sha`, the PR head commit the session reviews,
+so a poller can tell whether a `:send` covered the PR's current head.
 `:w` stays a plain, idempotent save.
 
 Inside the TUI, the review target selector's **Sessions** tab lists the saved

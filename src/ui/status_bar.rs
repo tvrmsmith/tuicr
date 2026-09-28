@@ -413,12 +413,27 @@ pub fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
         spans
     };
 
-    // Right-aligned slot priority: active message > pr-flow spinners
-    // (submit/reload/range) > remote-comments loading hint > modified
-    // indicator. Surfaces the most important transient state without
-    // crowding the hints on the left.
+    // Right-aligned slot priority: active message > pending PR head-move
+    // reload > pr-flow spinners (submit/reload/range) > remote-comments
+    // loading hint > modified indicator. Surfaces the most important
+    // transient state without crowding the hints on the left.
     let (right_span, right_width) = if app.message.is_some() {
         build_message_span(app.message.as_ref(), theme)
+    } else if let Some(head_move) = app.pr_head_move.as_ref() {
+        let content = format!(
+            " PR head moved {} \u{00b7} reload pending ",
+            head_move.describe()
+        );
+        let width = content.chars().count();
+        (
+            Span::styled(
+                content,
+                Style::default()
+                    .fg(theme.pending)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            width,
+        )
     } else if let Some(submit) = app.pr_submit_state.as_ref() {
         use crate::forge::submit::SubmitEvent;
         let glyph = crate::ui::selector::pr_open_spinner_glyph(submit.started_at.elapsed());
@@ -769,6 +784,25 @@ mod header_snapshot_tests {
         (0..buffer.area.width)
             .map(|x| buffer[(x, y)].symbol().to_string())
             .collect()
+    }
+
+    #[test]
+    fn should_show_pending_head_move_reload_in_status_bar_while_commenting() {
+        let mut app = build_pr_app(pr_source(false, false));
+        app.input_mode = InputMode::Comment;
+
+        app.note_polled_pr_head("fedcba9876543210");
+
+        let buffer = draw_app(&mut app, 120, 12);
+        let status = row_text(&buffer, 11);
+        assert!(
+            status.contains("PR head moved abcdef0 → fedcba9"),
+            "status bar should name the move: {status}"
+        );
+        assert!(
+            status.contains("reload pending"),
+            "status bar should say the reload waits: {status}"
+        );
     }
 
     #[test]

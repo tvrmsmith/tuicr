@@ -1334,6 +1334,16 @@ pub struct App {
     pub pr_reload_state: Option<PrReloadRequest>,
     /// Background-thread channel that delivers the result of a PR reload.
     pub pr_reload_rx: Option<std::sync::mpsc::Receiver<PrReloadEvent>>,
+    /// A PR head move the head poll saw that has not been reloaded onto yet,
+    /// because the reviewer was mid-comment or another PR request was running.
+    pub pr_head_move: Option<PrHeadMove>,
+    /// When the next PR head poll is due. Re-armed on every PR mode entry.
+    pub(crate) next_pr_head_poll_at: Instant,
+    /// In-flight PR head poll. Guards against a second tick spawning another.
+    pr_head_poll: Option<pr_head_watch::PrHeadPoll>,
+    /// Last head-poll error text, so a sustained failure warns once instead of
+    /// once per poll. Cleared on the next successful poll.
+    last_pr_head_poll_error: Option<String>,
     /// Forge backend instance live while in PR diff mode. Used by the
     /// context provider for gap expansion against base/head SHAs and (in a
     /// future PR) for remote comment fetch/submit.
@@ -1378,9 +1388,9 @@ pub struct App {
     /// Background-thread channel that delivers the create-review result.
     /// `Receiver` is only present while a submit is in flight.
     pub pr_submit_rx: Option<std::sync::mpsc::Receiver<PrSubmitEvent>>,
-    /// Latest known PR head SHA from the remote. PR 5 leaves this as the
-    /// open-time head so the stale-head warning never fires; PR 6 may refresh
-    /// it via a pre-submit `gh pr view` to power the warning.
+    /// Latest known PR head SHA from the remote: the open-time head, then
+    /// whatever the head poll last reported. Powers the submit dialog's
+    /// stale-head warning while a head-move reload is pending.
     pub current_pr_head: Option<String>,
     /// Extended PR metadata rendered at the top of the diff view. Populated in PR mode.
     pub pr_info: Option<crate::forge::traits::PullRequestInfo>,
@@ -2099,6 +2109,7 @@ mod init;
 mod modes;
 mod navigation;
 mod pr;
+mod pr_head_watch;
 pub mod refine;
 mod regroup;
 mod reviewed;
@@ -2111,6 +2122,7 @@ mod tree;
 mod visual;
 
 pub(crate) use grouping::TargetPick;
+pub(crate) use pr_head_watch::{PR_HEAD_POLL_INTERVAL, PrHeadMove};
 
 #[cfg(test)]
 pub(crate) mod tests;

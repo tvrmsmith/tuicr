@@ -216,6 +216,7 @@ Target types:
   {
     "slug": "agavra/tuicr@main/worktree",
     "kind": "local",
+    "head_sha": null,
     "path": "/Users/alice/Library/Application Support/tuicr/reviews/sessions/9f6c1b3e09a54e2a.json",
     "updated_at": "2026-05-22T17:20:00Z",
     "comment_count": 1,
@@ -239,6 +240,7 @@ PR slug:
   {
     "slug": "gh:slatedb/slatedb/pr/1745",
     "kind": "pr",
+    "head_sha": "43e3566924690c06a45b2177b4dd2df59a0f09c6",
     "path": "/Users/alice/Library/Application Support/tuicr/reviews/sessions/172e168db0d525e5.json",
     "updated_at": "2026-05-22T17:20:00Z",
     "comment_count": 0,
@@ -253,6 +255,13 @@ PR slug:
   }
 ]
 ```
+
+`head_sha` is the PR head commit a `pr` session reviews, the revision the TUI
+shows; it is `null` for every other kind. Each PR head gets its own session, so
+`head_sha` never moves within one session. When the PR head moves, the TUI
+reloads onto it and the listing reports the new head's session, with
+`release_count` starting again from 0. A `:send` therefore covers exactly the
+`head_sha` listed beside its `release_count`.
 
 `comments` returns a JSON array:
 

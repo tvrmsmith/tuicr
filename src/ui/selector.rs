@@ -6,7 +6,7 @@ use ratatui::{
     widgets::{Block, Borders, Paragraph},
 };
 
-use crate::app::{App, TargetTab, sessions_tab};
+use crate::app::{App, TargetTab};
 use crate::forge::selector::{PrTabStatus, PrTabView};
 use crate::forge::traits::PullRequestListScope;
 use crate::ui::commit_row::{
@@ -334,7 +334,7 @@ fn render_sessions_tab(frame: &mut Frame, app: &mut App, area: Rect) {
             Style::default().fg(theme.fg_secondary)
         };
 
-        let kind = truncate_or_pad(sessions_tab::kind_label(row.kind), 5);
+        let kind = truncate_or_pad(row.kind.id(), 5);
         // Omit the repeated `owner/repo@` prefix so the target stays visible
         // when the row is truncated. The border title names the repository.
         let target = row

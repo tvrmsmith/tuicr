@@ -21,6 +21,7 @@ src/
 │   ├── editor_target.rs # Read-only snapshots of a PR revision for `$EDITOR`
 │   ├── file_filter.rs   # File-tree include/exclude regex filters + `/` path search
 │   ├── grouping.rs      # enable_grouping(), the grouping source ranking, group row state
+│   ├── pr_head_watch.rs # PR head poll; reloads onto a moved head once the reviewer is in Normal mode
 │   ├── refine.rs        # Blocking refine: login prompt, stderr wait, in-TUI wait, cancel keys, outcome
 │   └── tree.rs          # Sidebar rows: the grouped and ungrouped file trees
 ├── error.rs             # Error types (TuicrError enum)
@@ -260,7 +261,7 @@ Repository-managed agent integrations:
 2. **Render**: `ui::render()` draws the TUI based on `App` state. When rendered comments exist, the left sidebar splits vertically into file tree and comment navigator; the navigator is hidden when there are no rendered comment rows. `InputMode::Summary` replaces the diff while preserving the file sidebar when enabled, and lists every `local_draft` review-, file-, and line-level comment in the active session. The selected comment is highlighted, and the view scrolls as needed to keep it visible.
 3. **Input**: `crossterm` events → `map_key_to_action` → match on Action in main loop. The `:summary` command transitions from command mode to `InputMode::Summary` with the first pending comment selected. `j`/`k` selects the next or previous comment, `Enter` returns to the continuous diff from single-file view if necessary and moves the diff cursor to the selected comment; `Esc` returns to `Normal` without jumping. A reviewed file or hunk is revealed for the jump without clearing its persisted reviewed state.
 4. **Comments**: `App::save_comment()` builds an `AddCommentRequest` and calls `add_comment_to_session()` so TUI and library callers share insertion behavior. The TUI creates a persisted session file as soon as a review session becomes active, so `tuicr review add` can target it immediately. Successful comment submits autosave the session using a locked, atomic write that merges externally added comments first.
-5. **Review CLI**: `tuicr review list|add|comments` exits before TUI startup, uses `ReviewStore`, and always emits JSON; `review list` includes `active: true` for currently open TUI sessions and a `kind` (`local`/`pr`) per session, and `review add --input` accepts JSON literal, `@file`, or stdin payloads.
+5. **Review CLI**: `tuicr review list|add|comments` exits before TUI startup, uses `ReviewStore`, and always emits JSON; `review list` includes `active: true` for currently open TUI sessions a `kind` (`local`/`pr`) per session, and `head_sha` (the reviewed PR head for `pr`, null otherwise; read from `ManifestKind::Pr`, carried as `SessionKind::Pr { head_sha }`), and `review add --input` accepts JSON literal, `@file`, or stdin payloads.
    `review list` also carries the release state — `release_count`,
    `released_at`, `unreleased_count`, denormalized into the manifest's
    `DisplayMetadata` so listing never opens a session file — plus
@@ -344,6 +345,8 @@ In-flight requests carry an identity tuple (repo, PR#, head SHA). A late result 
 ### Session key + lifecycle
 
 `PrSessionKey { repository, number, head_sha }` identifies a PR review session. Same PR + same head = same session = drafts reattach. New commit on the PR = new key = new session.
+
+PR mode polls `ForgeBackend::get_pull_request` every `PR_HEAD_POLL_INTERVAL` (60s) and reloads a moved head through `spawn_pr_reload`, the `:e` path. The reload waits while `input_mode` is not `Normal` or a reload or submit is in flight, and the status bar shows the pending move. `enter_pr_diff_mode` calls `rearm_pr_head_watch`, so any head change, polled or manual, clears the pending move and restarts the clock.
 
 Each `Comment` carries a `lifecycle` field:
 

@@ -1964,6 +1964,142 @@ fn should_keep_reviewed_state_through_finish_pr_reload_when_head_unchanged() {
     assert!(app.session.is_hunk_reviewed(&stable_path, &stable_key));
 }
 
+/// An app in PR mode at head `aaaaaaa…`, opened through the fake backend.
+fn pr_app_at_head_a(number: u64) -> (App, crate::forge::traits::PullRequestDetails) {
+    let mut app = build_app();
+    let summary = sample_pr(number, "head-watch");
+    let mut details = test_pr_details(number, "head-watch");
+    details.head_sha = "aaaaaaaaaaaaaaaa".to_string();
+    let backend = Box::new(FakeForgeBackend::open_pr_details(
+        details.clone(),
+        two_file_patch("new changed"),
+    ));
+    app.open_pr_with_backend(&summary, backend, None).unwrap();
+    app.message = None;
+    (app, details)
+}
+
+#[test]
+fn should_not_reload_when_polled_pr_head_is_unmoved() {
+    let (mut app, _details) = pr_app_at_head_a(424301);
+
+    app.note_polled_pr_head("aaaaaaaaaaaaaaaa");
+    app.apply_pending_pr_head_move();
+
+    assert!(app.pr_reload_state.is_none());
+    assert!(app.pr_head_move.is_none());
+    assert!(app.message.is_none(), "{:?}", app.message);
+}
+
+#[test]
+fn should_reload_onto_new_head_with_visible_message_when_polled_head_moves() {
+    let (mut app, details_a) = pr_app_at_head_a(424302);
+
+    app.note_polled_pr_head("bbbbbbbbbbbbbbbb");
+    app.apply_pending_pr_head_move();
+
+    // The reload goes through the same async path as `:e`, and says why.
+    let request = app.pr_reload_state.clone().expect("reload started");
+    assert_eq!(request.head_sha, "aaaaaaaaaaaaaaaa");
+    assert!(app.pr_head_move.is_none());
+    assert_eq!(app.current_pr_head.as_deref(), Some("bbbbbbbbbbbbbbbb"));
+    let message = app
+        .message
+        .as_ref()
+        .expect("reload message")
+        .content
+        .clone();
+    assert!(message.contains("aaaaaaa → bbbbbbb"), "{message}");
+
+    // When the reload lands, the new head is on screen and the message still
+    // names the move.
+    let mut details_b = details_a.clone();
+    details_b.head_sha = "bbbbbbbbbbbbbbbb".to_string();
+    app.finish_pr_reload(
+        details_b.clone(),
+        structured_patch(&two_file_patch("newer changed")),
+        Vec::new(),
+        PullRequestReviewMetadata::default(),
+        crate::forge::traits::PullRequestInfo::from_details(details_b),
+        &request,
+    )
+    .unwrap();
+    let DiffSource::PullRequest(pr) = &app.diff_source else {
+        panic!("expected PR mode");
+    };
+    assert_eq!(pr.key.head_sha, "bbbbbbbbbbbbbbbb");
+    let message = app
+        .message
+        .as_ref()
+        .expect("reloaded message")
+        .content
+        .clone();
+    assert!(message.contains("aaaaaaa → bbbbbbb"), "{message}");
+}
+
+#[test]
+fn should_defer_head_move_reload_while_reviewer_is_mid_comment() {
+    let (mut app, _details) = pr_app_at_head_a(424303);
+    app.enter_comment_mode(false, Some((1, LineSide::New)));
+    app.comment_buffer.push_str("half-written thought");
+
+    app.note_polled_pr_head("bbbbbbbbbbbbbbbb");
+    app.apply_pending_pr_head_move();
+
+    // The draft and the mode survive; the move waits.
+    assert!(app.pr_reload_state.is_none());
+    assert_eq!(app.input_mode, InputMode::Comment);
+    assert_eq!(app.comment_buffer, "half-written thought");
+    let pending = app.pr_head_move.as_ref().expect("reload pending");
+    assert_eq!(pending.from, "aaaaaaaaaaaaaaaa");
+    assert_eq!(pending.to, "bbbbbbbbbbbbbbbb");
+
+    // Leaving comment mode lets the pending reload go.
+    app.exit_comment_mode();
+    app.apply_pending_pr_head_move();
+
+    assert!(app.pr_reload_state.is_some());
+    assert!(app.pr_head_move.is_none());
+}
+
+#[test]
+fn should_drop_pending_head_move_when_the_head_moves_back() {
+    let (mut app, _details) = pr_app_at_head_a(424304);
+    app.enter_comment_mode(false, Some((1, LineSide::New)));
+    app.note_polled_pr_head("bbbbbbbbbbbbbbbb");
+
+    // The head moved back before the reviewer finished.
+    app.note_polled_pr_head("aaaaaaaaaaaaaaaa");
+
+    assert!(app.pr_head_move.is_none());
+}
+
+#[test]
+fn should_drop_pending_head_move_after_leaving_pr_mode() {
+    let (mut app, _details) = pr_app_at_head_a(424306);
+    app.enter_comment_mode(false, Some((1, LineSide::New)));
+    app.note_polled_pr_head("bbbbbbbbbbbbbbbb");
+    app.exit_comment_mode();
+
+    app.diff_source = DiffSource::WorkingTree;
+    app.apply_pending_pr_head_move();
+
+    assert!(app.pr_head_move.is_none());
+    assert!(app.pr_reload_state.is_none());
+    assert!(app.message.is_none(), "{:?}", app.message);
+}
+
+#[test]
+fn should_poll_pr_head_only_in_pr_mode_once_the_interval_elapses() {
+    let local = build_app();
+    let later = Instant::now() + PR_HEAD_POLL_INTERVAL * 2;
+    assert!(!local.pr_head_poll_due(later));
+
+    let (app, _details) = pr_app_at_head_a(424305);
+    assert!(!app.pr_head_poll_due(Instant::now()));
+    assert!(app.pr_head_poll_due(later));
+}
+
 #[test]
 fn should_keep_session_when_pr_head_unchanged_on_reload() {
     // given an app in PR mode

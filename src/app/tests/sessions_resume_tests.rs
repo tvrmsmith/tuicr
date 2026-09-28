@@ -383,7 +383,9 @@ fn should_resume_a_pr_session_through_the_forge_open_path() {
     app.sessions_tab.apply_load(Ok(vec![SessionSummary {
         session_ref,
         slug: "gh:owner/repo/pr/7".to_string(),
-        kind: SessionKind::Pr,
+        kind: SessionKind::Pr {
+            head_sha: "deadbee".to_string(),
+        },
         updated_at: Utc::now(),
         comment_count: 1,
         reviewed_count: 0,
@@ -420,7 +422,9 @@ fn should_report_a_pr_session_with_no_saved_pull_request() {
     app.sessions_tab.apply_load(Ok(vec![SessionSummary {
         session_ref: crate::review_store::SessionRef::from_path("/tmp/missing-pr.json"),
         slug: "gh:owner/repo/pr/9".to_string(),
-        kind: SessionKind::Pr,
+        kind: SessionKind::Pr {
+            head_sha: "deadbee".to_string(),
+        },
         updated_at: Utc::now(),
         comment_count: 1,
         reviewed_count: 0,

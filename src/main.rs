@@ -547,6 +547,7 @@ fn main() -> anyhow::Result<()> {
         needs_redraw |= app.poll_editor_launches();
         needs_redraw |= app.poll_persisted_session_changes();
         needs_redraw |= app.poll_diff_watch_changes();
+        needs_redraw |= app.poll_pr_head_watch();
         // `:regroup`'s refine call, collected without blocking: mid-review the
         // human is reading a file and the sidebar re-sorting is not worth
         // freezing that for (`docs/MID_SESSION_REGROUP.md`).
