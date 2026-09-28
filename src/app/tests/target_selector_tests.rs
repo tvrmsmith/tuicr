@@ -3011,3 +3011,66 @@ fn should_refine_a_reopened_pull_request_over_the_narrowed_range() {
         "the refine the pick bought is spent on the files the human ends up reviewing"
     );
 }
+
+fn open_unseen_pr(app: &mut App) {
+    let backend = Box::new(FakeForgeBackend::open_pr_details(
+        test_pr_details(424256, "send-then-quit"),
+        two_file_patch("new changed"),
+    ));
+    app.open_pr_with_backend(&sample_pr(424256, "send-then-quit"), backend, None)
+        .unwrap();
+}
+
+/// Sessions for the PR `open_unseen_pr` opens, as `tuicr review list` shows
+/// them. `build_app` persists its own local session, which this skips.
+fn listed_pr_sessions(reviews: &TestReviewsDir) -> Vec<crate::review_store::SessionSummary> {
+    crate::review_store::ReviewStore::with_reviews_dir(reviews.path())
+        .list_all_sessions()
+        .unwrap()
+        .into_iter()
+        .filter(|summary| summary.slug == "gh:agavra/tuicr/pr/424256")
+        .collect()
+}
+
+fn run_command(app: &mut App, command: &str) {
+    app.command_buffer = command.to_string();
+    crate::handler::handle_command_action(app, crate::input::Action::SubmitInput);
+}
+
+#[test]
+fn should_keep_pr_session_released_with_no_comments_through_quit() {
+    // given: an unseen PR sent with no comments, the "done, no notes" approval
+    let reviews = TestReviewsDir::new();
+    let mut app = build_app();
+    open_unseen_pr(&mut app);
+    run_command(&mut app, "send");
+
+    // when
+    run_command(&mut app, "q");
+    app.cleanup_empty_ephemeral_sessions().unwrap();
+
+    // then: a poller still reads the release
+    assert!(app.should_quit);
+    let listed = listed_pr_sessions(&reviews);
+    assert_eq!(
+        listed.iter().map(|s| s.release_count).collect::<Vec<_>>(),
+        vec![1]
+    );
+}
+
+#[test]
+fn should_delete_unreleased_pr_session_with_no_comments_on_quit() {
+    // given
+    let reviews = TestReviewsDir::new();
+    let mut app = build_app();
+    open_unseen_pr(&mut app);
+
+    // when
+    run_command(&mut app, "q");
+    app.cleanup_empty_ephemeral_sessions().unwrap();
+
+    // then
+    assert!(app.should_quit);
+    let listed = listed_pr_sessions(&reviews);
+    assert!(listed.is_empty());
+}

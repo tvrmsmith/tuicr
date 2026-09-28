@@ -148,7 +148,9 @@ pub(crate) fn delete_session_if_empty_in_dir(path: &Path, reviews_dir: &Path) ->
         }
 
         let session = load_session(path)?;
-        if session.has_comments() || session.has_reviewed_state() {
+        // A release with no comments is still content: it is the "done, no
+        // further notes" signal a poller reads from `release_count`.
+        if session.has_comments() || session.has_reviewed_state() || session.release_count > 0 {
             return Ok(false);
         }
 
@@ -1161,6 +1163,25 @@ mod tests {
             .get_file_mut(&PathBuf::from("src/main.rs"))
             .unwrap()
             .toggle_hunk_reviewed("stable-hunk".to_string());
+        let path = save_session(&session).unwrap();
+
+        assert!(!delete_session_if_empty(&path).unwrap());
+
+        assert!(path.exists());
+    }
+
+    #[test]
+    fn should_keep_released_session_without_comments_when_deleting_if_empty() {
+        let _g = with_test_reviews_dir();
+        let repo = make_repo();
+        let mut session = make_local_session(
+            repo,
+            "abc1234",
+            Some("main"),
+            SessionDiffSource::WorkingTree,
+            None,
+        );
+        session.release();
         let path = save_session(&session).unwrap();
 
         assert!(!delete_session_if_empty(&path).unwrap());
