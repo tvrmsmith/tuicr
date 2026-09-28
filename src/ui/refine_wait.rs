@@ -24,9 +24,13 @@ pub struct WaitStyle {
 }
 
 /// One frame of the wait: `text` is what `crate::app::refine` would have
-/// written to stderr.
+/// written to stderr, the status line or the login prompt.
 pub fn render_refine_wait(frame: &mut Frame, style: WaitStyle, text: &str) {
-    let area = centered(frame.area());
+    let paragraph = Paragraph::new(text)
+        .alignment(Alignment::Center)
+        .wrap(Wrap { trim: true })
+        .style(style.body);
+    let area = centered(frame.area(), &paragraph);
     frame.render_widget(Clear, area);
 
     let block = Block::default()
@@ -37,23 +41,21 @@ pub fn render_refine_wait(frame: &mut Frame, style: WaitStyle, text: &str) {
         .border_style(style.border);
     let inner = block.inner(area);
     frame.render_widget(block, area);
-
-    let paragraph = Paragraph::new(text)
-        .alignment(Alignment::Center)
-        .wrap(Wrap { trim: true })
-        .style(style.body);
     frame.render_widget(paragraph, inner);
 }
 
-/// Wide enough for the status line at a normal width, three rows tall: the
-/// text, and a border either side of it.
-fn centered(area: Rect) -> Rect {
-    let [row] = Layout::vertical([Constraint::Length(3)])
+/// Wide enough for the status line at a normal width, and as tall as the text
+/// wraps to plus a border either side, within the frame. The login prompt's
+/// reason is Google's own sentence, and a clipped one hides what to fix.
+fn centered(area: Rect, paragraph: &Paragraph) -> Rect {
+    let [column] = Layout::horizontal([Constraint::Percentage(80)])
         .flex(Flex::Center)
         .areas(area);
-    let [cell] = Layout::horizontal([Constraint::Percentage(80)])
+    let lines = paragraph.line_count(column.width.saturating_sub(2));
+    let rows = u16::try_from(lines).unwrap_or(u16::MAX).saturating_add(2);
+    let [cell] = Layout::vertical([Constraint::Length(rows)])
         .flex(Flex::Center)
-        .areas(row);
+        .areas(column);
     cell
 }
 
@@ -145,25 +147,33 @@ mod tests {
         );
     }
 
-    /// A status line longer than the box wraps rather than running off the
-    /// edge, and the box stays three rows: the overflow is clipped, not written
-    /// outside the box.
+    /// Text longer than the box wraps rather than running off the edge, and
+    /// the box grows a row for each wrapped line so none of it is clipped.
     #[test]
-    fn a_status_line_wider_than_the_box_neither_overflows_nor_grows_it() {
+    fn text_wider_than_the_box_wraps_and_grows_it_without_overflowing() {
+        // 180 columns over a 62-column interior: three lines, a five-row box.
         let text = "Grouping ".repeat(20);
         let buffer = painted(&text);
 
-        assert_eq!(row(&buffer, 10), "X".repeat(80));
-        assert_eq!(row(&buffer, 14), "X".repeat(80));
-        let line = row(&buffer, 12);
-        assert_eq!(&line[..8], "XXXXXXXX", "nothing is written left of the box");
-        assert!(
-            line.chars()
-                .skip(9)
-                .take(62)
-                .collect::<String>()
-                .contains("Grouping"),
-            "the beginning of the line is shown: {line}"
-        );
+        let written: Vec<u16> = (0..HEIGHT)
+            .filter(|y| row(&buffer, *y) != "X".repeat(80))
+            .collect();
+        assert_eq!(written, vec![10, 11, 12, 13, 14], "a centred five-row box");
+        for y in 11..14 {
+            let line = row(&buffer, y);
+            assert_eq!(&line[..8], "XXXXXXXX", "nothing is written left of the box");
+            assert!(line.contains("Grouping"), "row {y} carries text: {line}");
+        }
+    }
+
+    /// The login prompt is two lines, the reason and the keys, and the box
+    /// shows both.
+    #[test]
+    fn an_explicit_second_line_gets_its_own_row() {
+        let buffer = painted("Vertex AI login failed: expired\nl log in · q quit");
+
+        assert!(row(&buffer, 11).contains("login failed"));
+        assert!(row(&buffer, 12).contains("q quit"));
+        assert_eq!(row(&buffer, 14), "X".repeat(80), "a four-row box");
     }
 }

@@ -365,6 +365,38 @@ pub fn call(prompt: &str, timeout: Duration, settings: &Settings) -> Result<Stri
     answer_text(publisher, &response)
 }
 
+/// How long the login check may take. Short, because nothing on screen can
+/// cancel it and it runs before the wait that can.
+const LOGIN_CHECK_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Whether [`call`] could get past its first two legs right now: credentials on
+/// disk and a refresh Google accepts. Checked before the prompt is sent, so a
+/// login that has lapsed can be fixed in the time the call would have spent
+/// failing (`gd-k95`).
+pub fn check_login() -> Result<(), String> {
+    let credentials = Credentials::discover()?;
+    access_token(&agent(LOGIN_CHECK_TIMEOUT), &credentials).map(drop)
+}
+
+/// Runs `gcloud auth application-default login` in the foreground, the command
+/// every credential error above tells the human to run.
+///
+/// This is the one subprocess on the arm, and it is not the call: it writes the
+/// credentials file [`Credentials::discover`] reads, and nothing is sent to a
+/// model through it. gcloud's stdout goes to stderr because `--stdout` hands
+/// tuicr's own stdout to the export.
+pub fn log_in() -> Result<(), String> {
+    let status = std::process::Command::new("gcloud")
+        .args(["auth", "application-default", "login"])
+        .stdout(std::io::stderr())
+        .status()
+        .map_err(|error| format!("could not run gcloud: {error}"))?;
+    if !status.success() {
+        return Err(format!("gcloud login exited with {status}"));
+    }
+    Ok(())
+}
+
 /// What is left of the caller's budget, for the leg about to be dispatched. A
 /// budget already spent is named against the leg that would have run next
 /// rather than against whichever leg the first caller happens to be.

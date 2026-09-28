@@ -9,6 +9,9 @@ use crossterm::{
     terminal::{BeginSynchronizedUpdate, EndSynchronizedUpdate, supports_keyboard_enhancement},
 };
 
+use tuicr::app::refine::{
+    LoginAnswer, LoginPrompt, RefineOutcome, TuiSurface, login_answer, login_text,
+};
 use tuicr::app::{self, App, AppStartupOptions, FocusedPanel, InputMode};
 use tuicr::cli::parse_cli_args;
 use tuicr::config::IgnoreWhitespaceConfig;
@@ -383,7 +386,13 @@ fn main() -> anyhow::Result<()> {
                     location: grouping.vertex_location.clone(),
                 },
             });
-            startup_warnings.extend(app.refine_grouping_at_startup().warning());
+            let outcome = app.refine_grouping_at_startup();
+            // Nothing is on screen and nothing is registered yet, so quitting
+            // from the login prompt leaves no trace.
+            if matches!(outcome, RefineOutcome::Quit) {
+                return Ok(());
+            }
+            startup_warnings.extend(outcome.warning());
         }
         app.enable_grouping();
     }
@@ -567,9 +576,13 @@ fn main() -> anyhow::Result<()> {
             // Only the frames are drawn here. The end of the wait is not: the
             // overlay comes down with the full repaint `needs_redraw` forces
             // below, which is also the frame that shows the refined grouping.
-            let outcome = app.refine_loaded_diff(&mut |text: &str| {
-                let _ = terminal.draw(|frame| ui::render_refine_wait(frame, style, text));
+            let outcome = app.refine_loaded_diff(&mut RefineOverlay {
+                terminal: &mut terminal,
+                style,
             });
+            if matches!(outcome, RefineOutcome::Quit) {
+                app.should_quit = true;
+            }
             if let Some(message) = outcome.warning() {
                 app.set_warning(message);
             }
@@ -1117,6 +1130,50 @@ fn handle_comment_vim_key(app: &mut App, key: crossterm::event::KeyEvent) -> boo
 
 /// How the editor handoff ended, so the caller knows whether the file could
 /// already have been edited.
+/// The in-TUI refine surface: the wait's frames and its login prompt, drawn as
+/// the same centred overlay over the alternate screen.
+struct RefineOverlay<'a, W: Write> {
+    terminal: &'a mut TerminalSession<W>,
+    style: ui::WaitStyle,
+}
+
+impl<W: Write> TuiSurface for RefineOverlay<'_, W> {
+    fn paint(&mut self, text: &str) {
+        let style = self.style;
+        let _ = self
+            .terminal
+            .draw(|frame| ui::render_refine_wait(frame, style, text));
+    }
+}
+
+impl<W: Write> LoginPrompt for RefineOverlay<'_, W> {
+    fn ask(&mut self, reason: &str) -> LoginAnswer {
+        self.paint(&login_text(reason));
+        loop {
+            match event::read() {
+                Ok(event) => {
+                    if let Some(answer) = login_answer(&event) {
+                        return answer;
+                    }
+                }
+                Err(_) => return LoginAnswer::Continue,
+            }
+        }
+    }
+
+    fn log_in(&mut self) -> Result<(), String> {
+        let suspension = self
+            .terminal
+            .suspend()
+            .map_err(|error| format!("could not leave the TUI for gcloud: {error}"))?;
+        let result = tuicr::grouping::vertex::log_in();
+        suspension
+            .resume()
+            .map_err(|error| format!("could not return to the TUI after gcloud: {error}"))?;
+        result
+    }
+}
+
 enum EditorOutcome {
     /// A terminal editor ran to completion.
     Finished,

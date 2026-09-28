@@ -21,7 +21,7 @@ src/
 │   ├── editor_target.rs # Read-only snapshots of a PR revision for `$EDITOR`
 │   ├── file_filter.rs   # File-tree include/exclude regex filters + `/` path search
 │   ├── grouping.rs      # enable_grouping(), the grouping source ranking, group row state
-│   ├── refine.rs        # Blocking refine: stderr wait, in-TUI wait, cancel keys, outcome
+│   ├── refine.rs        # Blocking refine: login prompt, stderr wait, in-TUI wait, cancel keys, outcome
 │   └── tree.rs          # Sidebar rows: the grouped and ungrouped file trees
 ├── error.rs             # Error types (TuicrError enum)
 ├── editor.rs            # External $EDITOR command construction and launch helpers

@@ -18,7 +18,10 @@ use super::grouping_tests::{
 use super::startup_warning_tests::{expire_message, message};
 use crate::app::App;
 use crate::app::TargetPick;
-use crate::app::refine::{CancelKeys, RefineCall, RefineConfig, RefineOutcome, Screen, Skipped};
+use crate::app::refine::{
+    CancelKeys, LoginAnswer, LoginPrompt, RefineCall, RefineConfig, RefineOutcome, Screen, Skipped,
+    TuiSurface,
+};
 use crate::grouping::GroupSource;
 use crate::model::DiffFile;
 use crate::vcs::traits::CommitInfo;
@@ -638,7 +641,8 @@ fn a_reorder_keeps_the_fallback_arm_of_the_partition_it_is_still_showing() {
     let outcome = app.refine_loaded_with(
         PATIENT,
         never(),
-        &mut overlay.paint(),
+        &logged_in,
+        &mut overlay,
         &mut Keys::cancelling(),
     );
     assert!(matches!(outcome, RefineOutcome::Cancelled), "{outcome:?}");
@@ -878,10 +882,25 @@ struct Overlay {
     frames: Vec<String>,
 }
 
-impl Overlay {
-    fn paint(&mut self) -> impl FnMut(&str) + '_ {
-        move |text: &str| self.frames.push(text.to_string())
+impl TuiSurface for Overlay {
+    fn paint(&mut self, text: &str) {
+        self.frames.push(text.to_string());
     }
+}
+
+/// Never reached: every in-TUI test below passes the login check.
+impl LoginPrompt for Overlay {
+    fn ask(&mut self, reason: &str) -> LoginAnswer {
+        panic!("a passing login check asked anyway: {reason}")
+    }
+
+    fn log_in(&mut self) -> Result<(), String> {
+        panic!("a passing login check ran gcloud")
+    }
+}
+
+fn logged_in() -> Result<(), String> {
+    Ok(())
 }
 
 /// A target picked inside the TUI — bare `tuicr`, or `tuicr pr` before a PR is
@@ -922,7 +941,8 @@ fn a_diff_that_loads_after_the_screen_is_up_is_refined_in_the_tui() {
 
     let (call, calls) = answering(&[ANSWER]);
     let mut overlay = Overlay::default();
-    let outcome = app.refine_loaded_with(PATIENT, call, &mut overlay.paint(), &mut Keys::silent());
+    let outcome =
+        app.refine_loaded_with(PATIENT, call, &logged_in, &mut overlay, &mut Keys::silent());
 
     assert!(
         matches!(outcome, RefineOutcome::Refined { repairs: 0 }),
@@ -997,7 +1017,8 @@ fn a_cancelled_in_tui_wait_keeps_the_heuristic_session_and_is_not_offered_twice(
     let outcome = app.refine_loaded_with(
         PATIENT,
         never(),
-        &mut overlay.paint(),
+        &logged_in,
+        &mut overlay,
         &mut Keys::cancelling(),
     );
 
@@ -1049,7 +1070,7 @@ fn a_reopened_session_is_told_its_grouping_already_exists() {
     let (call, calls) = answering(&[ANSWER]);
     let mut overlay = Overlay::default();
     let outcome =
-        reopened.refine_loaded_with(PATIENT, call, &mut overlay.paint(), &mut Keys::silent());
+        reopened.refine_loaded_with(PATIENT, call, &logged_in, &mut overlay, &mut Keys::silent());
 
     assert!(
         matches!(outcome, RefineOutcome::Skipped(Skipped::AlreadyGrouped)),
@@ -1081,7 +1102,8 @@ fn a_reshuffle_inside_an_open_review_dispatches_no_refine() {
 
     let (call, _) = answering(&[ANSWER]);
     let mut overlay = Overlay::default();
-    let outcome = app.refine_loaded_with(PATIENT, call, &mut overlay.paint(), &mut Keys::silent());
+    let outcome =
+        app.refine_loaded_with(PATIENT, call, &logged_in, &mut overlay, &mut Keys::silent());
     assert!(
         matches!(outcome, RefineOutcome::Refined { repairs: 0 }),
         "{outcome:?}"
@@ -1277,7 +1299,8 @@ fn picking_a_second_target_refines_again() {
     app.refine_loaded_with(
         PATIENT,
         Arc::clone(&call),
-        &mut overlay.paint(),
+        &logged_in,
+        &mut overlay,
         &mut Keys::silent(),
     );
     assert_eq!(calls.load(Ordering::SeqCst), 1);
@@ -1292,7 +1315,8 @@ fn picking_a_second_target_refines_again() {
     app.reorder_for_load(TargetPick::NewTarget);
     assert!(app.refine_wanted, "a second pick is a second wait");
 
-    let outcome = app.refine_loaded_with(PATIENT, call, &mut overlay.paint(), &mut Keys::silent());
+    let outcome =
+        app.refine_loaded_with(PATIENT, call, &logged_in, &mut overlay, &mut Keys::silent());
     assert!(
         matches!(outcome, RefineOutcome::Refined { .. }),
         "{outcome:?}"
@@ -1336,4 +1360,156 @@ fn a_transport_that_dies_falls_back_to_the_heuristics() {
 
     app.enable_grouping();
     assert_heuristic_session(&app);
+}
+
+/// An in-TUI surface whose login prompt answers from a script, recording what
+/// it was shown and how often gcloud ran.
+#[derive(Default)]
+struct Asking {
+    answers: Vec<LoginAnswer>,
+    asked: Vec<String>,
+    logins: usize,
+}
+
+impl Asking {
+    fn answering(answers: &[LoginAnswer]) -> Self {
+        Self {
+            answers: answers.to_vec(),
+            ..Self::default()
+        }
+    }
+}
+
+impl TuiSurface for Asking {
+    fn paint(&mut self, _text: &str) {}
+}
+
+impl LoginPrompt for Asking {
+    fn ask(&mut self, reason: &str) -> LoginAnswer {
+        self.asked.push(reason.to_string());
+        self.answers.remove(0)
+    }
+
+    fn log_in(&mut self) -> Result<(), String> {
+        self.logins += 1;
+        Ok(())
+    }
+}
+
+/// A login check that fails `failures` times with Google's reauth refusal,
+/// then passes.
+fn failing_login(failures: usize) -> impl Fn() -> Result<(), String> {
+    let left = std::cell::Cell::new(failures);
+    move || {
+        if left.get() == 0 {
+            return Ok(());
+        }
+        left.set(left.get() - 1);
+        Err("the credential refresh failed (HTTP 400): Reauthentication failed".to_string())
+    }
+}
+
+/// A target picked in the TUI, armed and heuristically grouped: the state the
+/// in-TUI wait starts from.
+fn picked_in_the_tui() -> App {
+    let mut app = configured_app();
+    app.reorder_for_load(TargetPick::NewTarget);
+    app.enable_grouping();
+    app
+}
+
+/// A forgotten login is found before anything is sent, and continuing past it
+/// is the fallback every other failure gets: a heuristic session, the reason
+/// as a warning, and the failed attempt in the feedback log.
+#[test]
+fn continuing_past_a_failed_login_opens_the_heuristic_session_without_a_call() {
+    let mut app = picked_in_the_tui();
+    let (call, calls) = answering(&[ANSWER]);
+    let mut tui = Asking::answering(&[LoginAnswer::Continue]);
+
+    let outcome = app.refine_loaded_with(
+        PATIENT,
+        call,
+        &failing_login(usize::MAX),
+        &mut tui,
+        &mut Keys::silent(),
+    );
+
+    let RefineOutcome::Failed(reason) = &outcome else {
+        panic!("{outcome:?}");
+    };
+    assert!(reason.contains("Reauthentication failed"), "{reason}");
+    assert_eq!(tui.asked.len(), 1, "asked once, then continued");
+    assert_eq!(calls.load(Ordering::SeqCst), 0, "nothing is sent or billed");
+    assert!(outcome.warning().is_some());
+    assert!(matches!(
+        app.grouping_arm.as_ref().map(|arm| &arm.outcome),
+        Some(crate::persistence::feedback_log::RefineAttemptOutcome::Failed { .. })
+    ));
+    assert_heuristic_session(&app);
+}
+
+#[test]
+fn logging_in_from_the_prompt_checks_again_and_refines() {
+    let mut app = picked_in_the_tui();
+    let (call, calls) = answering(&[ANSWER]);
+    let mut tui = Asking::answering(&[LoginAnswer::LogIn]);
+
+    let outcome = app.refine_loaded_with(
+        PATIENT,
+        call,
+        &failing_login(1),
+        &mut tui,
+        &mut Keys::silent(),
+    );
+
+    assert!(
+        matches!(outcome, RefineOutcome::Refined { repairs: 0 }),
+        "{outcome:?}"
+    );
+    assert_eq!(tui.logins, 1);
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+}
+
+/// Retry is for a login done in another pane: it checks again and asks again
+/// for as long as the check keeps failing.
+#[test]
+fn retrying_asks_again_until_the_login_passes() {
+    let mut app = picked_in_the_tui();
+    let (call, _) = answering(&[ANSWER]);
+    let mut tui = Asking::answering(&[LoginAnswer::Retry, LoginAnswer::Retry]);
+
+    let outcome = app.refine_loaded_with(
+        PATIENT,
+        call,
+        &failing_login(2),
+        &mut tui,
+        &mut Keys::silent(),
+    );
+
+    assert!(
+        matches!(outcome, RefineOutcome::Refined { .. }),
+        "{outcome:?}"
+    );
+    assert_eq!(tui.asked.len(), 2);
+    assert_eq!(tui.logins, 0, "retry never runs gcloud itself");
+}
+
+#[test]
+fn quitting_from_the_prompt_sends_nothing_and_says_nothing() {
+    let mut app = picked_in_the_tui();
+    let (call, calls) = answering(&[ANSWER]);
+    let mut tui = Asking::answering(&[LoginAnswer::Quit]);
+
+    let outcome = app.refine_loaded_with(
+        PATIENT,
+        call,
+        &failing_login(usize::MAX),
+        &mut tui,
+        &mut Keys::silent(),
+    );
+
+    assert!(matches!(outcome, RefineOutcome::Quit), "{outcome:?}");
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
+    assert!(outcome.warning().is_none(), "tuicr is exiting, not warning");
 }

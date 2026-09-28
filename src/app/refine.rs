@@ -28,6 +28,12 @@
 //! already applied. The heuristic partition is total by construction, so
 //! falling back can never leave a file unassigned.
 //!
+//! A failed login is the one failure that asks first (`gd-k95`). It is the only
+//! one the human can fix on the spot, and the only one that is found before
+//! anything is sent, so the wait checks it up front and offers to run
+//! `gcloud`, retry, continue on heuristics, or quit. A surface that cannot read
+//! a key continues, which is the fallback it always got.
+//!
 //! There is deliberately **no async startup path** here. `gd-26r.27` looked at
 //! building one and did not relax blocking, so nothing lands under a reader at
 //! startup: the wait either produces the whole grouping or produces nothing.
@@ -71,6 +77,9 @@ pub enum RefineOutcome {
     Failed(String),
     /// Refine was never dispatched, and why.
     Skipped(Skipped),
+    /// The login check failed and the human chose to quit tuicr rather than
+    /// review without refine.
+    Quit,
 }
 
 /// Why a configured refine did not run. The two cases mean opposite things to
@@ -107,7 +116,8 @@ impl RefineOutcome {
         match self {
             RefineOutcome::Refined { repairs: 0 }
             | RefineOutcome::Skipped(Skipped::NoChangeset)
-            | RefineOutcome::Skipped(Skipped::NotConfigured) => None,
+            | RefineOutcome::Skipped(Skipped::NotConfigured)
+            | RefineOutcome::Quit => None,
             RefineOutcome::Skipped(Skipped::AlreadyGrouped) => Some(
                 "Refine skipped; this session's saved grouping was kept. Reopening never \
                  regroups."
@@ -147,6 +157,95 @@ pub trait Screen {
     /// the in-TUI overlay has nothing to do, since the frame the caller draws
     /// next is what removes it.
     fn finish(&mut self);
+}
+
+/// What the human chose when the login check failed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LoginAnswer {
+    /// Run `gcloud auth application-default login`, then check again.
+    LogIn,
+    /// Check again, after a login done somewhere else.
+    Retry,
+    /// Review on the heuristic grouping.
+    Continue,
+    Quit,
+}
+
+/// The terminal side of a failed login check.
+pub trait LoginPrompt {
+    /// Show why the check failed and wait for an answer. A surface that cannot
+    /// read a key answers [`LoginAnswer::Continue`].
+    fn ask(&mut self, reason: &str) -> LoginAnswer;
+    /// Run [`vertex::log_in`] in the foreground and hand the terminal back.
+    fn log_in(&mut self) -> Result<(), String>;
+}
+
+/// The in-TUI surface. The wait's frames and the login prompt draw on the same
+/// alternate screen, so one object owns both.
+pub trait TuiSurface: LoginPrompt {
+    fn paint(&mut self, text: &str);
+}
+
+/// Whether the wait may dispatch, settled before it starts.
+#[derive(Debug)]
+enum Login {
+    Ready,
+    /// The check failed and the human continued without refine.
+    Declined(String),
+    Quit,
+}
+
+/// Checks the login, asking the human what to do each time it fails, until
+/// it passes or the human stops asking.
+fn settle_login(check: &dyn Fn() -> Result<(), String>, prompt: &mut dyn LoginPrompt) -> Login {
+    // A gcloud that failed to run explains the next failed check better than
+    // the check does, so it is shown alongside it once.
+    let mut login_error: Option<String> = None;
+    loop {
+        let reason = match check() {
+            Ok(()) => return Login::Ready,
+            Err(reason) => reason,
+        };
+        let shown = match login_error.take() {
+            Some(error) => format!("{error}; {reason}"),
+            None => reason.clone(),
+        };
+        match prompt.ask(&shown) {
+            LoginAnswer::LogIn => login_error = prompt.log_in().err(),
+            LoginAnswer::Retry => {}
+            LoginAnswer::Continue => return Login::Declined(reason),
+            LoginAnswer::Quit => return Login::Quit,
+        }
+    }
+}
+
+/// The prompt's words, shared by both surfaces like [`status_text`].
+pub fn login_text(reason: &str) -> String {
+    format!(
+        "Vertex AI login failed: {reason}\n\
+         l log in with gcloud · r retry · enter continue without refine · q quit"
+    )
+}
+
+/// The prompt's keys, shared by both surfaces. `None` is a key that answers
+/// nothing, which the prompt reads past.
+pub fn login_answer(event: &Event) -> Option<LoginAnswer> {
+    let Event::Key(key) = event else {
+        return None;
+    };
+    if key.kind == KeyEventKind::Release {
+        return None;
+    }
+    match key.code {
+        KeyCode::Char('l') => Some(LoginAnswer::LogIn),
+        KeyCode::Char('r') => Some(LoginAnswer::Retry),
+        KeyCode::Enter | KeyCode::Esc => Some(LoginAnswer::Continue),
+        KeyCode::Char('q') => Some(LoginAnswer::Quit),
+        KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            Some(LoginAnswer::Quit)
+        }
+        _ => None,
+    }
 }
 
 /// The minimal event read blocking startup requires.
@@ -195,11 +294,18 @@ impl App {
         // wait that tells the human to press Esc and then ignores it is worse
         // than one that admits it cannot be interrupted.
         let mut keys = TerminalKeys::enter();
+        let login = settle_login(
+            &vertex::check_login,
+            &mut StderrLogin {
+                reads: keys.cancellable(),
+            },
+        );
         let mut screen = StatusLine::over(files, keys.cancellable());
         self.refine_changeset(
             changeset,
             config.timeout,
             live_call(config.settings),
+            login,
             &mut screen,
             &mut keys,
         )
@@ -208,9 +314,9 @@ impl App {
     /// The same wait, over a diff that loaded after the alternate screen was
     /// already up: a target picked in the TUI, or a PR chosen from the picker.
     ///
-    /// `paint` draws one frame of the wait — the in-TUI equivalent of the
+    /// `tui` draws one frame of the wait — the in-TUI equivalent of the
     /// stderr status line, which cannot be used here because the next
-    /// `Terminal::draw` would paint over it.
+    /// `Terminal::draw` would paint over it — and asks when the login fails.
     ///
     /// The session check the pre-TUI path makes cannot be repeated as written:
     /// [`App::order_files_by_group`] records whatever grouping it installed, so
@@ -218,7 +324,7 @@ impl App {
     /// [`App::refine_over_saved_grouping`] instead, which is that same question
     /// answered before the recording — so a reopened review still refuses, and
     /// still says so.
-    pub fn refine_loaded_diff(&mut self, paint: &mut dyn FnMut(&str)) -> RefineOutcome {
+    pub fn refine_loaded_diff(&mut self, tui: &mut dyn TuiSurface) -> RefineOutcome {
         // Cleared before anything can return, because the main loop dispatches
         // on it: an exit that left it set would re-enter the wait every tick.
         self.refine_wanted = false;
@@ -228,7 +334,8 @@ impl App {
         self.refine_loaded_with(
             config.timeout,
             live_call(config.settings),
-            paint,
+            &vertex::check_login,
+            tui,
             &mut TerminalKeys::borrowed(),
         )
     }
@@ -249,7 +356,9 @@ impl App {
         keys: &mut dyn CancelKeys,
     ) -> RefineOutcome {
         match self.refinable_over_a_new_session() {
-            Ok(changeset) => self.refine_changeset(changeset, timeout, call, screen, keys),
+            Ok(changeset) => {
+                self.refine_changeset(changeset, timeout, call, Login::Ready, screen, keys)
+            }
             Err(why) => RefineOutcome::Skipped(why),
         }
     }
@@ -262,7 +371,8 @@ impl App {
         &mut self,
         timeout: Duration,
         call: RefineCall,
-        paint: &mut dyn FnMut(&str),
+        check_login: &dyn Fn() -> Result<(), String>,
+        tui: &mut dyn TuiSurface,
         keys: &mut dyn CancelKeys,
     ) -> RefineOutcome {
         self.refine_wanted = false;
@@ -278,14 +388,16 @@ impl App {
         };
         let files = changeset.len();
         let cancellable = keys.cancellable();
+        let login = settle_login(check_login, tui);
         let outcome = self.refine_changeset(
             changeset,
             timeout,
             call,
+            login,
             &mut Painted {
                 files,
                 cancellable,
-                paint,
+                tui,
             },
             keys,
         );
@@ -339,6 +451,7 @@ impl App {
         changeset: Changeset,
         timeout: Duration,
         call: RefineCall,
+        login: Login,
         screen: &mut dyn Screen,
         keys: &mut dyn CancelKeys,
     ) -> RefineOutcome {
@@ -358,15 +471,21 @@ impl App {
             refine_attempt(&settings, &prompt, attempts, outcome)
         };
 
-        let (outcome, attempts) = await_refined(
-            &changeset,
-            &heuristic,
-            prompt.clone(),
-            timeout,
-            call,
-            screen,
-            keys,
-        );
+        let (outcome, attempts) = match login {
+            Login::Ready => await_refined(
+                &changeset,
+                &heuristic,
+                prompt.clone(),
+                timeout,
+                call,
+                screen,
+                keys,
+            ),
+            // Recorded as the failed attempt it always was, so the feedback
+            // log reads the same whether or not the human was asked.
+            Login::Declined(reason) => (Waited::Failed(reason), 1),
+            Login::Quit => return RefineOutcome::Quit,
+        };
         screen.finish();
 
         // Every wait passes through here, so the header's cancelled state is
@@ -637,15 +756,56 @@ impl<W: Write> Screen for StatusLine<W> {
 pub struct Painted<'a> {
     files: usize,
     cancellable: bool,
-    paint: &'a mut dyn FnMut(&str),
+    tui: &'a mut dyn TuiSurface,
 }
 
 impl Screen for Painted<'_> {
     fn waiting(&mut self, elapsed: Duration, attempt: u32) {
-        (self.paint)(&status_text(self.files, elapsed, attempt, self.cancellable));
+        self.tui
+            .paint(&status_text(self.files, elapsed, attempt, self.cancellable));
     }
 
     fn finish(&mut self) {}
+}
+
+/// The pre-TUI login prompt: two lines on stderr, answered with one key while
+/// [`TerminalKeys`] holds raw mode.
+struct StderrLogin {
+    /// Whether raw mode is on, and so whether a key can be read at all.
+    reads: bool,
+}
+
+impl LoginPrompt for StderrLogin {
+    fn ask(&mut self, reason: &str) -> LoginAnswer {
+        if !self.reads {
+            return LoginAnswer::Continue;
+        }
+        // Raw mode turns off the newline's carriage return.
+        let text = login_text(reason).replace('\n', "\r\n");
+        let mut err = std::io::stderr();
+        let _ = write!(err, "\r\x1b[2K{text}\r\n");
+        let _ = err.flush();
+        loop {
+            match event::read() {
+                Ok(event) => {
+                    if let Some(answer) = login_answer(&event) {
+                        return answer;
+                    }
+                }
+                // stdin went away mid-prompt: nobody is left to answer.
+                Err(_) => return LoginAnswer::Continue,
+            }
+        }
+    }
+
+    fn log_in(&mut self) -> Result<(), String> {
+        // gcloud reads a line-buffered terminal, and raw mode is back on
+        // before the check runs again.
+        let _ = crossterm::terminal::disable_raw_mode();
+        let result = vertex::log_in();
+        let _ = crossterm::terminal::enable_raw_mode();
+        result
+    }
 }
 
 /// The real keyboard, in raw mode for the duration of the wait so a keypress
@@ -802,6 +962,80 @@ mod tests {
             kind: KeyEventKind::Press,
             state: KeyEventState::NONE,
         }))
+    }
+
+    /// A prompt whose gcloud cannot be found, recording what it was shown.
+    struct NoGcloud {
+        answers: Vec<LoginAnswer>,
+        asked: Vec<String>,
+    }
+
+    impl LoginPrompt for NoGcloud {
+        fn ask(&mut self, reason: &str) -> LoginAnswer {
+            self.asked.push(reason.to_string());
+            self.answers.remove(0)
+        }
+
+        fn log_in(&mut self) -> Result<(), String> {
+            Err("could not run gcloud: No such file or directory".to_string())
+        }
+    }
+
+    /// A gcloud that failed to run is the reason the next check fails, so the
+    /// next ask says so, once.
+    #[test]
+    fn a_login_that_could_not_run_is_shown_with_the_next_failure() {
+        let mut prompt = NoGcloud {
+            answers: vec![
+                LoginAnswer::LogIn,
+                LoginAnswer::Retry,
+                LoginAnswer::Continue,
+            ],
+            asked: Vec::new(),
+        };
+        let login = settle_login(&|| Err("no Google credentials".to_string()), &mut prompt);
+
+        assert!(matches!(login, Login::Declined(reason) if reason == "no Google credentials"));
+        assert_eq!(
+            prompt.asked,
+            [
+                "no Google credentials",
+                "could not run gcloud: No such file or directory; no Google credentials",
+                "no Google credentials",
+            ]
+        );
+    }
+
+    #[test]
+    fn a_passing_login_is_never_asked_about() {
+        let mut prompt = NoGcloud {
+            answers: Vec::new(),
+            asked: Vec::new(),
+        };
+        assert!(matches!(
+            settle_login(&|| Ok(()), &mut prompt),
+            Login::Ready
+        ));
+        assert!(prompt.asked.is_empty());
+    }
+
+    #[test]
+    fn each_prompt_key_answers_as_the_prompt_says() {
+        let ctrl_c = Event::Key(KeyEvent {
+            code: KeyCode::Char('c'),
+            modifiers: KeyModifiers::CONTROL,
+            kind: KeyEventKind::Press,
+            state: KeyEventState::NONE,
+        });
+        let answer = |event: std::io::Result<Event>| login_answer(&event.unwrap());
+        assert_eq!(answer(press(KeyCode::Char('l'))), Some(LoginAnswer::LogIn));
+        assert_eq!(answer(press(KeyCode::Char('r'))), Some(LoginAnswer::Retry));
+        assert_eq!(answer(press(KeyCode::Enter)), Some(LoginAnswer::Continue));
+        assert_eq!(answer(press(KeyCode::Esc)), Some(LoginAnswer::Continue));
+        assert_eq!(answer(press(KeyCode::Char('q'))), Some(LoginAnswer::Quit));
+        assert_eq!(login_answer(&ctrl_c), Some(LoginAnswer::Quit));
+        assert_eq!(answer(press(KeyCode::Char('x'))), None, "read past");
+        assert_eq!(answer(Ok(Event::Resize(80, 24))), None);
     }
 
     #[test]

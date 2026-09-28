@@ -309,7 +309,12 @@ first attempt.
 
 Per `gd-26r.14` point 4, all of these collapse to the same result:
 
-- HTTP error, auth/ADC failure, timeout, cancellation, retry-also-unparseable
+- HTTP error, timeout, cancellation, retry-also-unparseable
+
+A failed login is the exception (`gd-k95`). tuicr checks it before the prompt
+is sent, because it is the one failure the human can fix on the spot, and asks
+whether to log in, retry, continue, or quit. Continuing is this outcome, and
+the feedback log records the same failed attempt it always did.
 
 The result: **keep the heuristic partition, `source` stays `Heuristics`, apply
 nothing partial, surface the reason.** Application is atomic (`gd-26r.14`

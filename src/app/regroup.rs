@@ -314,7 +314,7 @@ impl App {
                 RefineOutcome::Failed(reason) => RefineAttemptOutcome::Failed {
                     reason: reason.clone(),
                 },
-                RefineOutcome::Refined { .. } | RefineOutcome::Skipped(_) => {
+                RefineOutcome::Refined { .. } | RefineOutcome::Skipped(_) | RefineOutcome::Quit => {
                     unreachable!("fall_back only ever receives a failed refine outcome")
                 }
             };

@@ -314,7 +314,9 @@ Either way the wait happens once per target you pick, and again each time you pi
 
 The cancel keys need a terminal on stdin. When there is not one — a run with no controlling terminal, such as CI or a detached process — the wait keeps its timeout but loses its cancel key, and `Ctrl-C` ends tuicr as usual instead of opening the heuristic session.
 
-Cancelling, timing out, missing credentials, a network failure, a response tuicr cannot read — all land in the same place: the review opens with the heuristic grouping, which never fails and always covers every file. Refine can only improve the grouping or leave it alone; it can never leave you without one.
+Cancelling, timing out, a network failure, a response tuicr cannot read — all land in the same place: the review opens with the heuristic grouping, which never fails and always covers every file. Refine can only improve the grouping or leave it alone; it can never leave you without one.
+
+**A lapsed login asks first.** Before sending anything, tuicr checks that your credentials still refresh. When they do not, it stops and asks: `l` runs `gcloud auth application-default login` and checks again, `r` checks again after you log in somewhere else, `Enter` or `Esc` opens the review on the heuristic grouping, and `q` quits tuicr. With no terminal on stdin nobody can answer, so tuicr falls back to the heuristics without asking.
 
 **A repaired answer says so.** An answer that invents a path, places one twice, or omits one is not rejected: the offending placement is repaired against the heuristic grouping and counted, and the count is shown as a startup warning (`docs/GROUPS_CONTRACT.md`). A warning there means the grouping you are reading is partly tuicr's, not the model's.
 
@@ -342,7 +344,7 @@ Refine calls Vertex AI directly over HTTPS with your existing application defaul
 export GOOGLE_CLOUD_PROJECT=my-project
 ```
 
-Only user credentials are supported. A service account key is not, and refine falls back to the heuristics rather than failing the startup.
+Only user credentials are supported. tuicr treats a service account key as a failed login and asks what to do, as above.
 
 ### Overriding the arm for one run
 
