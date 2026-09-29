@@ -818,10 +818,9 @@ impl<'a> Doc<'a> {
         for (line, is_head, cells) in rows {
             let bar = (border, "│".to_string());
             let gap = (self.look.base, " ".to_string());
+            // No outer bars: an underline cannot stop exactly at a bar at the
+            // table's edge, it overshoots by half a cell.
             let mut out: Runs = Vec::new();
-            if clean {
-                out.extend([bar.clone(), gap.clone()]);
-            }
             for (i, width) in widths.iter().enumerate() {
                 if i > 0 {
                     out.extend([gap.clone(), bar.clone(), gap.clone()]);
@@ -835,14 +834,12 @@ impl<'a> Doc<'a> {
                 };
                 out.push((self.look.base, " ".repeat(left)));
                 out.extend(cell);
-                // Trailing pad on the last column only makes rows wrap.
+                // Trailing pad on the last column only makes rows wrap, except
+                // where it carries the header underline to the table's edge.
                 let last_col = i + 1 == widths.len();
-                if !last_col || clean {
+                if !last_col || (underline_head && is_head) {
                     out.push((self.look.base, " ".repeat(right)));
                 }
-            }
-            if clean {
-                out.extend([gap.clone(), bar.clone()]);
             }
             // Underlining the bars too joins the rule to them; the border
             // colour keeps the rule quieter than the header text.
@@ -857,11 +854,7 @@ impl<'a> Doc<'a> {
             self.overrides.insert(line, out);
         }
         let segs: Vec<String> = widths.iter().map(|w| "─".repeat(*w)).collect();
-        let delim = if clean {
-            format!("├─{}─┤", segs.join("─┼─"))
-        } else {
-            segs.join("─┼─")
-        };
+        let delim = segs.join("─┼─");
         for line in self.lines_of(&t.range) {
             if row_lines.contains(&line) {
                 continue;
