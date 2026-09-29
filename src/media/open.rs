@@ -1,7 +1,7 @@
 //! Fetch media referenced from a pull request into a local cache, and hand it
 //! to the OS viewer or a browser.
 
-use std::io;
+use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::Duration;
@@ -24,6 +24,11 @@ pub enum MediaError {
     Http {
         status: u16,
     },
+    /// A 2xx response that is neither a known image/video Content-Type nor
+    /// sniffs as one, such as an HTML error page.
+    NotMedia {
+        content_type: String,
+    },
     Io(String),
     Open(String),
 }
@@ -36,6 +41,10 @@ impl std::fmt::Display for MediaError {
                 "media request failed with status {status}: run `gh auth login`"
             ),
             MediaError::Http { status } => write!(f, "media request failed with status {status}"),
+            MediaError::NotMedia { content_type } => write!(
+                f,
+                "media URL did not return an image or video (Content-Type: {content_type})"
+            ),
             MediaError::Io(message) => write!(f, "media io error: {message}"),
             MediaError::Open(message) => write!(f, "failed to open media: {message}"),
         }
@@ -47,12 +56,13 @@ impl std::error::Error for MediaError {}
 /// Download `media` into the per-user cache dir, reusing a cached file.
 /// Blocking; call off the UI thread.
 pub fn fetch(media: &MediaRef, repo: Option<&ForgeRepository>) -> Result<PathBuf, MediaError> {
-    let token = if wants_token(&media.url, repo) {
+    let token_wanted = wants_token(&media.url, repo);
+    let token = if token_wanted {
         repo.and_then(|repo| gh_token(&repo.host))
     } else {
         None
     };
-    fetch_to_dir(&media.url, token.as_deref(), &cache_dir())
+    fetch_to_dir(&media.url, token_wanted, token.as_deref(), &cache_dir())
 }
 
 /// `fetch`, then hand the file to the OS viewer. Opens the URL in the browser
@@ -63,17 +73,33 @@ pub fn open_external(
     media: &MediaRef,
     repo: Option<&ForgeRepository>,
 ) -> Result<Opened, MediaError> {
-    match fetch(media, repo) {
+    open_with(
+        &media.url,
+        wants_token(&media.url, repo),
+        fetch(media, repo),
+        spawn_viewer,
+    )
+}
+
+/// `open_external`'s routing of a finished fetch of `url`, with the OS
+/// viewer passed in as `spawn` so tests can observe what it is handed.
+fn open_with(
+    url: &str,
+    token_wanted: bool,
+    fetched: Result<PathBuf, MediaError>,
+    spawn: impl FnOnce(&str) -> Result<(), MediaError>,
+) -> Result<Opened, MediaError> {
+    match fetched {
         Ok(path) if path.extension().is_none() => {
-            spawn_viewer(&media.url)?;
+            spawn(url)?;
             Ok(Opened::Browser)
         }
         Ok(path) => {
-            spawn_viewer(path.as_os_str().to_string_lossy().as_ref())?;
+            spawn(path.as_os_str().to_string_lossy().as_ref())?;
             Ok(Opened::File(path))
         }
-        Err(MediaError::Unauthorized { .. }) if wants_token(&media.url, repo) => {
-            spawn_viewer(&media.url)?;
+        Err(MediaError::Unauthorized { .. }) if token_wanted => {
+            spawn(url)?;
             Ok(Opened::Browser)
         }
         Err(err) => Err(err),
@@ -196,9 +222,28 @@ fn extension_from_url_path(url: &str) -> Option<&str> {
         .then_some(ext)
 }
 
-/// Download `url` into `dir`, reusing a cached file. Blocking; the internal
-/// seam `fetch`/`open_external` build on.
-fn fetch_to_dir(url: &str, token: Option<&str>, dir: &Path) -> Result<PathBuf, MediaError> {
+/// Whether a body starting with `head` is a png, jpeg, gif or webp image, or
+/// an mp4/mov (ISO `ftyp` box) or webm (EBML) container.
+fn sniffs_as_media(head: &[u8]) -> bool {
+    head.starts_with(b"\x89PNG\r\n\x1a\n")
+        || head.starts_with(b"\xFF\xD8\xFF")
+        || head.starts_with(b"GIF87a")
+        || head.starts_with(b"GIF89a")
+        || (head.starts_with(b"RIFF") && head.get(8..12) == Some(b"WEBP".as_slice()))
+        || head.get(4..8) == Some(b"ftyp".as_slice())
+        || head.starts_with(b"\x1A\x45\xDF\xA3")
+}
+
+/// Download `url` into `dir`, reusing a cached file. Only media is cached: a
+/// 2xx body with no known media Content-Type must sniff as media, else it is
+/// `NotMedia`, or `Unauthorized` when `token_wanted` (a login page served in
+/// place of a private asset). Blocking; the internal seam `fetch` builds on.
+fn fetch_to_dir(
+    url: &str,
+    token_wanted: bool,
+    token: Option<&str>,
+    dir: &Path,
+) -> Result<PathBuf, MediaError> {
     let hash = format!("{:016x}", crate::hash::fnv1a_64(url.as_bytes()));
     if let Some(cached) = cached_file(dir, &hash) {
         return Ok(cached);
@@ -232,8 +277,23 @@ fn fetch_to_dir(url: &str, token: Option<&str>, dir: &Path) -> Result<PathBuf, M
         .headers()
         .get("content-type")
         .and_then(|value| value.to_str().ok())
-        .unwrap_or("");
-    let ext = extension_from_content_type(content_type).or_else(|| extension_from_url_path(url));
+        .unwrap_or("")
+        .to_string();
+    let known_type_ext = extension_from_content_type(&content_type);
+    let mut reader = response.body_mut().as_reader();
+    let mut head = Vec::new();
+    (&mut reader)
+        .take(16)
+        .read_to_end(&mut head)
+        .map_err(|err| MediaError::Io(err.to_string()))?;
+    if known_type_ext.is_none() && !sniffs_as_media(&head) {
+        return Err(if token_wanted {
+            MediaError::Unauthorized { status }
+        } else {
+            MediaError::NotMedia { content_type }
+        });
+    }
+    let ext = known_type_ext.or_else(|| extension_from_url_path(url));
 
     let file_name = match ext {
         Some(ext) => format!("{hash}.{ext}"),
@@ -246,7 +306,7 @@ fn fetch_to_dir(url: &str, token: Option<&str>, dir: &Path) -> Result<PathBuf, M
     let persist_result = (|| -> io::Result<()> {
         create_private_dir(dir)?;
         let mut file = tempfile::NamedTempFile::new_in(dir)?;
-        let mut reader = response.body_mut().as_reader();
+        file.write_all(&head)?;
         io::copy(&mut reader, &mut file)?;
         file.persist(&final_path)?;
         Ok(())
@@ -263,6 +323,8 @@ mod tests {
     use std::net::{TcpListener, TcpStream};
     use std::sync::{Arc, Mutex};
     use std::thread;
+
+    const PNG_MAGIC: &[u8] = b"\x89PNG\r\n\x1a\n";
 
     /// A canned response the stub server sends for one request.
     struct StubResponse {
@@ -310,8 +372,15 @@ mod tests {
         // The stub serves one request per connection, so tell the client not
         // to reuse it; a pooled reuse after the redirect hits a closed socket.
         write!(stream, "Connection: close\r\n").expect("write connection header");
-        write!(stream, "Content-Length: {}\r\n\r\n", response.body.len())
-            .expect("write blank line");
+        let declares_length = response
+            .headers
+            .iter()
+            .any(|(name, _)| name.eq_ignore_ascii_case("content-length"));
+        if !declares_length {
+            write!(stream, "Content-Length: {}\r\n", response.body.len())
+                .expect("write content length");
+        }
+        write!(stream, "\r\n").expect("write blank line");
         stream.write_all(&response.body).expect("write body");
         stream.flush().expect("flush response");
     }
@@ -422,7 +491,7 @@ mod tests {
             body: b"PNGDATA".to_vec(),
         });
 
-        let path = fetch_to_dir(&url, None, dir.path()).expect("fetch succeeds");
+        let path = fetch_to_dir(&url, false, None, dir.path()).expect("fetch succeeds");
 
         let expected_name = format!("{:016x}.png", crate::hash::fnv1a_64(url.as_bytes()));
         assert_eq!(path, dir.path().join(expected_name));
@@ -438,7 +507,7 @@ mod tests {
             body: b"MP4DATA".to_vec(),
         });
 
-        let path = fetch_to_dir(&url, None, dir.path()).expect("fetch succeeds");
+        let path = fetch_to_dir(&url, false, None, dir.path()).expect("fetch succeeds");
 
         assert_eq!(path.extension().and_then(|e| e.to_str()), Some("mp4"));
     }
@@ -452,7 +521,7 @@ mod tests {
             body: b"JPGDATA".to_vec(),
         });
 
-        let path = fetch_to_dir(&url, None, dir.path()).expect("fetch succeeds");
+        let path = fetch_to_dir(&url, false, None, dir.path()).expect("fetch succeeds");
 
         assert_eq!(path.extension().and_then(|e| e.to_str()), Some("jpg"));
     }
@@ -465,12 +534,12 @@ mod tests {
             StubResponse {
                 status: 200,
                 headers: vec![("Content-Type", "application/octet-stream".to_string())],
-                body: b"BYTES".to_vec(),
+                body: PNG_MAGIC.to_vec(),
             }
         });
         let url = format!("{url}/shot.PNG?x=1");
 
-        let path = fetch_to_dir(&url, None, dir.path()).expect("fetch succeeds");
+        let path = fetch_to_dir(&url, false, None, dir.path()).expect("fetch succeeds");
 
         assert_eq!(path.extension().and_then(|e| e.to_str()), Some("PNG"));
     }
@@ -481,11 +550,11 @@ mod tests {
         let (url, _seen) = spawn_server(1, |_index, _path, _base_url| StubResponse {
             status: 200,
             headers: vec![("Content-Type", "application/octet-stream".to_string())],
-            body: b"BYTES".to_vec(),
+            body: PNG_MAGIC.to_vec(),
         });
         let url = format!("{url}/x.jar");
 
-        let path = fetch_to_dir(&url, None, dir.path()).expect("fetch succeeds");
+        let path = fetch_to_dir(&url, false, None, dir.path()).expect("fetch succeeds");
 
         let expected_name = format!("{:016x}", crate::hash::fnv1a_64(url.as_bytes()));
         assert_eq!(path, dir.path().join(expected_name));
@@ -503,7 +572,7 @@ mod tests {
             body: b"PNGDATA".to_vec(),
         });
 
-        fetch_to_dir(&url, None, &dir).expect("fetch succeeds");
+        fetch_to_dir(&url, false, None, &dir).expect("fetch succeeds");
 
         let mode = std::fs::metadata(&dir)
             .expect("dir metadata")
@@ -520,12 +589,12 @@ mod tests {
             StubResponse {
                 status: 200,
                 headers: vec![("Content-Type", "application/octet-stream".to_string())],
-                body: b"BYTES".to_vec(),
+                body: PNG_MAGIC.to_vec(),
             }
         });
         let url = format!("{url}/assets/abc");
 
-        let path = fetch_to_dir(&url, None, dir.path()).expect("fetch succeeds");
+        let path = fetch_to_dir(&url, false, None, dir.path()).expect("fetch succeeds");
 
         let expected_name = format!("{:016x}", crate::hash::fnv1a_64(url.as_bytes()));
         assert_eq!(path, dir.path().join(expected_name));
@@ -553,7 +622,7 @@ mod tests {
             }
         });
 
-        let path = fetch_to_dir(&url, Some("tok"), dir.path()).expect("fetch succeeds");
+        let path = fetch_to_dir(&url, true, Some("tok"), dir.path()).expect("fetch succeeds");
 
         let seen = seen.lock().expect("lock seen requests");
         assert_eq!(seen.len(), 2);
@@ -576,7 +645,7 @@ mod tests {
             body: Vec::new(),
         });
 
-        let error = fetch_to_dir(&url, None, dir.path()).expect_err("fetch fails");
+        let error = fetch_to_dir(&url, false, None, dir.path()).expect_err("fetch fails");
 
         assert_eq!(error, MediaError::Unauthorized { status: 404 });
     }
@@ -591,7 +660,7 @@ mod tests {
                 body: Vec::new(),
             });
 
-            let error = fetch_to_dir(&url, None, dir.path()).expect_err("fetch fails");
+            let error = fetch_to_dir(&url, false, None, dir.path()).expect_err("fetch fails");
 
             assert_eq!(error, MediaError::Unauthorized { status });
         }
@@ -606,7 +675,7 @@ mod tests {
             body: Vec::new(),
         });
 
-        let error = fetch_to_dir(&url, None, dir.path()).expect_err("fetch fails");
+        let error = fetch_to_dir(&url, false, None, dir.path()).expect_err("fetch fails");
 
         assert_eq!(error, MediaError::Http { status: 500 });
     }
@@ -626,7 +695,7 @@ mod tests {
             headers: vec![("Content-Type", "image/png".to_string())],
             body: b"PNGDATA".to_vec(),
         });
-        let fetched = fetch_to_dir(&ok_url, None, dir.path()).expect("fetch succeeds");
+        let fetched = fetch_to_dir(&ok_url, false, None, dir.path()).expect("fetch succeeds");
         assert_eq!(dir_entries(dir.path()), vec![fetched.clone()]);
 
         let (error_url, _seen) = spawn_server(1, |_index, _path, _base_url| StubResponse {
@@ -634,8 +703,200 @@ mod tests {
             headers: vec![],
             body: Vec::new(),
         });
-        fetch_to_dir(&error_url, None, dir.path()).expect_err("fetch fails");
+        fetch_to_dir(&error_url, false, None, dir.path()).expect_err("fetch fails");
         assert_eq!(dir_entries(dir.path()), vec![fetched]);
+    }
+
+    #[test]
+    fn fetch_to_dir_persists_nothing_when_the_body_is_cut_short() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (url, seen) = spawn_server(2, |_index, _path, _base_url| StubResponse {
+            status: 200,
+            headers: vec![
+                ("Content-Type", "image/png".to_string()),
+                ("Content-Length", "100".to_string()),
+            ],
+            body: vec![0u8; 40],
+        });
+
+        let error = fetch_to_dir(&url, false, None, dir.path()).expect_err("fetch fails");
+        assert!(matches!(error, MediaError::Io(_)), "{error:?}");
+        assert_eq!(dir_entries(dir.path()), Vec::<PathBuf>::new());
+
+        fetch_to_dir(&url, false, None, dir.path()).expect_err("refetch fails");
+        assert_eq!(seen.lock().expect("lock seen requests").len(), 2);
+    }
+
+    #[test]
+    fn fetch_to_dir_refuses_and_does_not_cache_an_html_page() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (url, seen) = spawn_server(2, |_index, _path, _base_url| StubResponse {
+            status: 200,
+            headers: vec![("Content-Type", "text/html; charset=utf-8".to_string())],
+            body: b"<html>sign in</html>".to_vec(),
+        });
+        let url = format!("{url}/shot.png");
+
+        let error = fetch_to_dir(&url, false, None, dir.path()).expect_err("fetch fails");
+        assert_eq!(
+            error,
+            MediaError::NotMedia {
+                content_type: "text/html; charset=utf-8".to_string()
+            }
+        );
+        assert_eq!(dir_entries(dir.path()), Vec::<PathBuf>::new());
+
+        fetch_to_dir(&url, false, None, dir.path()).expect_err("refetch fails");
+        assert_eq!(seen.lock().expect("lock seen requests").len(), 2);
+    }
+
+    #[test]
+    fn fetch_to_dir_maps_a_login_page_to_unauthorized_when_a_token_was_wanted() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (url, _seen) = spawn_server(2, |index, _path, base_url| match index {
+            0 => StubResponse {
+                status: 302,
+                headers: vec![("Location", format!("{base_url}/login"))],
+                body: Vec::new(),
+            },
+            _ => StubResponse {
+                status: 200,
+                headers: vec![("Content-Type", "text/html".to_string())],
+                body: b"<html>sign in</html>".to_vec(),
+            },
+        });
+
+        let error = fetch_to_dir(&url, true, Some("tok"), dir.path()).expect_err("fetch fails");
+
+        assert_eq!(error, MediaError::Unauthorized { status: 200 });
+        assert_eq!(dir_entries(dir.path()), Vec::<PathBuf>::new());
+    }
+
+    #[test]
+    fn fetch_to_dir_refuses_an_unknown_type_whose_bytes_are_not_media() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (url, _seen) = spawn_server(1, |_index, _path, _base_url| StubResponse {
+            status: 200,
+            headers: vec![("Content-Type", "application/octet-stream".to_string())],
+            body: b"BYTES".to_vec(),
+        });
+
+        let error = fetch_to_dir(&url, false, None, dir.path()).expect_err("fetch fails");
+
+        assert_eq!(
+            error,
+            MediaError::NotMedia {
+                content_type: "application/octet-stream".to_string()
+            }
+        );
+        assert_eq!(dir_entries(dir.path()), Vec::<PathBuf>::new());
+    }
+
+    #[test]
+    fn sniffs_each_supported_image_and_video_container() {
+        for head in [
+            PNG_MAGIC.to_vec(),
+            b"\xFF\xD8\xFF\xE0".to_vec(),
+            b"GIF87a".to_vec(),
+            b"GIF89a".to_vec(),
+            b"RIFF\x00\x00\x00\x00WEBPVP8 ".to_vec(),
+            b"\x00\x00\x00\x18ftypmp42".to_vec(),
+            b"\x00\x00\x00\x14ftypqt  ".to_vec(),
+            b"\x1A\x45\xDF\xA3\x9F".to_vec(),
+        ] {
+            assert!(sniffs_as_media(&head), "{head:?}");
+        }
+        for head in [
+            b"<!DOCTYPE html>".to_vec(),
+            b"RIFF\x00\x00\x00\x00WAVEfmt ".to_vec(),
+            Vec::new(),
+        ] {
+            assert!(!sniffs_as_media(&head), "{head:?}");
+        }
+    }
+
+    /// Runs `open_with` on `fetched`, returning its result and every target
+    /// it handed the OS viewer.
+    fn route(
+        url: &str,
+        token_wanted: bool,
+        fetched: Result<PathBuf, MediaError>,
+    ) -> (Result<Opened, MediaError>, Vec<String>) {
+        let mut spawned = Vec::new();
+        let result = open_with(url, token_wanted, fetched, |target| {
+            spawned.push(target.to_string());
+            Ok(())
+        });
+        (result, spawned)
+    }
+
+    #[test]
+    fn open_with_sends_an_extensionless_download_to_the_browser_not_the_file() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (url, _seen) = spawn_server(1, |_index, _path, _base_url| StubResponse {
+            status: 200,
+            headers: vec![("Content-Type", "application/octet-stream".to_string())],
+            body: PNG_MAGIC.to_vec(),
+        });
+        let url = format!("{url}/assets/abc");
+
+        let fetched = fetch_to_dir(&url, false, None, dir.path());
+        let (result, spawned) = route(&url, false, fetched);
+
+        assert_eq!(result, Ok(Opened::Browser));
+        assert_eq!(spawned, vec![url]);
+    }
+
+    #[test]
+    fn open_with_hands_a_known_media_file_to_the_viewer() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (url, _seen) = spawn_server(1, |_index, _path, _base_url| StubResponse {
+            status: 200,
+            headers: vec![("Content-Type", "image/png".to_string())],
+            body: PNG_MAGIC.to_vec(),
+        });
+
+        let fetched = fetch_to_dir(&url, false, None, dir.path());
+        let (result, spawned) = route(&url, false, fetched);
+
+        let expected = dir.path().join(format!(
+            "{:016x}.png",
+            crate::hash::fnv1a_64(url.as_bytes())
+        ));
+        assert_eq!(result, Ok(Opened::File(expected.clone())));
+        assert_eq!(spawned, vec![expected.to_string_lossy().to_string()]);
+    }
+
+    #[test]
+    fn open_with_falls_back_to_the_browser_when_a_wanted_token_is_refused() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (url, _seen) = spawn_server(1, |_index, _path, _base_url| StubResponse {
+            status: 404,
+            headers: vec![],
+            body: Vec::new(),
+        });
+
+        let fetched = fetch_to_dir(&url, true, None, dir.path());
+        let (result, spawned) = route(&url, true, fetched);
+
+        assert_eq!(result, Ok(Opened::Browser));
+        assert_eq!(spawned, vec![url]);
+    }
+
+    #[test]
+    fn open_with_reports_unauthorized_without_spawning_when_no_token_was_wanted() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (url, _seen) = spawn_server(1, |_index, _path, _base_url| StubResponse {
+            status: 404,
+            headers: vec![],
+            body: Vec::new(),
+        });
+
+        let fetched = fetch_to_dir(&url, false, None, dir.path());
+        let (result, spawned) = route(&url, false, fetched);
+
+        assert_eq!(result, Err(MediaError::Unauthorized { status: 404 }));
+        assert_eq!(spawned, Vec::<String>::new());
     }
 
     #[test]
@@ -647,8 +908,8 @@ mod tests {
             body: b"PNGDATA".to_vec(),
         });
 
-        let first = fetch_to_dir(&url, None, dir.path()).expect("first fetch succeeds");
-        let second = fetch_to_dir(&url, None, dir.path()).expect("second fetch succeeds");
+        let first = fetch_to_dir(&url, false, None, dir.path()).expect("first fetch succeeds");
+        let second = fetch_to_dir(&url, false, None, dir.path()).expect("second fetch succeeds");
 
         assert_eq!(first, second);
         assert_eq!(seen.lock().expect("lock seen requests").len(), 1);

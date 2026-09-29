@@ -645,7 +645,6 @@ impl App {
             image_protocol: crate::media::graphics::ImageProtocolSetting::Auto,
             image_picker: None,
             media_viewer: None,
-            media_load_rx: None,
             media_open_rx: None,
             media_open_label: None,
             force_full_repaint: false,

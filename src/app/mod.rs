@@ -1694,8 +1694,6 @@ pub struct App {
     pub(crate) image_picker: Option<Option<ratatui_image::picker::Picker>>,
     /// Open media viewer, or `None` when `input_mode != MediaViewer`.
     pub(crate) media_viewer: Option<media::MediaViewer>,
-    /// Background-thread channel for the in-flight `media_jobs.load` call.
-    pub(crate) media_load_rx: Option<std::sync::mpsc::Receiver<media::LoadResult>>,
     /// Background-thread channel for the in-flight `media_jobs.open_external`
     /// call, from either the Enter handler or `MediaOpenExternal`.
     pub(crate) media_open_rx: Option<

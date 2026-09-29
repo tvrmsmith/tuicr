@@ -484,33 +484,33 @@ fn media_close_resets_mode_and_forces_a_repaint() {
     assert!(app.force_full_repaint);
 }
 
-// 19: after #18, a LoadResult arrives, poll.
+// 19: after #18, a LoadResult arrives, poll; then Enter reopens the viewer
+// on the same item. The old result must not fill the new viewer, which
+// starts at the same generation and index.
 #[test]
-fn a_load_result_after_close_does_not_panic() {
+fn a_load_result_after_close_does_not_reach_a_reopened_viewer() {
     let (mut app, fake) = setup(Some(Picker::halfblocks()));
     app.diff_state.cursor_line = 3;
     press_enter(&mut app);
     app.media_viewer.as_mut().unwrap().set_area(rect_r());
     app.poll_media_viewer_events();
     press_in_viewer(&mut app, Action::MediaClose);
-    let protocol = Picker::halfblocks()
-        .new_protocol(
-            image::DynamicImage::new_rgb8(4, 4),
-            rect_r().as_size(),
-            ratatui_image::Resize::Fit(None),
-        )
-        .unwrap();
-    fake.send_load(
-        0,
-        LoadResult {
-            generation: 0,
-            index: 1,
-            area: rect_r(),
-            outcome: Ok(protocol),
-        },
-    );
+    let stale = LoadResult {
+        generation: fake.load_calls.borrow()[0].generation,
+        index: 1,
+        area: rect_r(),
+        outcome: Ok(protocol_for(rect_r())),
+    };
+    let _ = fake.load_senders.borrow()[0].send(stale);
     app.poll_media_viewer_events();
     assert!(app.media_viewer.is_none());
+
+    press_enter(&mut app);
+    app.poll_media_viewer_events();
+    assert!(matches!(viewer(&app).current, MediaSlot::Loading));
+    app.media_viewer.as_mut().unwrap().set_area(rect_r());
+    app.poll_media_viewer_events();
+    assert_eq!(fake.load_calls.borrow().len(), 2);
 }
 
 // 20: cursor 1 (Intro), Enter.

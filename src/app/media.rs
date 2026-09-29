@@ -113,6 +113,9 @@ pub(crate) struct MediaViewer {
     /// The `(generation, index, area)` of the last `load` request issued, so
     /// `poll_media_viewer_events` doesn't re-request every tick.
     requested: Option<(u64, usize, Rect)>,
+    /// Channel for that request's in-flight `media_jobs.load` call. Owned by
+    /// the viewer so closing it drops any result still on its way.
+    load_rx: Option<Receiver<LoadResult>>,
 }
 
 pub(crate) enum MediaSlot {
@@ -131,6 +134,7 @@ impl MediaViewer {
             current: MediaSlot::Loading,
             area: None,
             requested: None,
+            load_rx: None,
         }
     }
 
@@ -277,7 +281,7 @@ impl App {
     }
 
     /// Called every main-loop tick. Drains a finished `load` result (dropping
-    /// it if it's stale or the viewer already closed) and, once the image
+    /// it if it's stale) and, once the image
     /// area is known, issues the next `load` request the current item and
     /// area need. Returns whether either step changed anything worth
     /// redrawing for.
@@ -288,15 +292,15 @@ impl App {
     }
 
     fn drain_media_load_result(&mut self) -> bool {
-        let Some(rx) = self.media_load_rx.as_ref() else {
+        let Some(viewer) = self.media_viewer.as_mut() else {
+            return false;
+        };
+        let Some(rx) = viewer.load_rx.as_ref() else {
             return false;
         };
         match rx.try_recv() {
             Ok(result) => {
-                self.media_load_rx = None;
-                let Some(viewer) = self.media_viewer.as_mut() else {
-                    return false;
-                };
+                viewer.load_rx = None;
                 if result.generation != viewer.generation || result.index != viewer.index {
                     return false;
                 }
@@ -312,10 +316,7 @@ impl App {
             }
             Err(mpsc::TryRecvError::Empty) => false,
             Err(mpsc::TryRecvError::Disconnected) => {
-                self.media_load_rx = None;
-                let Some(viewer) = self.media_viewer.as_mut() else {
-                    return false;
-                };
+                viewer.load_rx = None;
                 let is_current = viewer.requested.is_some_and(|(generation, index, _)| {
                     generation == viewer.generation && index == viewer.index
                 });
@@ -359,7 +360,7 @@ impl App {
             .pr_info
             .as_ref()
             .map(|info| info.details.repository.clone());
-        self.media_load_rx = Some(self.media_jobs.load(LoadRequest {
+        viewer.load_rx = Some(self.media_jobs.load(LoadRequest {
             generation,
             index,
             media,
