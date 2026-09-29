@@ -229,7 +229,8 @@ struct Doc<'a> {
     block: bool,
     /// Source lines the PR panel drops (fences, table delimiter rows).
     skip: HashSet<usize>,
-    headings: HashSet<usize>,
+    /// Heading level by source line.
+    headings: HashMap<usize, usize>,
     /// Right-aligned tag on a line's first row in the PR panel (code language).
     labels: HashMap<usize, Runs>,
 }
@@ -260,7 +261,7 @@ impl<'a> Doc<'a> {
             no_reflow: vec![false; n],
             block,
             skip: HashSet::new(),
-            headings: HashSet::new(),
+            headings: HashMap::new(),
             labels: HashMap::new(),
         };
         doc.walk(theme);
@@ -513,7 +514,7 @@ impl<'a> Doc<'a> {
         };
         let first = self.line_of(r.start);
         self.no_reflow[first] = true;
-        self.headings.insert(first);
+        self.headings.insert(first, level);
         if !self.src[r.start..].starts_with('#') {
             // Setext heading: text line(s), then an `===`/`---` underline.
             let last = self.line_of(r.end.saturating_sub(1));
@@ -795,6 +796,14 @@ impl<'a> Doc<'a> {
         }
 
         let clean = self.variant == Variant::Clean;
+        // In the PR panel a clean table spans the panel: the last column
+        // absorbs the spare width.
+        if clean && self.block {
+            let used = 4 + widths.iter().sum::<usize>() + 3 * widths.len().saturating_sub(1);
+            if let Some(last) = widths.last_mut() {
+                *last += self.rule_width.saturating_sub(used);
+            }
+        }
         let row_lines: Vec<usize> = rows.iter().map(|r| r.0).collect();
         // In the PR panel a clean table underlines its header instead of
         // spending a row on the delimiter.
@@ -824,8 +833,7 @@ impl<'a> Doc<'a> {
                 }
             }
             if underline_head && is_head {
-                let inner = out.len() - 1;
-                for (style, _) in out.iter_mut().take(inner).skip(1) {
+                for (style, _) in out.iter_mut().skip(1) {
                     *style = style.add_modifier(Modifier::UNDERLINED);
                 }
             }
@@ -1066,7 +1074,7 @@ pub fn render_block(
             i += 1;
             continue;
         }
-        prev_blank_or_heading = blank || doc.headings.contains(&i);
+        prev_blank_or_heading = blank || doc.headings.contains_key(&i);
         let mut logical = doc.render_line(i);
         let reflow = variant != Variant::Dimmed && !doc.no_reflow[i];
         let lead_end = doc.content_start(i, true);
@@ -1102,6 +1110,15 @@ pub fn render_block(
                 first.push((doc.look.base, " ".repeat(gap)));
                 first.extend(label.iter().cloned());
             }
+        }
+        // Clean h1/h2 carry their underline across the panel.
+        if compact
+            && doc.headings.get(&i).is_some_and(|level| *level <= 2)
+            && let Some(row) = rows.last_mut()
+        {
+            let style = row.last().map(|(s, _)| *s).unwrap_or(doc.look.h1);
+            let gap = inner.saturating_sub(runs_width(row));
+            row.push((style, " ".repeat(gap)));
         }
         for row in rows {
             push(&mut out, to_line(row));
