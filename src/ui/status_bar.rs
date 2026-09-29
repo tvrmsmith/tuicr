@@ -343,6 +343,7 @@ pub fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
             InputMode::SubmitActionPicker => " SUBMIT ".to_string(),
             InputMode::ThemePicker => " THEME ".to_string(),
             InputMode::GroupingFeedback => " FEEDBACK ".to_string(),
+            InputMode::MediaViewer => " MEDIA ".to_string(),
         };
 
         let mode_span = Span::styled(mode_str, styles::mode_style(theme));
@@ -395,6 +396,9 @@ pub fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
                 ),
                 InputMode::GroupingFeedback => Cow::Borrowed(
                     "   tab field \u{00b7} 1/2/3 verdict \u{00b7} j/k+space tag \u{00b7} \u{21b5} submit \u{00b7} esc skip",
+                ),
+                InputMode::MediaViewer => Cow::Borrowed(
+                    "   \u{2190}/\u{2192} browse \u{00b7} o open outside \u{00b7} esc close",
                 ),
             }
         };

@@ -9,6 +9,7 @@ pub mod file_list;
 pub mod grouping_feedback;
 pub mod help_popup;
 pub mod inline_commit_selector;
+pub mod media_viewer;
 pub mod pr_info_panel;
 pub mod refine_wait;
 pub mod row_height;

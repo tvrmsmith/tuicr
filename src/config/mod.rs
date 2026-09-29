@@ -281,6 +281,10 @@ pub struct AppConfig {
     /// `:set reviewed!`.
     pub show_reviewed: Option<bool>,
     pub diff_view: Option<String>,
+    /// In-TUI image rendering protocol for the PR body media viewer:
+    /// `"auto"` (the default), `"kitty"`, `"sixel"`, `"iterm2"`, or `"off"`
+    /// to always use the external opener.
+    pub image_protocol: Option<String>,
     /// Inline commit selector display order: `"descending"` (newest-first,
     /// the default) or `"ascending"` (oldest-first).
     pub commit_order: Option<String>,
@@ -370,6 +374,7 @@ const KNOWN_KEYS: &[&str] = &[
     "show_commits",
     "show_reviewed",
     "diff_view",
+    "image_protocol",
     "commit_order",
     "initial_commit_selection",
     "ignore_whitespace",
@@ -581,6 +586,19 @@ fn read_enum(
     }
 }
 
+/// Read `image_protocol`, validated with [`crate::media::graphics::ImageProtocolSetting::parse`]
+/// so the accepted values live in exactly one place.
+fn read_image_protocol(table: &toml::Table, warnings: &mut Vec<String>) -> Option<String> {
+    let raw = read_string(table, "image_protocol", warnings)?;
+    if let Err(err) = crate::media::graphics::ImageProtocolSetting::parse(Some(&raw)) {
+        warnings.push(format!(
+            "Warning: Config key 'image_protocol' {err}, ignoring"
+        ));
+        return None;
+    }
+    Some(raw)
+}
+
 fn read_ignore_whitespace(
     table: &toml::Table,
     warnings: &mut Vec<String>,
@@ -726,6 +744,7 @@ fn load_config_from_path(path: &Path) -> Result<ConfigLoadOutcome> {
             &["unified", "side-by-side"],
             &mut warnings,
         ),
+        image_protocol: read_image_protocol(table, &mut warnings),
         relative_line_numbers: read_bool(table, "relative_line_numbers", &mut warnings),
         commit_order: read_enum(
             table,
@@ -1549,6 +1568,40 @@ mod tests {
                 .and_then(|cfg| cfg.diff_view.as_deref()),
             Some("unified")
         );
+        assert!(outcome.warnings.is_empty());
+    }
+
+    // image_protocol
+
+    #[test]
+    fn should_parse_image_protocol_sixel() {
+        let outcome = parse_config("image_protocol = \"sixel\"\n");
+        assert_eq!(
+            outcome
+                .config
+                .as_ref()
+                .and_then(|cfg| cfg.image_protocol.as_deref()),
+            Some("sixel")
+        );
+        assert!(outcome.warnings.is_empty());
+    }
+
+    #[test]
+    fn should_warn_and_ignore_image_protocol_with_invalid_value() {
+        let outcome = parse_config("image_protocol = \"bogus\"\n");
+        assert_eq!(
+            outcome
+                .config
+                .as_ref()
+                .and_then(|cfg| cfg.image_protocol.as_deref()),
+            None
+        );
+        assert_eq!(outcome.warnings.len(), 1);
+    }
+
+    #[test]
+    fn should_not_warn_about_image_protocol_as_an_unknown_key() {
+        let outcome = parse_config("image_protocol = \"auto\"\n");
         assert!(outcome.warnings.is_empty());
     }
 

@@ -55,6 +55,7 @@ impl App {
         self.current_pr_head = Some(details.head_sha.clone());
         self.rearm_pr_head_watch();
         self.input_mode = InputMode::Normal;
+        self.media_viewer = None;
         self.focused_panel = FocusedPanel::Diff;
         self.clear_expanded_gaps();
         self.commit_list.clear();

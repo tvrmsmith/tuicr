@@ -192,6 +192,16 @@ pub enum Action {
     /// Ctrl-W — delete the word before the note cursor.
     FeedbackDeleteWord,
 
+    // Media viewer (`gd-lc6.1`)
+    /// `→` / `l` — advance to the next media item.
+    MediaNext,
+    /// `←` / `h` — go back to the previous media item.
+    MediaPrev,
+    /// `o` — open the current media item with the external opener.
+    MediaOpenExternal,
+    /// `Esc` / `q` — close the media viewer.
+    MediaClose,
+
     // No-op
     None,
 }
@@ -225,6 +235,19 @@ pub fn map_key_to_action_with_q_quits(
         InputMode::SubmitActionPicker => map_submit_action_picker_mode_with_q_quits(key, q_quits),
         InputMode::ThemePicker => map_theme_picker_mode(key),
         InputMode::GroupingFeedback => map_grouping_feedback_mode(key),
+        InputMode::MediaViewer => map_media_viewer_mode(key),
+    }
+}
+
+/// Key map for `InputMode::MediaViewer`, the full-screen viewer opened by
+/// Enter on a PR-description media placeholder row.
+fn map_media_viewer_mode(key: KeyEvent) -> Action {
+    match (key.code, key.modifiers) {
+        (KeyCode::Right | KeyCode::Char('l'), KeyModifiers::NONE) => Action::MediaNext,
+        (KeyCode::Left | KeyCode::Char('h'), KeyModifiers::NONE) => Action::MediaPrev,
+        (KeyCode::Char('o'), KeyModifiers::NONE) => Action::MediaOpenExternal,
+        (KeyCode::Esc | KeyCode::Char('q'), KeyModifiers::NONE) => Action::MediaClose,
+        _ => Action::None,
     }
 }
 
@@ -1313,6 +1336,68 @@ mod tests {
         assert_eq!(
             map_submit_action_picker_mode_with_q_quits(key(KeyCode::Char('q')), true),
             Action::Quit
+        );
+    }
+
+    #[test]
+    fn should_map_media_viewer_keys() {
+        let mode = InputMode::MediaViewer;
+        assert_eq!(
+            map_key_to_action_with_q_quits(key(KeyCode::Right), mode, DEFAULT_LEADER_KEY, false),
+            Action::MediaNext
+        );
+        assert_eq!(
+            map_key_to_action_with_q_quits(
+                key(KeyCode::Char('l')),
+                mode,
+                DEFAULT_LEADER_KEY,
+                false
+            ),
+            Action::MediaNext
+        );
+        assert_eq!(
+            map_key_to_action_with_q_quits(key(KeyCode::Left), mode, DEFAULT_LEADER_KEY, false),
+            Action::MediaPrev
+        );
+        assert_eq!(
+            map_key_to_action_with_q_quits(
+                key(KeyCode::Char('h')),
+                mode,
+                DEFAULT_LEADER_KEY,
+                false
+            ),
+            Action::MediaPrev
+        );
+        assert_eq!(
+            map_key_to_action_with_q_quits(
+                key(KeyCode::Char('o')),
+                mode,
+                DEFAULT_LEADER_KEY,
+                false
+            ),
+            Action::MediaOpenExternal
+        );
+        assert_eq!(
+            map_key_to_action_with_q_quits(key(KeyCode::Esc), mode, DEFAULT_LEADER_KEY, false),
+            Action::MediaClose
+        );
+        assert_eq!(
+            map_key_to_action_with_q_quits(
+                key(KeyCode::Char('q')),
+                mode,
+                DEFAULT_LEADER_KEY,
+                false
+            ),
+            Action::MediaClose
+        );
+        assert_eq!(
+            map_key_to_action_with_q_quits(
+                key(KeyCode::Char('j')),
+                mode,
+                DEFAULT_LEADER_KEY,
+                false
+            ),
+            Action::None
         );
     }
 }

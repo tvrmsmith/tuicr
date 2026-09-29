@@ -54,7 +54,7 @@ fn sample_pr_info() -> PullRequestInfo {
     }
 }
 
-fn build_pr_app() -> App {
+pub(crate) fn build_pr_app() -> App {
     let pr = PullRequestDiffSource {
         key: PrSessionKey::new(
             ForgeRepository::github("github.com", "owner", "repo"),
@@ -186,6 +186,101 @@ fn should_build_pr_info_panel_lines() {
     let lines =
         crate::ui::pr_info_panel::build_pr_info_lines(&sample_pr_info(), 80, &Theme::dark());
     assert!(lines.len() > 5);
+}
+
+#[test]
+fn media_at_cursor_finds_the_placeholder_row_on_a_media_only_line() {
+    let mut info = sample_pr_info();
+    info.details.body = "Intro\n![shot](https://x.test/a.png)\nOutro".to_string();
+
+    let mut app = build_pr_app();
+    app.pr_info = Some(info);
+    app.diff_state.viewport_width = 82; // content width 80 after the indicator columns
+    app.rebuild_annotations();
+
+    app.diff_state.cursor_line = 2;
+    assert_eq!(
+        crate::ui::pr_info_panel::pr_info_media_at_cursor(&app),
+        Some(0)
+    );
+}
+
+#[test]
+fn media_at_cursor_is_none_on_a_prose_row() {
+    let mut info = sample_pr_info();
+    info.details.body = "Intro\n![shot](https://x.test/a.png)\nOutro".to_string();
+
+    let mut app = build_pr_app();
+    app.pr_info = Some(info);
+    app.diff_state.viewport_width = 82;
+    app.rebuild_annotations();
+
+    app.diff_state.cursor_line = 1;
+    assert_eq!(
+        crate::ui::pr_info_panel::pr_info_media_at_cursor(&app),
+        None
+    );
+}
+
+#[test]
+fn media_at_cursor_is_none_below_the_pr_info_panel() {
+    let mut info = sample_pr_info();
+    info.details.body = "Intro\n![shot](https://x.test/a.png)\nOutro".to_string();
+
+    let mut app = build_pr_app();
+    app.pr_info = Some(info);
+    app.diff_state.viewport_width = 82;
+    app.rebuild_annotations();
+
+    let below = crate::ui::pr_info_panel::pr_info_render_height(&app);
+    app.diff_state.cursor_line = below;
+    assert!(!crate::ui::pr_info_panel::is_cursor_in_pr_info(&app));
+    assert_eq!(
+        crate::ui::pr_info_panel::pr_info_media_at_cursor(&app),
+        None
+    );
+}
+
+#[test]
+fn should_keep_pr_info_annotations_in_sync_with_rendered_lines_for_media_placeholders() {
+    // Mirrors `should_keep_pr_info_annotations_in_sync_with_rendered_lines_at_wrap_boundary`:
+    // media placeholders change the row count (a media-only line collapses,
+    // an inline one grows), so the annotation count must still track the
+    // renderer exactly or cursor↔line mapping drifts below the panel.
+    let bodies = [
+        "<p align=\"center\">\n  <img width=\"400\"\n    alt=\"Login page\"\n    src=\"https://x.test/login.png\">\n</p>",
+        "<video src=\"https://x.test/demo.mp4\"></video>\n\nhttps://github.com/user-attachments/assets/abc",
+    ];
+    for body in bodies {
+        let mut info = sample_pr_info();
+        info.details.body = body.to_string();
+
+        let mut app = build_pr_app();
+        app.pr_info = Some(info);
+        app.rebuild_annotations();
+
+        let annotated = app
+            .line_annotations
+            .iter()
+            .filter(|line| matches!(line, crate::app::AnnotatedLine::PrInfoLine { .. }))
+            .count();
+
+        let mut lines = Vec::new();
+        let mut line_idx = 0usize;
+        crate::ui::pr_info_panel::append_pr_info_section(
+            &app,
+            &mut lines,
+            &mut line_idx,
+            usize::MAX,
+        );
+
+        assert!(annotated > 0, "expected PR-info annotations for {body:?}");
+        assert_eq!(
+            annotated,
+            lines.len(),
+            "PrInfoLine annotation count must equal the rendered PR-info line count for {body:?}"
+        );
+    }
 }
 
 #[test]

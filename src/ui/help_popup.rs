@@ -594,6 +594,49 @@ pub fn render_help(frame: &mut Frame, app: &mut App) {
             ),
             Span::raw("Enter visual mode for range comments"),
         ]),
+        Line::from(vec![
+            Span::styled(
+                "  Enter     ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(
+                "On a media placeholder in the PR description: open the media viewer, or the OS viewer when the terminal cannot draw images",
+            ),
+        ]),
+        Line::from(""),
+        Line::from(Span::styled(
+            "Media Viewer",
+            Style::default().add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
+        )),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled(
+                "  \u{2192}/l       ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("Next media item"),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                "  \u{2190}/h       ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("Previous media item"),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                "  o         ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("Open the current item with the external opener"),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                "  Esc/q     ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("Close the viewer"),
+        ]),
         Line::from(""),
         Line::from(Span::styled(
             "Visual Mode",

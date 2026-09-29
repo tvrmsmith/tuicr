@@ -1714,6 +1714,17 @@ pub fn handle_theme_picker_action(app: &mut App, action: Action) {
     }
 }
 
+/// Handle input while `InputMode::MediaViewer` is open.
+pub fn handle_media_viewer_action(app: &mut App, action: Action) {
+    match action {
+        Action::MediaNext => app.media_next(),
+        Action::MediaPrev => app.media_prev(),
+        Action::MediaOpenExternal => app.media_open_external(),
+        Action::MediaClose => app.media_close(),
+        _ => {}
+    }
+}
+
 /// Handle input while the theme picker's `/` filter draft is open. Mirrors
 /// `handle_file_tree_prompt_action`.
 fn handle_theme_picker_filter_action(app: &mut App, action: Action) {
@@ -1786,7 +1797,9 @@ pub fn handle_diff_action(app: &mut App, action: Action) {
         Action::MouseScrollDown(n) => app.scroll_view_down(n),
         Action::MouseScrollUp(n) => app.scroll_view_up(n),
         Action::SelectFile => {
-            if let Some(hit) = app.get_gap_at_cursor() {
+            if let Some(index) = crate::ui::pr_info_panel::pr_info_media_at_cursor(app) {
+                app.enter_media(index);
+            } else if let Some(hit) = app.get_gap_at_cursor() {
                 match hit {
                     GapCursorHit::Expander(gap_id, dir) => {
                         let limit = if dir == ExpandDirection::Both {

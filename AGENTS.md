@@ -21,6 +21,7 @@ src/
 │   ├── editor_target.rs # Read-only snapshots of a PR revision for `$EDITOR`
 │   ├── file_filter.rs   # File-tree include/exclude regex filters + `/` path search
 │   ├── grouping.rs      # enable_grouping(), the grouping source ranking, group row state
+│   ├── media.rs         # Media viewer state, the lazy graphics probe, MediaJobs loader port
 │   ├── pr_head_watch.rs # PR head poll; reloads onto a moved head once the reviewer is in Normal mode
 │   ├── refine.rs        # Blocking refine: login prompt, stderr wait, in-TUI wait, cancel keys, outcome
 │   └── tree.rs          # Sidebar rows: the grouped and ungrouped file trees
@@ -106,6 +107,12 @@ src/
 │   ├── refine.rs        # Refine pass: prompt, response parsing, contract repairs
 │   └── vertex.rs        # One blocking Vertex AI call behind the refine pass
 │
+├── media/               # Images and videos referenced from a PR description
+│   ├── mod.rs           # MediaRef, MediaKind, MediaLine
+│   ├── detect.rs        # Find markdown images, <img>, <video>, bare user-attachments URLs
+│   ├── graphics.rs      # image_protocol setting, terminal probe, protocol choice
+│   └── open.rs          # Download/cache (gh token for private assets), external opener
+│
 ├── model/
 │   ├── mod.rs
 │   ├── comment.rs       # Comment, CommentType (Note/Suggestion/Issue/Praise)
@@ -129,7 +136,8 @@ src/
 └── ui/
     ├── mod.rs
     ├── app_layout.rs    # Main render function, file list, diff view with inline comments
-    ├── pr_info_panel.rs # PR description panel (status, reviewers, checks, body)
+    ├── pr_info_panel.rs # PR description panel (status, reviewers, checks, body, media rows)
+    ├── media_viewer.rs  # Full-screen in-TUI image viewer (InputMode::MediaViewer)
     ├── comment_navigator.rs # Sidebar comment index for jumping local/remote comments
     ├── status_bar.rs    # Header, status bar, command line rendering
     ├── help_popup.rs    # Help overlay (? key)
@@ -218,6 +226,7 @@ Repository-managed agent integrations:
 - `VisualSelect` - visual mode for range comments
 - `ThemePicker` - runtime `:theme` picker (`src/app/theme_picker.rs`, `src/ui/theme_picker.rs`): `j`/`k` live-previews a theme by reassigning `App::theme` (cheap, no extra invalidation — every renderer reads `&app.theme` per frame); `/` opens a filter draft (same shape as the file tree's `i`/`e`/`/` prompts, committed on `Enter`, discarded on `Esc` without touching the applied filter); `Enter` on the picker keeps the preview for the session — like every other `:set`/`:vim`/`:wrap` toggle it never writes `config.toml`; `Esc` on the picker reverts to a `Theme` snapshot taken on entry (`Theme` has a manual `Clone` impl since its `OnceLock` syntax-highlighter cache isn't `Clone`) `:theme <name>` applies directly without opening the picker.
 - `GroupingFeedback` - the verdict prompt (`gd-26r.42`). `map_grouping_feedback_mode` shapes keys into focus-agnostic `Action::Feedback*` variants and `handle_grouping_feedback_action` resolves them against `draft.focus`, because `j` moves the tag cursor under one field and types a literal `j` under another
+- `MediaViewer` - full-screen image viewer opened by `Enter` on a PR-description media placeholder row (`src/app/media.rs`, `src/ui/media_viewer.rs`). Entered only when the lazy graphics probe finds a usable protocol; otherwise `Enter` hands the item to the external opener instead
 
 **ReviewSession** (`src/model/review.rs`):
 

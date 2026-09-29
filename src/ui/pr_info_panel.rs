@@ -2,16 +2,26 @@ use ratatui::{
     style::Style,
     text::{Line, Span},
 };
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
-use crate::app::App;
+use crate::app::{AnnotatedLine, App};
 use crate::forge::traits::{
     PullRequestCheckStatus, PullRequestInfo, PullRequestIssueComment, PullRequestReviewStatus,
 };
+use crate::media::{MediaKind, MediaLine, MediaRef, detect::find_media};
 use crate::model::CommentType;
 use crate::theme::Theme;
 use crate::ui::comment_panel::{self, CommentTypePresentation};
 use crate::ui::diff_view::{HEADER_RULE, cursor_indicator, cursor_indicator_spaced};
 use crate::ui::styles;
+
+/// One rendered row of the PR-info panel body, carrying the index into
+/// [`pr_body_media`] when the row is a media placeholder.
+pub(crate) struct PrInfoRow {
+    pub line: Line<'static>,
+    /// Read by `pr_info_media_at_cursor`, the Enter handler's lookup.
+    pub media: Option<usize>,
+}
 
 /// Every rendered PR-info line is prefixed with a two-column cursor indicator
 /// (`cursor_indicator_spaced`), so the wrapped body has that much less room.
@@ -150,17 +160,24 @@ pub fn append_issue_comments_section(
     }
 }
 
-pub fn build_pr_info_lines(
+/// The media referenced from the PR body, in document order. The one list
+/// both [`PrInfoRow::media`] and the media viewer index into, so repeated
+/// URLs (e.g. badges) stay distinct entries.
+pub(crate) fn pr_body_media(info: &PullRequestInfo) -> Vec<MediaLine> {
+    find_media(&info.details.body, Some(&info.details.repository.host))
+}
+
+pub(crate) fn build_pr_info_rows(
     info: &PullRequestInfo,
     width: usize,
     theme: &Theme,
-) -> Vec<Line<'static>> {
-    let mut lines = Vec::new();
+) -> Vec<PrInfoRow> {
+    let mut rows = Vec::new();
     let content_width = width.max(1);
     let details = &info.details;
 
     push_section_header(
-        &mut lines,
+        &mut rows,
         theme,
         format!("═══ PR #{} {} ", details.number, details.title),
     );
@@ -170,15 +187,11 @@ pub fn build_pr_info_lines(
     } else {
         details.body.clone()
     };
-    lines.extend(comment_panel::markdown_body_lines(
-        theme,
-        &body,
-        content_width,
-    ));
+    push_body_rows(&mut rows, info, theme, &body, content_width);
 
-    push_blank(&mut lines);
+    push_blank(&mut rows);
     push_section_header(
-        &mut lines,
+        &mut rows,
         theme,
         format!("═══ PR #{} Status ", details.number),
     );
@@ -204,7 +217,7 @@ pub fn build_pr_info_lines(
         status_parts.push(humanize_token(mergeable));
     }
     push_wrapped_line(
-        &mut lines,
+        &mut rows,
         format!("Status: {}", status_parts.join(" · ")),
         content_width,
     );
@@ -223,11 +236,11 @@ pub fn build_pr_info_lines(
             updated.format("%Y-%m-%d %H:%M UTC")
         ));
     }
-    push_wrapped_line(&mut lines, branch_line, content_width);
+    push_wrapped_line(&mut rows, branch_line, content_width);
 
     if !info.requested_reviewers.is_empty() {
         push_wrapped_line(
-            &mut lines,
+            &mut rows,
             format!("Requested: {}", format_users(&info.requested_reviewers)),
             content_width,
         );
@@ -238,35 +251,175 @@ pub fn build_pr_info_lines(
     let commented = reviews_by_state(&info.latest_reviews, "COMMENTED");
     if !approved.is_empty() {
         push_wrapped_line(
-            &mut lines,
+            &mut rows,
             format!("Approved: {}", format_users(&approved)),
             content_width,
         );
     }
     if !changes.is_empty() {
         push_wrapped_line(
-            &mut lines,
+            &mut rows,
             format!("Changes requested: {}", format_users(&changes)),
             content_width,
         );
     }
     if !commented.is_empty() {
         push_wrapped_line(
-            &mut lines,
+            &mut rows,
             format!("Commented: {}", format_users(&commented)),
             content_width,
         );
     }
 
     if !info.checks.is_empty() {
-        push_blank(&mut lines);
-        push_wrapped_line(&mut lines, "Checks".to_string(), content_width);
+        push_blank(&mut rows);
+        push_wrapped_line(&mut rows, "Checks".to_string(), content_width);
         for check in &info.checks {
-            lines.push(format_check_line(check, content_width, theme));
+            push_row(&mut rows, format_check_line(check, content_width, theme));
         }
     }
 
-    lines
+    rows
+}
+
+/// Unchanged signature for existing callers: strips [`PrInfoRow::media`].
+pub fn build_pr_info_lines(
+    info: &PullRequestInfo,
+    width: usize,
+    theme: &Theme,
+) -> Vec<Line<'static>> {
+    build_pr_info_rows(info, width, theme)
+        .into_iter()
+        .map(|row| row.line)
+        .collect()
+}
+
+/// Index into [`pr_body_media`] of the media on the cursor row, when the
+/// cursor is on a rendered PR-info line. `handle_diff_action`'s `SelectFile`
+/// arm calls this and hands the index to `App::enter_media`.
+pub(crate) fn pr_info_media_at_cursor(app: &App) -> Option<usize> {
+    if !is_cursor_in_pr_info(app) {
+        return None;
+    }
+    let info = app.pr_info.as_ref()?;
+    let &AnnotatedLine::PrInfoLine { line_idx } =
+        app.line_annotations.get(app.diff_state.cursor_line)?
+    else {
+        return None;
+    };
+    let content_width = pr_info_content_width(app.diff_state.viewport_width);
+    build_pr_info_rows(info, content_width, &app.theme)
+        .get(line_idx)?
+        .media
+}
+
+/// Walks the source lines of `body` with their pre-wrapped row groups,
+/// replacing media-only line ranges with one placeholder row per media entry
+/// and appending a placeholder after any line that carries inline media.
+fn push_body_rows(
+    rows: &mut Vec<PrInfoRow>,
+    info: &PullRequestInfo,
+    theme: &Theme,
+    body: &str,
+    content_width: usize,
+) {
+    let media = pr_body_media(info);
+    let groups = comment_panel::markdown_body_line_groups(theme, body, content_width);
+
+    let mut source_idx = 0usize;
+    let mut media_idx = 0usize;
+    while source_idx < groups.len() {
+        let mut media_only_here = Vec::new();
+        let mut inline_here = Vec::new();
+        let mut covered_end = source_idx + 1;
+        while media_idx < media.len() && media[media_idx].line == source_idx {
+            if media[media_idx].media_only {
+                covered_end = covered_end.max(media[media_idx].lines.end);
+                media_only_here.push(media_idx);
+            } else {
+                inline_here.push(media_idx);
+            }
+            media_idx += 1;
+        }
+
+        if !media_only_here.is_empty() {
+            // Media starting inside the covered range (an <img> within a
+            // multi-line <video> block) shares its placeholder block;
+            // skipping it would stall `media_idx` for every later entry.
+            while media_idx < media.len() && media[media_idx].line < covered_end {
+                covered_end = covered_end.max(media[media_idx].lines.end);
+                media_only_here.push(media_idx);
+                media_idx += 1;
+            }
+            media_only_here.extend(inline_here);
+            media_only_here.sort_unstable();
+            for idx in media_only_here {
+                rows.push(placeholder_row(
+                    theme,
+                    idx,
+                    &media[idx].media,
+                    content_width,
+                ));
+            }
+            source_idx = covered_end;
+            continue;
+        }
+
+        for line in &groups[source_idx] {
+            rows.push(PrInfoRow {
+                line: line.clone(),
+                media: None,
+            });
+        }
+        for idx in inline_here {
+            rows.push(placeholder_row(
+                theme,
+                idx,
+                &media[idx].media,
+                content_width,
+            ));
+        }
+        source_idx += 1;
+    }
+}
+
+fn placeholder_row(theme: &Theme, media_idx: usize, media: &MediaRef, width: usize) -> PrInfoRow {
+    let label = format!("[{}: {}]", media_kind_word(&media.kind), media.label);
+    let text = truncate_placeholder(&label, width);
+    PrInfoRow {
+        line: Line::from(Span::styled(text, styles::branch_style(theme))),
+        media: Some(media_idx),
+    }
+}
+
+fn media_kind_word(kind: &MediaKind) -> &'static str {
+    match kind {
+        MediaKind::Image => "image",
+        MediaKind::Video => "video",
+        MediaKind::Attachment => "attachment",
+    }
+}
+
+/// Truncates `text` to `width` display columns, keeping the longest prefix
+/// that fits in `width - 1` columns and appending `…` when it is too wide.
+/// Never wraps: the result is always exactly one row.
+fn truncate_placeholder(text: &str, width: usize) -> String {
+    if text.width() <= width {
+        return text.to_string();
+    }
+    let limit = width.saturating_sub(1);
+    let mut kept = String::new();
+    let mut used = 0usize;
+    for c in text.chars() {
+        let cw = UnicodeWidthChar::width(c).unwrap_or(0);
+        if used + cw > limit {
+            break;
+        }
+        kept.push(c);
+        used += cw;
+    }
+    kept.push('…');
+    kept
 }
 
 pub fn issue_comment_display_lines(
@@ -298,23 +451,30 @@ fn format_issue_comment_lines(
     )
 }
 
-fn push_section_header(lines: &mut Vec<Line<'static>>, theme: &Theme, title: String) {
-    lines.push(Line::from(vec![
-        Span::styled(title, styles::file_header_style(theme)),
-        Span::styled(HEADER_RULE, styles::file_header_style(theme)),
-    ]));
+fn push_row(rows: &mut Vec<PrInfoRow>, line: Line<'static>) {
+    rows.push(PrInfoRow { line, media: None });
 }
 
-fn push_wrapped_line(lines: &mut Vec<Line<'static>>, text: String, width: usize) {
+fn push_section_header(rows: &mut Vec<PrInfoRow>, theme: &Theme, title: String) {
+    push_row(
+        rows,
+        Line::from(vec![
+            Span::styled(title, styles::file_header_style(theme)),
+            Span::styled(HEADER_RULE, styles::file_header_style(theme)),
+        ]),
+    );
+}
+
+fn push_wrapped_line(rows: &mut Vec<PrInfoRow>, text: String, width: usize) {
     let style = Style::default();
     for chunk in wrap_text(&text, width) {
-        lines.push(Line::from(Span::styled(chunk, style)));
+        push_row(rows, Line::from(Span::styled(chunk, style)));
     }
 }
 
-fn push_blank(lines: &mut Vec<Line<'static>>) {
-    if lines.last().is_some_and(|line| !line.spans.is_empty()) {
-        lines.push(Line::default());
+fn push_blank(rows: &mut Vec<PrInfoRow>) {
+    if rows.last().is_some_and(|row| !row.line.spans.is_empty()) {
+        push_row(rows, Line::default());
     }
 }
 
@@ -473,6 +633,177 @@ mod tests {
                 url: Some("https://github.com/owner/repo/pull/42#issuecomment-1".to_string()),
                 created_at: None,
             }],
+        }
+    }
+
+    /// Row text/media from row 1 (row 0 is the header) up to but excluding
+    /// the blank row that precedes the Status header.
+    fn body_rows(body: &str, width: usize) -> Vec<(String, Option<usize>)> {
+        let mut info = sample_info();
+        info.details.body = body.to_string();
+        let rows = build_pr_info_rows(&info, width, &Theme::dark());
+        let status_header = rows
+            .iter()
+            .position(|row| row_text(row).starts_with(&format!("═══ PR #{} Status ", 42)))
+            .expect("status header row");
+        rows[1..status_header - 1]
+            .iter()
+            .map(|row| (row_text(row), row.media))
+            .collect()
+    }
+
+    fn row_text(row: &PrInfoRow) -> String {
+        row.line
+            .spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect()
+    }
+
+    #[test]
+    fn media_only_line_is_replaced_by_a_placeholder_row() {
+        assert_eq!(
+            body_rows("Intro\n![shot](https://x.test/a.png)\nOutro", 80),
+            vec![
+                ("Intro".to_string(), None),
+                ("[image: shot]".to_string(), Some(0)),
+                ("Outro".to_string(), None),
+            ]
+        );
+    }
+
+    #[test]
+    fn inline_image_keeps_its_prose_row_and_appends_a_placeholder() {
+        assert_eq!(
+            body_rows("see ![a](https://x.test/1.png) end", 80),
+            vec![
+                ("see ![a](https://x.test/1.png) end".to_string(), None),
+                ("[image: a]".to_string(), Some(0)),
+            ]
+        );
+    }
+
+    #[test]
+    fn multi_line_media_only_html_block_keeps_lines_outside_its_range() {
+        let body = "<p align=\"center\">\n  <img width=\"400\"\n    alt=\"Login page\"\n    src=\"https://x.test/login.png\">\n</p>";
+        assert_eq!(
+            body_rows(body, 80),
+            vec![
+                ("<p align=\"center\">".to_string(), None),
+                ("[image: Login page]".to_string(), Some(0)),
+                ("</p>".to_string(), None),
+            ]
+        );
+    }
+
+    #[test]
+    fn two_media_only_images_on_one_line_each_get_their_own_placeholder() {
+        assert_eq!(
+            body_rows("![a](https://x.test/1.png) ![b](https://x.test/2.png)", 80),
+            vec![
+                ("[image: a]".to_string(), Some(0)),
+                ("[image: b]".to_string(), Some(1)),
+            ]
+        );
+    }
+
+    #[test]
+    fn video_and_bare_attachment_url_each_get_a_placeholder_and_their_own_index() {
+        let body = "<video src=\"https://x.test/demo.mp4\"></video>\n\nhttps://github.com/user-attachments/assets/abc";
+        assert_eq!(
+            body_rows(body, 80),
+            vec![
+                ("[video: demo.mp4]".to_string(), Some(0)),
+                (String::new(), None),
+                ("[attachment: abc]".to_string(), Some(1)),
+            ]
+        );
+
+        let mut info = sample_info();
+        info.details.body = body.to_string();
+        let media = pr_body_media(&info);
+        assert_eq!(media.len(), 2);
+        assert_eq!(media[0].media.kind, MediaKind::Video);
+        assert_eq!(media[0].media.url, "https://x.test/demo.mp4");
+        assert_eq!(media[1].media.kind, MediaKind::Attachment);
+        assert_eq!(
+            media[1].media.url,
+            "https://github.com/user-attachments/assets/abc"
+        );
+    }
+
+    #[test]
+    fn media_starting_inside_a_covered_range_joins_its_placeholder_block() {
+        let body = "<video controls>\n<img src=\"https://x.test/i.png\">\n<source src=\"https://x.test/v.mp4\">\n</video>\n\n![after](https://x.test/a.png)";
+        assert_eq!(
+            body_rows(body, 80),
+            vec![
+                ("[video: v.mp4]".to_string(), Some(0)),
+                ("[image: i.png]".to_string(), Some(1)),
+                (String::new(), None),
+                ("[image: after]".to_string(), Some(2)),
+            ]
+        );
+    }
+
+    #[test]
+    fn inline_media_sharing_a_line_with_media_only_media_keeps_its_placeholder() {
+        let body = "<img src=\"https://x.test/a.png\"> <video src=\"https://x.test/b.mp4\">\n</video> more";
+        assert_eq!(
+            body_rows(body, 80),
+            vec![
+                ("[image: a.png]".to_string(), Some(0)),
+                ("[video: b.mp4]".to_string(), Some(1)),
+                ("</video> more".to_string(), None),
+            ]
+        );
+    }
+
+    #[test]
+    fn placeholder_text_truncates_by_display_width_with_an_ellipsis() {
+        assert_eq!(
+            body_rows("![abcdefghijklmnopqrstuvwxyz](https://x.test/z.png)", 12),
+            vec![("[image: abc…".to_string(), Some(0))]
+        );
+    }
+
+    #[test]
+    fn plain_prose_body_is_unaffected_by_media_handling() {
+        // Regression guard: `should_render_pr_description_markdown` below
+        // must stay green untouched by this change.
+        assert_eq!(
+            body_rows("plain `code` plain", 80),
+            vec![("plain `code` plain".to_string(), None)]
+        );
+    }
+
+    #[test]
+    fn placeholder_style_differs_from_prose_style() {
+        let rows = body_rows("Intro\n![shot](https://x.test/a.png)\nOutro", 80);
+        assert_eq!(rows.len(), 3);
+
+        let mut info = sample_info();
+        info.details.body = "Intro\n![shot](https://x.test/a.png)\nOutro".to_string();
+        let full_rows = build_pr_info_rows(&info, 80, &Theme::dark());
+        let intro_row = &full_rows[1];
+        let placeholder_row = &full_rows[2];
+        assert_eq!(placeholder_row.media, Some(0));
+        assert_ne!(
+            intro_row.line.spans[0].style, placeholder_row.line.spans[0].style,
+            "placeholder style must differ from prose style"
+        );
+    }
+
+    #[test]
+    fn header_status_and_checks_rows_carry_no_media() {
+        let rows = build_pr_info_rows(&sample_info(), 80, &Theme::dark());
+        assert!(rows[0].media.is_none());
+        for row in &rows {
+            let text = row_text(row);
+            if text.starts_with("═══") || text.starts_with("Status:") || text.starts_with('✓')
+            {
+                assert!(row.media.is_none(), "unexpected media on {text:?}");
+            }
         }
     }
 

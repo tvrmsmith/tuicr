@@ -20,7 +20,7 @@ use tuicr::handler::{
     handle_command_action, handle_comment_action, handle_comment_navigator_action,
     handle_commit_select_action, handle_commit_selector_action, handle_confirm_action,
     handle_diff_action, handle_file_list_action, handle_grouping_feedback_action,
-    handle_help_action, handle_mouse_event, handle_search_action,
+    handle_help_action, handle_media_viewer_action, handle_mouse_event, handle_search_action,
     handle_submit_action_picker_action, handle_submit_confirm_action,
     handle_submit_resolver_action, handle_summary_action, handle_theme_picker_action,
     handle_visual_action,
@@ -435,6 +435,11 @@ fn main() -> anyhow::Result<()> {
         app.show_pr_checks = cfg.show_pr_checks.unwrap_or(false);
         app.show_pr_comments = cfg.show_pr_comments.unwrap_or(true);
         app.initial_comments_visibility = pr_comments_visibility;
+        // `read_image_protocol` already validated and warned at load time, so
+        // this only ever falls back to `Auto` defensively.
+        app.image_protocol =
+            tuicr::media::graphics::ImageProtocolSetting::parse(cfg.image_protocol.as_deref())
+                .unwrap_or(tuicr::media::graphics::ImageProtocolSetting::Auto);
         if cfg.show_file_list == Some(false) {
             app.show_file_list = false;
             app.focused_panel = FocusedPanel::Diff;
@@ -559,7 +564,15 @@ fn main() -> anyhow::Result<()> {
         // the threshold is regrouped no earlier than its reader can see it
         // happen (`docs/REGROUPING_STATE.md`).
         needs_redraw |= app.poll_regroup_backstop();
+        needs_redraw |= app.poll_media_viewer_events();
+        needs_redraw |= app.poll_media_open_events();
         needs_redraw |= pr_pending;
+
+        if app.force_full_repaint {
+            app.force_full_repaint = false;
+            terminal.repaint()?;
+            needs_redraw = true;
+        }
 
         // A diff that loaded after the alternate screen went up — bare `tuicr`
         // picking a target, `tuicr pr` picking a PR — gets the same blocking
@@ -1043,6 +1056,7 @@ fn dispatch_action(app: &mut App, action: Action) {
         InputMode::SubmitActionPicker => handle_submit_action_picker_action(app, action),
         InputMode::ThemePicker => handle_theme_picker_action(app, action),
         InputMode::GroupingFeedback => handle_grouping_feedback_action(app, action),
+        InputMode::MediaViewer => handle_media_viewer_action(app, action),
         InputMode::Normal => match app.focused_panel {
             FocusedPanel::FileList => handle_file_list_action(app, action),
             FocusedPanel::Comments => handle_comment_navigator_action(app, action),

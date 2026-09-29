@@ -75,6 +75,13 @@ two-face = { version = "0.5", default-features = false, features = ["syntect-def
 terminal-colorsaurus = "1"
 pulldown-cmark = { version = "0.13.4", default-features = false }
 
+# In-terminal image rendering (kitty/sixel/iterm2 graphics protocols) for the
+# PR body media viewer.
+# Decoders are limited to the formats GitHub serves for PR attachments; image's
+# default features pull in AVIF/EXR encoders and rayon that nothing here uses.
+ratatui-image = { version = "=11.1.0", default-features = false, features = ["crossterm"] }
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp"] }
+
 # Git operations
 [target.'cfg(not(target_env = "musl"))'.dependencies]
 git2 = { version = "0.20", default-features = false }
