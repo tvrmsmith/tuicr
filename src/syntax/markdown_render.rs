@@ -962,6 +962,25 @@ mod tests {
     }
 
     #[test]
+    fn should_keep_a_line_that_exactly_fits_the_width_on_one_row() {
+        let rows = render("aaaa bbbb", 9);
+
+        assert_eq!(rows.len(), 1);
+        assert_eq!(text(&rows[0]), "aaaa bbbb");
+    }
+
+    #[test]
+    fn should_wrap_only_the_word_that_overflows_the_width() {
+        let rows = render("aaaa bbbb cc", 9);
+
+        let texts: Vec<String> = rows
+            .iter()
+            .map(|r| text(r).trim_end().to_string())
+            .collect();
+        assert_eq!(texts, ["aaaa bbbb", "cc"]);
+    }
+
+    #[test]
     fn should_reflow_paragraph_lines_into_one_row() {
         let rows = render("one\ntwo\nthree", 40);
 

@@ -490,3 +490,22 @@ fn should_restyle_the_panel_when_the_theme_switches() {
         .expect("chip cell");
     assert_eq!(buffer[(x, y)].bg, Theme::light().bg_highlight);
 }
+
+#[test]
+fn should_reuse_pr_info_rows_until_width_or_markdown_mode_changes() {
+    let mut app = build_pr_app();
+    app.pr_info = Some(sample_pr_info());
+    app.diff_state.viewport_width = 80;
+
+    let first = crate::ui::pr_info_panel::pr_info_rows(&app);
+    let second = crate::ui::pr_info_panel::pr_info_rows(&app);
+    assert!(std::rc::Rc::ptr_eq(&first, &second));
+
+    app.diff_state.viewport_width = 60;
+    let narrower = crate::ui::pr_info_panel::pr_info_rows(&app);
+    assert!(!std::rc::Rc::ptr_eq(&second, &narrower));
+
+    app.render_markdown = false;
+    let plain = crate::ui::pr_info_panel::pr_info_rows(&app);
+    assert!(!std::rc::Rc::ptr_eq(&narrower, &plain));
+}

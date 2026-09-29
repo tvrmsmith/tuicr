@@ -765,6 +765,27 @@ mod tests {
     }
 
     #[test]
+    fn inline_image_placeholder_follows_the_last_row_of_a_wrapped_line() {
+        let rows: Vec<(String, Option<usize>)> = body_rows_with(
+            "aaaa bbbb cccc dddd eeee ![a](https://x.test/1.png) ffff",
+            20,
+            true,
+        )
+        .into_iter()
+        .map(|(text, media)| (text.trim_end().to_string(), media))
+        .collect();
+
+        assert_eq!(
+            rows,
+            vec![
+                ("aaaa bbbb cccc dddd".to_string(), None),
+                ("eeee ▣ a ffff".to_string(), None),
+                ("[image: a]".to_string(), Some(0)),
+            ]
+        );
+    }
+
+    #[test]
     fn inline_image_keeps_its_prose_row_and_appends_a_placeholder() {
         assert_eq!(
             body_rows("see ![a](https://x.test/1.png) end", 80),
