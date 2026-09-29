@@ -844,11 +844,13 @@ impl<'a> Doc<'a> {
             if clean {
                 out.extend([gap.clone(), bar.clone()]);
             }
-            // Underline runs bar to bar: every span but the bars themselves.
+            // Underlining the bars too joins the rule to them; the border
+            // colour keeps the rule quieter than the header text.
             if underline_head && is_head {
-                for (style, text) in out.iter_mut() {
-                    if text != "│" {
-                        *style = style.add_modifier(Modifier::UNDERLINED);
+                for (style, _) in out.iter_mut() {
+                    *style = style.add_modifier(Modifier::UNDERLINED);
+                    if let Some(color) = border.fg {
+                        *style = style.underline_color(color);
                     }
                 }
             }
