@@ -346,7 +346,7 @@ In-flight requests carry an identity tuple (repo, PR#, head SHA). A late result 
 
 `PrSessionKey { repository, number, head_sha }` identifies a PR review session. Same PR + same head = same session = drafts reattach. New commit on the PR = new key = new session.
 
-PR mode polls `ForgeBackend::get_pull_request` every `PR_HEAD_POLL_INTERVAL` (60s) and reloads a moved head through `spawn_pr_reload`, the `:e` path. The reload waits while `input_mode` is not `Normal` or a reload or submit is in flight, and the status bar shows the pending move. `poll_pr_reload_events` likewise leaves any landed reload result, polled or `:e`, queued until `input_mode` is `Normal`. `enter_pr_diff_mode` calls `rearm_pr_head_watch`, so any head change, polled or manual, clears the pending move and restarts the clock.
+PR mode polls `ForgeBackend::get_pull_request` every `PR_HEAD_POLL_INTERVAL` (60s) and reloads a moved head through `spawn_pr_reload`, the `:e` path. The reload waits while `input_mode` is not `Normal` or a reload or submit is in flight, and the status bar shows the pending move. `poll_pr_reload_events` likewise leaves any landed reload result, polled or `:e`, queued until `input_mode` is `Normal` and no submit is in flight. `enter_pr_diff_mode` calls `rearm_pr_head_watch`, so any head change, polled or manual, clears the pending move and restarts the clock.
 
 Each `Comment` carries a `lifecycle` field:
 
