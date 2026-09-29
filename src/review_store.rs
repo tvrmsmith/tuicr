@@ -141,7 +141,7 @@ fn summary_from_entry(
     let active = active_paths.contains(&storage::normalize_path_for_comparison(&path));
     let kind = match entry.kind {
         ManifestKind::Local => SessionKind::Local,
-        ManifestKind::Pr { .. } => SessionKind::Pr,
+        ManifestKind::Pr { head_sha, .. } => SessionKind::Pr { head_sha },
     };
     let summary = SessionSummary {
         session_ref: SessionRef::from_path(path),
@@ -223,17 +223,28 @@ impl SessionRef {
 }
 
 /// Whether a persisted session tracks a local checkout or a forge PR.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SessionKind {
     Local,
-    Pr,
+    /// `head_sha` is the PR head commit the session reviews. A new head gets
+    /// its own session, so this never moves within one session.
+    Pr {
+        head_sha: String,
+    },
 }
 
 impl SessionKind {
-    pub fn id(self) -> &'static str {
+    pub fn id(&self) -> &'static str {
         match self {
             SessionKind::Local => "local",
-            SessionKind::Pr => "pr",
+            SessionKind::Pr { .. } => "pr",
+        }
+    }
+
+    pub fn head_sha(&self) -> Option<&str> {
+        match self {
+            SessionKind::Local => None,
+            SessionKind::Pr { head_sha } => Some(head_sha),
         }
     }
 }

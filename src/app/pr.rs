@@ -50,9 +50,10 @@ impl App {
         self.forge_review_summaries = Vec::new();
         self.forge_review_threads_loading = false;
         self.pr_threads_rx = None;
-        // Latest known remote head — equal to the session head at open time;
-        // refreshed by future `gh pr view` calls in PR 6.
+        // Latest known remote head: the session head at open time, then
+        // refreshed by the head poll.
         self.current_pr_head = Some(details.head_sha.clone());
+        self.rearm_pr_head_watch();
         self.input_mode = InputMode::Normal;
         self.focused_panel = FocusedPanel::Diff;
         self.clear_expanded_gaps();
@@ -402,6 +403,10 @@ impl App {
                 && s.pr_number == request.pr_number
                 && s.head_sha == request.head_sha
                 && s.range == request.range
+        }) && self.shown_pr_key().is_some_and(|key| {
+            key.repository == request.repository
+                && key.number == request.pr_number
+                && key.head_sha == request.head_sha
         });
         if !still_active {
             return;
@@ -523,12 +528,28 @@ impl App {
         Ok(())
     }
 
+    /// The key of the PR on screen, or `None` outside PR mode. A background
+    /// PR result applies only while this still names the PR it was asked for.
+    pub(in crate::app) fn shown_pr_key(&self) -> Option<&crate::forge::traits::PrSessionKey> {
+        match &self.diff_source {
+            DiffSource::PullRequest(current) => Some(&current.key),
+            _ => None,
+        }
+    }
+
     /// Pump a pending reload result. Parses + applies on the main thread,
     /// then restores the cursor to the remembered anchor.
     pub fn poll_pr_reload_events(&mut self) {
         let Some(rx) = self.pr_reload_rx.as_ref() else {
             return;
         };
+        // Applying a new head resets the input mode and swaps the session;
+        // leave the result queued so a draft or modal opened during the fetch
+        // is not torn down, and an in-flight submit (which runs in Normal
+        // mode) marks the session it posted from.
+        if self.input_mode != InputMode::Normal || self.pr_submit_state.is_some() {
+            return;
+        }
         let event = match rx.try_recv() {
             Ok(e) => e,
             Err(_) => return,
@@ -540,6 +561,9 @@ impl App {
         if !in_flight
             .as_ref()
             .is_some_and(|s| s.pr_number == request.pr_number && s.repository == request.repository)
+            || !self.shown_pr_key().is_some_and(|key| {
+                key.number == request.pr_number && key.repository == request.repository
+            })
         {
             return;
         }
@@ -601,10 +625,26 @@ impl App {
             let previous_message = self.message.clone();
             self.enter_pr_diff_mode(backend, opened, TargetPick::SameReview)?;
             self.spawn_pr_threads_fetch(&details_for_threads, local_checkout);
-            if self.message == previous_message {
-                self.set_message("Reloaded PR at new head".to_string());
+            let moved = PrHeadMove {
+                from: request.head_sha.clone(),
+                to: details_for_threads.head_sha.clone(),
+            };
+            let reloaded = format!("Reloaded PR at new head {}", moved.describe());
+            // Entering the new head may have set its own message (read-only,
+            // since-last-review); keep it, but still name the move.
+            let entered_message = self.message != previous_message;
+            match self.message.as_mut() {
+                Some(message) if entered_message => {
+                    message.content = format!("{reloaded}. {}", message.content);
+                }
+                _ => self.set_message(reloaded),
             }
         } else {
+            // A pending move means the poll saw a newer head than this fetch
+            // returned; keep it so the stale-head warning still fires.
+            if self.pr_head_move.is_none() {
+                self.current_pr_head = Some(opened.details.head_sha.clone());
+            }
             self.set_pr_last_reviewed_commit_from_metadata(
                 &opened.commits,
                 &opened.review_metadata,

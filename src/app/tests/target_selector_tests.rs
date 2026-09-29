@@ -1964,6 +1964,578 @@ fn should_keep_reviewed_state_through_finish_pr_reload_when_head_unchanged() {
     assert!(app.session.is_hunk_reviewed(&stable_path, &stable_key));
 }
 
+/// An app in PR mode at head `aaaaaaa…`, opened through the fake backend.
+fn pr_app_at_head_a(number: u64) -> (App, crate::forge::traits::PullRequestDetails) {
+    let mut app = build_app();
+    let summary = sample_pr(number, "head-watch");
+    let mut details = test_pr_details(number, "head-watch");
+    details.head_sha = "aaaaaaaaaaaaaaaa".to_string();
+    let backend = Box::new(FakeForgeBackend::open_pr_details(
+        details.clone(),
+        two_file_patch("new changed"),
+    ));
+    app.open_pr_with_backend(&summary, backend, None).unwrap();
+    app.message = None;
+    (app, details)
+}
+
+#[test]
+fn should_not_reload_when_polled_pr_head_is_unmoved() {
+    let (mut app, _details) = pr_app_at_head_a(424301);
+
+    app.note_polled_pr_head("aaaaaaaaaaaaaaaa");
+    app.apply_pending_pr_head_move();
+
+    assert!(app.pr_reload_state.is_none());
+    assert!(app.pr_head_move.is_none());
+    assert!(app.message.is_none(), "{:?}", app.message);
+}
+
+#[test]
+fn should_reload_onto_new_head_with_visible_message_when_polled_head_moves() {
+    let (mut app, details_a) = pr_app_at_head_a(424302);
+
+    app.note_polled_pr_head("bbbbbbbbbbbbbbbb");
+    app.apply_pending_pr_head_move();
+
+    // The reload goes through the same async path as `:e`, and says why.
+    let request = app.pr_reload_state.clone().expect("reload started");
+    assert_eq!(request.head_sha, "aaaaaaaaaaaaaaaa");
+    assert!(app.pr_head_move.is_none());
+    assert_eq!(app.current_pr_head.as_deref(), Some("bbbbbbbbbbbbbbbb"));
+    assert_eq!(
+        app.message.as_ref().map(|m| m.content.as_str()),
+        Some("PR head moved aaaaaaa → bbbbbbb, reloading")
+    );
+
+    // When the reload lands, the new head is on screen and the message still
+    // names the move.
+    app.message = None;
+    let mut details_b = details_a.clone();
+    details_b.head_sha = "bbbbbbbbbbbbbbbb".to_string();
+    app.finish_pr_reload(
+        details_b.clone(),
+        structured_patch(&two_file_patch("newer changed")),
+        Vec::new(),
+        PullRequestReviewMetadata::default(),
+        crate::forge::traits::PullRequestInfo::from_details(details_b),
+        &request,
+    )
+    .unwrap();
+    let DiffSource::PullRequest(pr) = &app.diff_source else {
+        panic!("expected PR mode");
+    };
+    assert_eq!(pr.key.head_sha, "bbbbbbbbbbbbbbbb");
+    assert_eq!(
+        app.message.as_ref().map(|m| m.content.as_str()),
+        Some("Reloaded PR at new head aaaaaaa → bbbbbbb")
+    );
+}
+
+#[test]
+fn should_name_the_move_ahead_of_the_read_only_warning_when_reloading_onto_a_closed_head() {
+    let (mut app, details_a) = pr_app_at_head_a(424307);
+    app.note_polled_pr_head("bbbbbbbbbbbbbbbb");
+    app.apply_pending_pr_head_move();
+    let request = app.pr_reload_state.take().expect("reload started");
+
+    let mut details_b = details_a.clone();
+    details_b.head_sha = "bbbbbbbbbbbbbbbb".to_string();
+    details_b.closed = true;
+    app.finish_pr_reload(
+        details_b.clone(),
+        structured_patch(&two_file_patch("newer changed")),
+        Vec::new(),
+        PullRequestReviewMetadata::default(),
+        crate::forge::traits::PullRequestInfo::from_details(details_b),
+        &request,
+    )
+    .unwrap();
+
+    let message = app.message.as_ref().expect("reloaded message");
+    assert_eq!(
+        message.content,
+        "Reloaded PR at new head aaaaaaa → bbbbbbb. This PR is closed — review is read-only"
+    );
+    assert_eq!(message.message_type, MessageType::Warning);
+}
+
+#[test]
+fn should_refresh_current_pr_head_when_the_head_moves_back_before_the_reload_lands() {
+    let (mut app, details_a) = pr_app_at_head_a(424308);
+    app.note_polled_pr_head("bbbbbbbbbbbbbbbb");
+    app.apply_pending_pr_head_move();
+    let request = app.pr_reload_state.take().expect("reload started");
+
+    // A force-push put the PR back on head A before the reload fetched.
+    app.finish_pr_reload(
+        details_a.clone(),
+        structured_patch(&two_file_patch("new changed")),
+        Vec::new(),
+        PullRequestReviewMetadata::default(),
+        crate::forge::traits::PullRequestInfo::from_details(details_a),
+        &request,
+    )
+    .unwrap();
+
+    assert_eq!(app.current_pr_head.as_deref(), Some("aaaaaaaaaaaaaaaa"));
+}
+
+#[test]
+fn should_keep_a_newer_polled_head_when_an_in_flight_reload_lands_on_the_old_head() {
+    let (mut app, details_a) = pr_app_at_head_a(424316);
+    app.spawn_pr_reload().unwrap();
+
+    // The poll sees head B while the `:e` fetch that started at A is in flight.
+    app.note_polled_pr_head("bbbbbbbbbbbbbbbb");
+    let request = app.pr_reload_state.take().expect("reload started");
+    app.finish_pr_reload(
+        details_a.clone(),
+        structured_patch(&two_file_patch("new changed")),
+        Vec::new(),
+        PullRequestReviewMetadata::default(),
+        crate::forge::traits::PullRequestInfo::from_details(details_a),
+        &request,
+    )
+    .unwrap();
+
+    assert_eq!(app.current_pr_head.as_deref(), Some("bbbbbbbbbbbbbbbb"));
+    let pending = app.pr_head_move.as_ref().expect("reload pending");
+    assert_eq!(pending.to, "bbbbbbbbbbbbbbbb");
+    assert!(app.apply_pending_pr_head_move());
+    assert!(app.pr_reload_state.is_some());
+}
+
+/// Swaps the in-flight reload's channel for one that already holds `details`
+/// at a new head, as if the fetch landed while the reviewer was elsewhere.
+fn queue_pr_reload_result(app: &mut App, details: crate::forge::traits::PullRequestDetails) {
+    let request = app.pr_reload_state.clone().expect("reload started");
+    let (tx, rx) = std::sync::mpsc::channel();
+    tx.send(PrReloadEvent::Done {
+        request,
+        result: Ok((
+            details.clone(),
+            structured_patch(&two_file_patch("newer changed")),
+            Vec::new(),
+            PullRequestReviewMetadata::default(),
+            crate::forge::traits::PullRequestInfo::from_details(details),
+        )),
+    })
+    .unwrap();
+    app.pr_reload_rx = Some(rx);
+}
+
+#[test]
+fn should_drop_a_pr_reload_that_lands_after_the_reviewer_opens_another_pr() {
+    let (mut app, details_a) = pr_app_at_head_a(424317);
+    app.spawn_pr_reload().unwrap();
+    let mut details_b = details_a.clone();
+    details_b.head_sha = "bbbbbbbbbbbbbbbb".to_string();
+    queue_pr_reload_result(&mut app, details_b);
+
+    // The reviewer opens another PR from the selector before the reload lands.
+    app.input_mode = InputMode::CommitSelect;
+    app.poll_pr_reload_events();
+    let other = test_pr_details(424318, "other");
+    app.open_pr_with_backend(
+        &sample_pr(424318, "other"),
+        Box::new(FakeForgeBackend::open_pr_details(
+            other,
+            two_file_plus_added_patch(),
+        )),
+        None,
+    )
+    .unwrap();
+    assert_eq!(app.input_mode, InputMode::Normal);
+
+    app.poll_pr_reload_events();
+
+    let DiffSource::PullRequest(pr) = &app.diff_source else {
+        panic!("expected PR mode");
+    };
+    assert_eq!(pr.key.number, 424318);
+    assert_eq!(app.diff_files.len(), 3);
+    assert!(app.pr_reload_state.is_none());
+    assert!(app.pr_reload_rx.is_none());
+}
+
+#[test]
+fn should_drop_a_pr_reload_that_lands_after_the_reviewer_leaves_pr_mode() {
+    let (mut app, details_a) = pr_app_at_head_a(424319);
+    app.spawn_pr_reload().unwrap();
+    queue_pr_reload_result(&mut app, details_a);
+    app.diff_source = DiffSource::WorkingTree;
+    app.diff_files.clear();
+
+    app.poll_pr_reload_events();
+
+    assert!(app.diff_files.is_empty());
+    assert!(app.pr_reload_state.is_none());
+    assert!(app.pr_reload_rx.is_none());
+}
+
+#[test]
+fn should_drop_a_range_reload_that_lands_after_the_head_moved() {
+    let (mut app, details_a) = pr_app_at_head_a(424320);
+    let request = PrRangeReloadRequest {
+        repository: details_a.repository.clone(),
+        pr_number: details_a.number,
+        head_sha: details_a.head_sha.clone(),
+        start_sha: "1111111".to_string(),
+        end_sha: "2222222".to_string(),
+        range: (0, 0),
+        started_at: Instant::now(),
+        anchor: None,
+        pick: TargetPick::SameReview,
+    };
+    let (tx, rx) = std::sync::mpsc::channel();
+    tx.send(PrRangeReloadEvent::Done {
+        request: request.clone(),
+        result: Ok(structured_patch(&two_file_plus_added_patch())),
+    })
+    .unwrap();
+    app.pr_range_reload_state = Some(request);
+    app.pr_range_reload_rx = Some(rx);
+
+    // A head-move reload lands on head B before the range fetch for head A.
+    let mut details_b = details_a.clone();
+    details_b.head_sha = "bbbbbbbbbbbbbbbb".to_string();
+    let reload = PrReloadRequest {
+        repository: details_a.repository.clone(),
+        pr_number: details_a.number,
+        head_sha: details_a.head_sha.clone(),
+        started_at: Instant::now(),
+        anchor: None,
+        restore_overview_cursor: None,
+    };
+    app.finish_pr_reload(
+        details_b.clone(),
+        structured_patch(&two_file_patch("newer changed")),
+        Vec::new(),
+        PullRequestReviewMetadata::default(),
+        crate::forge::traits::PullRequestInfo::from_details(details_b),
+        &reload,
+    )
+    .unwrap();
+
+    app.poll_pr_range_reload_events();
+
+    assert_eq!(app.diff_files.len(), 2);
+}
+
+#[test]
+fn should_defer_head_move_reload_while_a_submit_is_in_flight() {
+    let (mut app, details) = pr_app_at_head_a(424309);
+    // `spawn_pr_submit` returns to Normal mode while the submit still runs.
+    app.pr_submit_state = Some(SubmitInFlightState {
+        event: crate::forge::submit::SubmitEvent::Comment,
+        mappable: Vec::new(),
+        summary_comment_ids: Vec::new(),
+        review_comment_ids: Vec::new(),
+        moved_to_summary_count: 0,
+        head_sha_snapshot: details.head_sha.clone(),
+        repository: details.repository.clone(),
+        pr_number: details.number,
+        started_at: Instant::now(),
+    });
+
+    app.note_polled_pr_head("bbbbbbbbbbbbbbbb");
+
+    assert!(!app.apply_pending_pr_head_move());
+    assert!(app.pr_reload_state.is_none());
+    assert!(app.pr_head_move.is_some());
+
+    app.pr_submit_state = None;
+
+    assert!(app.apply_pending_pr_head_move());
+    assert!(app.pr_reload_state.is_some());
+    assert!(app.pr_head_move.is_none());
+}
+
+#[test]
+fn should_clear_a_head_move_that_an_in_flight_reload_lands() {
+    let (mut app, details_a) = pr_app_at_head_a(424310);
+    app.spawn_pr_reload().unwrap();
+
+    app.note_polled_pr_head("bbbbbbbbbbbbbbbb");
+
+    assert!(!app.apply_pending_pr_head_move());
+    assert!(app.pr_head_move.is_some());
+
+    // The manual reload lands on head B, as `poll_pr_reload_events` does.
+    let request = app.pr_reload_state.take().expect("reload started");
+    let mut details_b = details_a.clone();
+    details_b.head_sha = "bbbbbbbbbbbbbbbb".to_string();
+    app.finish_pr_reload(
+        details_b.clone(),
+        structured_patch(&two_file_patch("newer changed")),
+        Vec::new(),
+        PullRequestReviewMetadata::default(),
+        crate::forge::traits::PullRequestInfo::from_details(details_b),
+        &request,
+    )
+    .unwrap();
+
+    assert!(app.pr_head_move.is_none());
+    assert!(!app.apply_pending_pr_head_move());
+    assert!(app.pr_reload_state.is_none());
+}
+
+#[test]
+fn should_defer_head_move_reload_while_reviewer_is_mid_comment() {
+    let (mut app, _details) = pr_app_at_head_a(424303);
+    app.enter_comment_mode(false, Some((1, LineSide::New)));
+    app.comment_buffer.push_str("half-written thought");
+
+    app.note_polled_pr_head("bbbbbbbbbbbbbbbb");
+    app.apply_pending_pr_head_move();
+
+    // The draft and the mode survive; the move waits.
+    assert!(app.pr_reload_state.is_none());
+    assert_eq!(app.input_mode, InputMode::Comment);
+    assert_eq!(app.comment_buffer, "half-written thought");
+    let pending = app.pr_head_move.as_ref().expect("reload pending");
+    assert_eq!(pending.from, "aaaaaaaaaaaaaaaa");
+    assert_eq!(pending.to, "bbbbbbbbbbbbbbbb");
+
+    // Leaving comment mode lets the pending reload go.
+    app.exit_comment_mode();
+    app.apply_pending_pr_head_move();
+
+    assert!(app.pr_reload_state.is_some());
+    assert!(app.pr_head_move.is_none());
+}
+
+#[test]
+fn should_hold_a_landed_head_move_reload_while_reviewer_starts_a_comment_mid_fetch() {
+    let (mut app, details_a) = pr_app_at_head_a(424317);
+    app.note_polled_pr_head("bbbbbbbbbbbbbbbb");
+    assert!(app.apply_pending_pr_head_move());
+    let request = app.pr_reload_state.clone().expect("reload started");
+
+    // The reviewer opens a comment while the fetch runs, then the fetch lands
+    // on head B.
+    app.enter_comment_mode(false, Some((1, LineSide::New)));
+    app.comment_buffer.push_str("typed during the fetch");
+    let (tx, rx) = std::sync::mpsc::channel();
+    app.pr_reload_rx = Some(rx);
+    let mut details_b = details_a.clone();
+    details_b.head_sha = "bbbbbbbbbbbbbbbb".to_string();
+    tx.send(PrReloadEvent::Done {
+        request,
+        result: Ok((
+            details_b.clone(),
+            structured_patch(&two_file_patch("newer changed")),
+            Vec::new(),
+            PullRequestReviewMetadata::default(),
+            crate::forge::traits::PullRequestInfo::from_details(details_b),
+        )),
+    })
+    .unwrap();
+
+    app.poll_pr_reload_events();
+
+    assert_eq!(app.input_mode, InputMode::Comment);
+    assert_eq!(app.comment_buffer, "typed during the fetch");
+    assert!(app.pr_reload_state.is_some());
+
+    app.exit_comment_mode();
+    app.poll_pr_reload_events();
+
+    assert!(app.pr_reload_state.is_none());
+    let DiffSource::PullRequest(current) = &app.diff_source else {
+        panic!("left PR mode");
+    };
+    assert_eq!(current.key.head_sha, "bbbbbbbbbbbbbbbb");
+}
+
+#[test]
+fn should_hold_a_landed_head_move_reload_while_a_submit_is_in_flight() {
+    let (mut app, details_a) = pr_app_at_head_a(424318);
+    app.note_polled_pr_head("bbbbbbbbbbbbbbbb");
+    assert!(app.apply_pending_pr_head_move());
+    let request = app.pr_reload_state.clone().expect("reload started");
+
+    // The reviewer confirms a submit while the fetch runs; `spawn_pr_submit`
+    // returns to Normal mode while the submit still runs.
+    app.pr_submit_state = Some(SubmitInFlightState {
+        event: crate::forge::submit::SubmitEvent::Comment,
+        mappable: Vec::new(),
+        summary_comment_ids: Vec::new(),
+        review_comment_ids: Vec::new(),
+        moved_to_summary_count: 0,
+        head_sha_snapshot: details_a.head_sha.clone(),
+        repository: details_a.repository.clone(),
+        pr_number: details_a.number,
+        started_at: Instant::now(),
+    });
+    assert_eq!(app.input_mode, InputMode::Normal);
+    let session_before = app.session.id.clone();
+    let (tx, rx) = std::sync::mpsc::channel();
+    app.pr_reload_rx = Some(rx);
+    let mut details_b = details_a.clone();
+    details_b.head_sha = "bbbbbbbbbbbbbbbb".to_string();
+    tx.send(PrReloadEvent::Done {
+        request,
+        result: Ok((
+            details_b.clone(),
+            structured_patch(&two_file_patch("newer changed")),
+            Vec::new(),
+            PullRequestReviewMetadata::default(),
+            crate::forge::traits::PullRequestInfo::from_details(details_b),
+        )),
+    })
+    .unwrap();
+
+    app.poll_pr_reload_events();
+
+    assert!(app.pr_reload_state.is_some());
+    assert_eq!(app.session.id, session_before);
+    let DiffSource::PullRequest(current) = &app.diff_source else {
+        panic!("left PR mode");
+    };
+    assert_eq!(current.key.head_sha, details_a.head_sha);
+
+    app.pr_submit_state = None;
+    app.poll_pr_reload_events();
+
+    assert!(app.pr_reload_state.is_none());
+    let DiffSource::PullRequest(current) = &app.diff_source else {
+        panic!("left PR mode");
+    };
+    assert_eq!(current.key.head_sha, "bbbbbbbbbbbbbbbb");
+}
+
+#[test]
+fn should_drop_pending_head_move_when_the_head_moves_back() {
+    let (mut app, _details) = pr_app_at_head_a(424304);
+    app.enter_comment_mode(false, Some((1, LineSide::New)));
+    app.note_polled_pr_head("bbbbbbbbbbbbbbbb");
+    assert!(app.pr_head_move.is_some());
+
+    // The head moved back before the reviewer finished.
+    app.note_polled_pr_head("aaaaaaaaaaaaaaaa");
+
+    assert!(app.pr_head_move.is_none());
+}
+
+#[test]
+fn should_drop_pending_head_move_after_leaving_pr_mode() {
+    let (mut app, _details) = pr_app_at_head_a(424306);
+    app.enter_comment_mode(false, Some((1, LineSide::New)));
+    app.note_polled_pr_head("bbbbbbbbbbbbbbbb");
+    app.exit_comment_mode();
+
+    app.diff_source = DiffSource::WorkingTree;
+    app.apply_pending_pr_head_move();
+
+    assert!(app.pr_head_move.is_none());
+    assert!(app.pr_reload_state.is_none());
+    assert!(app.message.is_none(), "{:?}", app.message);
+}
+
+#[test]
+fn should_poll_pr_head_only_in_pr_mode_once_the_interval_elapses() {
+    let local = build_app();
+    let later = Instant::now() + PR_HEAD_POLL_INTERVAL * 2;
+    assert!(!local.pr_head_poll_due(later));
+
+    let (app, _details) = pr_app_at_head_a(424305);
+    assert!(!app.pr_head_poll_due(Instant::now()));
+    assert!(app.pr_head_poll_due(later));
+}
+
+/// Hands `app` a head poll for PR `number` whose thread already answered
+/// `result`, then runs one watch tick.
+fn land_pr_head_poll(app: &mut App, number: u64, result: std::result::Result<&str, &str>) -> bool {
+    let (tx, rx) = std::sync::mpsc::channel();
+    tx.send(result.map(str::to_string).map_err(str::to_string))
+        .unwrap();
+    app.pr_head_poll = Some(super::super::pr_head_watch::PrHeadPoll {
+        repository: ForgeRepository::github("github.com", "agavra", "tuicr"),
+        number,
+        rx,
+    });
+    app.poll_pr_head_watch()
+}
+
+#[test]
+fn should_warn_once_when_the_same_pr_head_poll_error_repeats() {
+    let (mut app, _details) = pr_app_at_head_a(424311);
+
+    assert!(land_pr_head_poll(&mut app, 424311, Err("offline")));
+    let message = app.message.take().expect("poll warning");
+    assert_eq!(message.content, "PR head check failed: offline");
+    assert_eq!(message.message_type, MessageType::Warning);
+
+    assert!(!land_pr_head_poll(&mut app, 424311, Err("offline")));
+    assert!(app.message.is_none(), "{:?}", app.message);
+    assert!(app.pr_head_poll.is_none());
+}
+
+#[test]
+fn should_warn_again_when_a_pr_head_poll_error_returns_after_a_success() {
+    let (mut app, _details) = pr_app_at_head_a(424312);
+
+    land_pr_head_poll(&mut app, 424312, Err("offline"));
+    land_pr_head_poll(&mut app, 424312, Ok("aaaaaaaaaaaaaaaa"));
+    app.message = None;
+    land_pr_head_poll(&mut app, 424312, Err("offline"));
+
+    assert_eq!(
+        app.message.as_ref().map(|m| m.content.as_str()),
+        Some("PR head check failed: offline")
+    );
+}
+
+#[test]
+fn should_drop_a_pr_head_poll_result_for_another_pr() {
+    let (mut app, _details) = pr_app_at_head_a(424313);
+
+    assert!(!land_pr_head_poll(&mut app, 999999, Ok("bbbbbbbbbbbbbbbb")));
+
+    assert!(app.pr_head_move.is_none());
+    assert!(app.pr_reload_state.is_none());
+    assert_eq!(app.current_pr_head.as_deref(), Some("aaaaaaaaaaaaaaaa"));
+    assert!(app.pr_head_poll.is_none());
+}
+
+#[test]
+fn should_warn_when_the_pr_head_poll_thread_exits_without_an_answer() {
+    let (mut app, _details) = pr_app_at_head_a(424314);
+    let (tx, rx) = std::sync::mpsc::channel();
+    drop(tx);
+    app.pr_head_poll = Some(super::super::pr_head_watch::PrHeadPoll {
+        repository: ForgeRepository::github("github.com", "agavra", "tuicr"),
+        number: 424314,
+        rx,
+    });
+
+    assert!(app.poll_pr_head_watch());
+
+    assert_eq!(
+        app.message.as_ref().map(|m| m.content.as_str()),
+        Some("PR head check failed: the poll thread exited without an answer")
+    );
+    assert!(app.pr_head_poll.is_none());
+}
+
+#[test]
+fn should_keep_waiting_on_an_unanswered_pr_head_poll_without_starting_another() {
+    let (mut app, _details) = pr_app_at_head_a(424315);
+    let (_tx, rx) = std::sync::mpsc::channel();
+    app.pr_head_poll = Some(super::super::pr_head_watch::PrHeadPoll {
+        repository: ForgeRepository::github("github.com", "agavra", "tuicr"),
+        number: 424315,
+        rx,
+    });
+
+    assert!(!app.poll_pr_head_watch());
+
+    assert!(app.pr_head_poll.is_some());
+    assert!(!app.pr_head_poll_due(Instant::now() + PR_HEAD_POLL_INTERVAL * 2));
+}
+
 #[test]
 fn should_keep_session_when_pr_head_unchanged_on_reload() {
     // given an app in PR mode

@@ -5,7 +5,7 @@
 //! range or working-tree flags it was opened with. Rows come from
 //! [`ReviewStore::list_sessions_for_repo`], which is already newest-first.
 
-use crate::review_store::{SessionKind, SessionSummary};
+use crate::review_store::SessionSummary;
 
 /// Rows for the Sessions tab, plus cursor and viewport state.
 ///
@@ -96,18 +96,10 @@ impl SessionsTab {
     }
 }
 
-/// Short label for a session's kind, shown in the row's left column.
-pub fn kind_label(kind: SessionKind) -> &'static str {
-    match kind {
-        SessionKind::Local => "local",
-        SessionKind::Pr => "pr",
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::review_store::SessionRef;
+    use crate::review_store::{SessionKind, SessionRef};
     use chrono::Utc;
 
     fn summary(slug: &str) -> SessionSummary {
