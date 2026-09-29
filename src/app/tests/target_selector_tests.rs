@@ -2082,6 +2082,31 @@ fn should_refresh_current_pr_head_when_the_head_moves_back_before_the_reload_lan
 }
 
 #[test]
+fn should_keep_a_newer_polled_head_when_an_in_flight_reload_lands_on_the_old_head() {
+    let (mut app, details_a) = pr_app_at_head_a(424316);
+    app.spawn_pr_reload().unwrap();
+
+    // The poll sees head B while the `:e` fetch that started at A is in flight.
+    app.note_polled_pr_head("bbbbbbbbbbbbbbbb");
+    let request = app.pr_reload_state.take().expect("reload started");
+    app.finish_pr_reload(
+        details_a.clone(),
+        structured_patch(&two_file_patch("new changed")),
+        Vec::new(),
+        PullRequestReviewMetadata::default(),
+        crate::forge::traits::PullRequestInfo::from_details(details_a),
+        &request,
+    )
+    .unwrap();
+
+    assert_eq!(app.current_pr_head.as_deref(), Some("bbbbbbbbbbbbbbbb"));
+    let pending = app.pr_head_move.as_ref().expect("reload pending");
+    assert_eq!(pending.to, "bbbbbbbbbbbbbbbb");
+    assert!(app.apply_pending_pr_head_move());
+    assert!(app.pr_reload_state.is_some());
+}
+
+#[test]
 fn should_defer_head_move_reload_while_a_submit_is_in_flight() {
     let (mut app, details) = pr_app_at_head_a(424309);
     // `spawn_pr_submit` returns to Normal mode while the submit still runs.
