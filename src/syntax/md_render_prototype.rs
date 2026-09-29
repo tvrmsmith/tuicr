@@ -14,7 +14,7 @@
 //! panel reflows paragraphs.
 
 use std::cell::RefCell;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::ops::Range;
 use std::sync::atomic::{AtomicU8, Ordering};
 
@@ -168,7 +168,7 @@ impl Look {
             base: scoped(&[ROOT]),
             marker: dim,
             h1: heading.add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
-            h2: heading.add_modifier(Modifier::BOLD),
+            h2: heading.add_modifier(Modifier::UNDERLINED),
             h3: heading.add_modifier(Modifier::BOLD),
             code: scoped(&[ROOT, "markup.raw.inline.markdown"]).bg(theme.bg_highlight),
             code_block: Style::default().fg(theme.fg_secondary),
@@ -199,13 +199,6 @@ fn alert_style(kind: BlockQuoteKind) -> (Style, &'static str) {
     )
 }
 
-/// Extra rows only the reflowing PR panel draws (diff rows must stay 1:1).
-#[derive(Clone)]
-enum Deco {
-    Rule(Style, char),
-    TableEdge(Style, Vec<usize>, bool),
-}
-
 struct LinkCtx {
     start: usize,
     children_end: usize,
@@ -232,12 +225,23 @@ struct Doc<'a> {
     overrides: HashMap<usize, Runs>,
     prefixes: HashMap<usize, Runs>,
     no_reflow: Vec<bool>,
-    deco_before: HashMap<usize, Vec<Deco>>,
-    deco_after: HashMap<usize, Vec<Deco>>,
+    /// Building for the reflowing PR panel rather than 1:1 diff rows.
+    block: bool,
+    /// Source lines the PR panel drops (fences, table delimiter rows).
+    skip: HashSet<usize>,
+    headings: HashSet<usize>,
+    /// Right-aligned tag on a line's first row in the PR panel (code language).
+    labels: HashMap<usize, Runs>,
 }
 
 impl<'a> Doc<'a> {
-    fn build(theme: &Theme, src: &'a str, variant: Variant, rule_width: usize) -> Self {
+    fn build(
+        theme: &Theme,
+        src: &'a str,
+        variant: Variant,
+        rule_width: usize,
+        block: bool,
+    ) -> Self {
         let look = Look::new(theme, variant);
         let mut line_starts = vec![0];
         line_starts.extend(src.match_indices('\n').map(|(i, _)| i + 1));
@@ -254,8 +258,10 @@ impl<'a> Doc<'a> {
             overrides: HashMap::new(),
             prefixes: HashMap::new(),
             no_reflow: vec![false; n],
-            deco_before: HashMap::new(),
-            deco_after: HashMap::new(),
+            block,
+            skip: HashSet::new(),
+            headings: HashSet::new(),
+            labels: HashMap::new(),
         };
         doc.walk(theme);
         doc
@@ -507,6 +513,7 @@ impl<'a> Doc<'a> {
         };
         let first = self.line_of(r.start);
         self.no_reflow[first] = true;
+        self.headings.insert(first);
         if !self.src[r.start..].starts_with('#') {
             // Setext heading: text line(s), then an `===`/`---` underline.
             let last = self.line_of(r.end.saturating_sub(1));
@@ -540,17 +547,7 @@ impl<'a> Doc<'a> {
                     vec![(style, format!("{} ", "#".repeat(level)))],
                 );
             }
-            Variant::Clean => {
-                self.replace(r.start..marker_end, vec![]);
-                if level <= 2 {
-                    let deco = if level == 1 {
-                        Deco::Rule(self.look.h2, '━')
-                    } else {
-                        Deco::Rule(self.look.border, '─')
-                    };
-                    self.deco_after.entry(first).or_default().push(deco);
-                }
-            }
+            Variant::Clean => self.replace(r.start..marker_end, vec![]),
             _ => self.paint(r.start..marker_end, self.look.marker),
         }
     }
@@ -693,6 +690,22 @@ impl<'a> Doc<'a> {
                     }
                 }
             }
+            Variant::Clean if self.block => {
+                // No fence rows: the gutter marks the block, the language
+                // sits right-aligned on its first row.
+                self.skip.insert(first);
+                if let Some(close) = close {
+                    self.skip.insert(close);
+                }
+                for &line in &content {
+                    self.prefixes.insert(line, vec![(border, "│ ".to_string())]);
+                }
+                if let Some(&top) = content.first()
+                    && !lang.is_empty()
+                {
+                    self.labels.insert(top, vec![(border, lang.to_string())]);
+                }
+            }
             Variant::Clean => {
                 let label_w = lang.width();
                 let fill = self.rule_width.saturating_sub(label_w + 4);
@@ -783,7 +796,10 @@ impl<'a> Doc<'a> {
 
         let clean = self.variant == Variant::Clean;
         let row_lines: Vec<usize> = rows.iter().map(|r| r.0).collect();
-        for (line, _, cells) in rows {
+        // In the PR panel a clean table underlines its header instead of
+        // spending a row on the delimiter.
+        let underline_head = clean && self.block;
+        for (line, is_head, cells) in rows {
             let mut out: Runs = Vec::new();
             if clean {
                 out.push((border, "│ ".to_string()));
@@ -807,6 +823,12 @@ impl<'a> Doc<'a> {
                     out.push((self.look.base, " ".repeat(right)));
                 }
             }
+            if underline_head && is_head {
+                let inner = out.len() - 1;
+                for (style, _) in out.iter_mut().take(inner).skip(1) {
+                    *style = style.add_modifier(Modifier::UNDERLINED);
+                }
+            }
             if clean {
                 out.push((border, " │".to_string()));
             }
@@ -819,19 +841,14 @@ impl<'a> Doc<'a> {
             segs.join("─┼─")
         };
         for line in self.lines_of(&t.range) {
-            if !row_lines.contains(&line) {
+            if row_lines.contains(&line) {
+                continue;
+            }
+            if underline_head {
+                self.skip.insert(line);
+            } else {
                 self.overrides.insert(line, vec![(border, delim.clone())]);
             }
-        }
-        if clean && let (Some(first), Some(last)) = (row_lines.first(), row_lines.last()) {
-            self.deco_before
-                .entry(*first)
-                .or_default()
-                .push(Deco::TableEdge(border, widths.clone(), true));
-            self.deco_after
-                .entry(*last)
-                .or_default()
-                .push(Deco::TableEdge(border, widths, false));
         }
     }
 
@@ -916,21 +933,6 @@ impl<'a> Doc<'a> {
     fn hard_break(&self, line: usize) -> bool {
         let s = &self.src[self.line_range(line)];
         s.ends_with("  ") || s.ends_with('\\') || s.trim().is_empty()
-    }
-
-    fn deco_lines(&self, deco: &Deco, width: usize) -> Line<'static> {
-        match deco {
-            Deco::Rule(style, ch) => Line::from(Span::styled(ch.to_string().repeat(width), *style)),
-            Deco::TableEdge(style, widths, top) => {
-                let segs: Vec<String> = widths.iter().map(|w| "─".repeat(*w)).collect();
-                let text = if *top {
-                    format!("┌─{}─┐", segs.join("─┬─"))
-                } else {
-                    format!("└─{}─┘", segs.join("─┴─"))
-                };
-                Line::from(Span::styled(text, *style))
-            }
-        }
     }
 }
 
@@ -1025,7 +1027,7 @@ fn to_line(runs: Runs) -> Line<'static> {
 /// One rendered row per source line, for diff rows.
 pub fn render_lines(theme: &Theme, lines: &[&str], variant: Variant) -> Vec<Runs> {
     let src = lines.join("\n");
-    let doc = Doc::build(theme, &src, variant, LINE_MODE_RULE_WIDTH);
+    let doc = Doc::build(theme, &src, variant, LINE_MODE_RULE_WIDTH, false);
     (0..lines.len()).map(|i| doc.render_line(i)).collect()
 }
 
@@ -1038,7 +1040,7 @@ pub fn render_block(
 ) -> Vec<Line<'static>> {
     let margin = if variant == Variant::Glow { 2 } else { 0 };
     let inner = width.saturating_sub(margin).max(1);
-    let doc = Doc::build(theme, content, variant, inner);
+    let doc = Doc::build(theme, content, variant, inner, true);
     let n = doc.line_starts.len();
     let mut out: Vec<Line<'static>> = Vec::new();
     let push = |out: &mut Vec<Line<'static>>, mut line: Line<'static>| {
@@ -1048,11 +1050,23 @@ pub fn render_block(
         out.push(line);
     };
 
+    // Clean drops a blank row after a heading and collapses blank runs.
+    let compact = variant == Variant::Clean;
+    let mut prev_blank_or_heading = true;
     let mut i = 0;
     while i < n {
-        for deco in doc.deco_before.get(&i).into_iter().flatten() {
-            push(&mut out, doc.deco_lines(deco, inner));
+        if doc.skip.contains(&i) {
+            i += 1;
+            continue;
         }
+        let blank = !doc.no_reflow[i]
+            && !doc.overrides.contains_key(&i)
+            && doc.src[doc.line_range(i)].trim().is_empty();
+        if compact && blank && prev_blank_or_heading {
+            i += 1;
+            continue;
+        }
+        prev_blank_or_heading = blank || doc.headings.contains(&i);
         let mut logical = doc.render_line(i);
         let reflow = variant != Variant::Dimmed && !doc.no_reflow[i];
         let lead_end = doc.content_start(i, true);
@@ -1081,11 +1095,16 @@ pub fn render_block(
                 logical.extend(doc.emit(doc.content_start(last, false), doc.line_range(last).end));
             }
         }
-        for row in wrap(&logical, inner, &cont) {
-            push(&mut out, to_line(row));
+        let mut rows = wrap(&logical, inner, &cont);
+        if let (Some(label), Some(first)) = (doc.labels.get(&i), rows.first_mut()) {
+            let gap = inner.saturating_sub(runs_width(first) + runs_width(label));
+            if gap > 0 {
+                first.push((doc.look.base, " ".repeat(gap)));
+                first.extend(label.iter().cloned());
+            }
         }
-        for deco in doc.deco_after.get(&last).into_iter().flatten() {
-            push(&mut out, doc.deco_lines(deco, inner));
+        for row in rows {
+            push(&mut out, to_line(row));
         }
         i = last + 1;
     }
