@@ -812,6 +812,11 @@ impl<'a> Doc<'a> {
 
         let clean = self.variant == Variant::Clean;
         let row_lines: Vec<usize> = rows.iter().map(|r| r.0).collect();
+        let head_last_width = rows
+            .iter()
+            .find(|r| r.1)
+            .and_then(|r| r.2.last())
+            .map(runs_width);
         // In the PR panel a clean table underlines its header instead of
         // spending a row on the delimiter.
         let underline_head = clean && self.block;
@@ -853,7 +858,19 @@ impl<'a> Doc<'a> {
             }
             self.overrides.insert(line, out);
         }
-        let segs: Vec<String> = widths.iter().map(|w| "─".repeat(*w)).collect();
+        // The last column is sized by its widest cell, often long prose; a
+        // separator that wide wraps. It spans only the header cell instead.
+        let segs: Vec<String> = widths
+            .iter()
+            .enumerate()
+            .map(|(i, w)| {
+                let w = match head_last_width {
+                    Some(head) if i + 1 == widths.len() => head.max(3).min(*w),
+                    _ => *w,
+                };
+                "─".repeat(w)
+            })
+            .collect();
         let delim = segs.join("─┼─");
         for line in self.lines_of(&t.range) {
             if row_lines.contains(&line) {
