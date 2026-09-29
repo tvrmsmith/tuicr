@@ -1818,6 +1818,53 @@ fn should_build_new_head_session_by_carrying_only_unchanged_reviewed_state() {
 }
 
 #[test]
+fn should_unrelease_carried_drafts_when_pr_head_advances() {
+    // given an old-head PR session whose drafts were published in batch 1
+    let mut app = build_app();
+    let summary = sample_pr(424245, "head-a");
+    let mut details_a = test_pr_details(424245, "head-a");
+    details_a.head_sha = "aaaaaaaaaaaaaaaa".to_string();
+    let backend_a = Box::new(FakeForgeBackend::open_pr_details(
+        details_a.clone(),
+        two_file_patch("new changed"),
+    ));
+    app.open_pr_with_backend(&summary, backend_a, None).unwrap();
+    let stable_path = PathBuf::from("src/stable.rs");
+    let stable = app.session.get_file_mut(&stable_path).unwrap();
+    stable.add_file_comment(Comment::new("file".to_string(), CommentType::None, None));
+    stable.add_line_comment(1, Comment::new("line".to_string(), CommentType::None, None));
+    app.session
+        .review_comments
+        .push(Comment::new("review".to_string(), CommentType::None, None));
+    app.session.release();
+    let previous = app.session.clone();
+
+    // when a new-head session carries those drafts forward
+    let mut details_b = details_a.clone();
+    details_b.head_sha = "bbbbbbbbbbbbbbbb".to_string();
+    let highlighter = app.theme.syntax_highlighter();
+    let pr_info_b = crate::forge::traits::PullRequestInfo::from_details(details_b.clone());
+    let opened = crate::forge::pr_open::prepare_open_pr(
+        details_b,
+        structured_patch(&two_file_patch("newer changed")),
+        Vec::new(),
+        PullRequestReviewMetadata::default(),
+        pr_info_b,
+        None,
+        highlighter,
+    )
+    .unwrap();
+    let next =
+        App::reviewed_state_carried_forward(&previous, opened.session.clone(), &opened.diff_files);
+
+    // then they rejoin the unreleased set, since the new head's batch
+    // numbering restarts and an old batch number would collide with it.
+    assert_eq!(next.release_count, 0);
+    assert_eq!(next.comments().count(), 3);
+    assert_eq!(next.unreleased_count(), 3);
+}
+
+#[test]
 fn should_carry_unchanged_hunk_marks_inside_changed_file_when_pr_head_advances() {
     // given a reviewed file with two reviewed hunks at the old PR head
     let mut app = build_app();

@@ -693,12 +693,7 @@ impl App {
                 Self::file_review_carried_forward(path, review, previous, &file_by_path)
             })
             .collect();
-        let review_comments = previous
-            .review_comments
-            .iter()
-            .filter(|comment| !comment.is_locked())
-            .cloned()
-            .collect();
+        let review_comments = Self::drafts_carried_forward(&previous.review_comments);
 
         ReviewSession {
             files,
@@ -730,12 +725,7 @@ impl App {
             .collect();
         let (file_comments, line_comments) = if unchanged_file {
             (
-                previous_review
-                    .file_comments
-                    .iter()
-                    .filter(|comment| !comment.is_locked())
-                    .cloned()
-                    .collect(),
+                Self::drafts_carried_forward(&previous_review.file_comments),
                 Self::line_draft_comments_carried_forward(previous_review),
             )
         } else {
@@ -761,12 +751,23 @@ impl App {
             .line_comments
             .iter()
             .filter_map(|(line, comments)| {
-                let drafts: Vec<_> = comments
-                    .iter()
-                    .filter(|comment| !comment.is_locked())
-                    .cloned()
-                    .collect();
+                let drafts = Self::drafts_carried_forward(comments);
                 (!drafts.is_empty()).then_some((*line, drafts))
+            })
+            .collect()
+    }
+
+    /// The unlocked comments, unreleased. The new head's session restarts
+    /// `release_count` at 0, so a batch number from the old head would
+    /// collide with the new head's batches; the carried drafts instead
+    /// rejoin the unreleased set and the next `:send` publishes them.
+    fn drafts_carried_forward(comments: &[Comment]) -> Vec<Comment> {
+        comments
+            .iter()
+            .filter(|comment| !comment.is_locked())
+            .map(|comment| Comment {
+                released_in: None,
+                ..comment.clone()
             })
             .collect()
     }
