@@ -261,7 +261,10 @@ shows; it is `null` for every other kind. Each PR head gets its own session, so
 `head_sha` never moves within one session. When the PR head moves, the TUI
 reloads onto it and the listing reports the new head's session, with
 `release_count` starting again from 0. A `:send` therefore covers exactly the
-`head_sha` listed beside its `release_count`.
+`head_sha` listed beside its `release_count`. Draft comments the TUI carries
+onto the new head arrive with `released_in` cleared, so they count as
+unreleased there and the first `:send` on the new head publishes them again
+under its own batch numbering.
 
 `comments` returns a JSON array:
 
