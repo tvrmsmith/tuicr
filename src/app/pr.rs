@@ -403,6 +403,10 @@ impl App {
                 && s.pr_number == request.pr_number
                 && s.head_sha == request.head_sha
                 && s.range == request.range
+        }) && self.shown_pr_key().is_some_and(|key| {
+            key.repository == request.repository
+                && key.number == request.pr_number
+                && key.head_sha == request.head_sha
         });
         if !still_active {
             return;
@@ -524,6 +528,15 @@ impl App {
         Ok(())
     }
 
+    /// The key of the PR on screen, or `None` outside PR mode. A background
+    /// PR result applies only while this still names the PR it was asked for.
+    pub(in crate::app) fn shown_pr_key(&self) -> Option<&crate::forge::traits::PrSessionKey> {
+        match &self.diff_source {
+            DiffSource::PullRequest(current) => Some(&current.key),
+            _ => None,
+        }
+    }
+
     /// Pump a pending reload result. Parses + applies on the main thread,
     /// then restores the cursor to the remembered anchor.
     pub fn poll_pr_reload_events(&mut self) {
@@ -548,6 +561,9 @@ impl App {
         if !in_flight
             .as_ref()
             .is_some_and(|s| s.pr_number == request.pr_number && s.repository == request.repository)
+            || !self.shown_pr_key().is_some_and(|key| {
+                key.number == request.pr_number && key.repository == request.repository
+            })
         {
             return;
         }

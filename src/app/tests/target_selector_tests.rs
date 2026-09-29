@@ -2106,6 +2106,123 @@ fn should_keep_a_newer_polled_head_when_an_in_flight_reload_lands_on_the_old_hea
     assert!(app.pr_reload_state.is_some());
 }
 
+/// Swaps the in-flight reload's channel for one that already holds `details`
+/// at a new head, as if the fetch landed while the reviewer was elsewhere.
+fn queue_pr_reload_result(app: &mut App, details: crate::forge::traits::PullRequestDetails) {
+    let request = app.pr_reload_state.clone().expect("reload started");
+    let (tx, rx) = std::sync::mpsc::channel();
+    tx.send(PrReloadEvent::Done {
+        request,
+        result: Ok((
+            details.clone(),
+            structured_patch(&two_file_patch("newer changed")),
+            Vec::new(),
+            PullRequestReviewMetadata::default(),
+            crate::forge::traits::PullRequestInfo::from_details(details),
+        )),
+    })
+    .unwrap();
+    app.pr_reload_rx = Some(rx);
+}
+
+#[test]
+fn should_drop_a_pr_reload_that_lands_after_the_reviewer_opens_another_pr() {
+    let (mut app, details_a) = pr_app_at_head_a(424317);
+    app.spawn_pr_reload().unwrap();
+    let mut details_b = details_a.clone();
+    details_b.head_sha = "bbbbbbbbbbbbbbbb".to_string();
+    queue_pr_reload_result(&mut app, details_b);
+
+    // The reviewer opens another PR from the selector before the reload lands.
+    app.input_mode = InputMode::CommitSelect;
+    app.poll_pr_reload_events();
+    let other = test_pr_details(424318, "other");
+    app.open_pr_with_backend(
+        &sample_pr(424318, "other"),
+        Box::new(FakeForgeBackend::open_pr_details(
+            other,
+            two_file_plus_added_patch(),
+        )),
+        None,
+    )
+    .unwrap();
+    assert_eq!(app.input_mode, InputMode::Normal);
+
+    app.poll_pr_reload_events();
+
+    let DiffSource::PullRequest(pr) = &app.diff_source else {
+        panic!("expected PR mode");
+    };
+    assert_eq!(pr.key.number, 424318);
+    assert_eq!(app.diff_files.len(), 3);
+    assert!(app.pr_reload_state.is_none());
+    assert!(app.pr_reload_rx.is_none());
+}
+
+#[test]
+fn should_drop_a_pr_reload_that_lands_after_the_reviewer_leaves_pr_mode() {
+    let (mut app, details_a) = pr_app_at_head_a(424319);
+    app.spawn_pr_reload().unwrap();
+    queue_pr_reload_result(&mut app, details_a);
+    app.diff_source = DiffSource::WorkingTree;
+    app.diff_files.clear();
+
+    app.poll_pr_reload_events();
+
+    assert!(app.diff_files.is_empty());
+    assert!(app.pr_reload_state.is_none());
+    assert!(app.pr_reload_rx.is_none());
+}
+
+#[test]
+fn should_drop_a_range_reload_that_lands_after_the_head_moved() {
+    let (mut app, details_a) = pr_app_at_head_a(424320);
+    let request = PrRangeReloadRequest {
+        repository: details_a.repository.clone(),
+        pr_number: details_a.number,
+        head_sha: details_a.head_sha.clone(),
+        start_sha: "1111111".to_string(),
+        end_sha: "2222222".to_string(),
+        range: (0, 0),
+        started_at: Instant::now(),
+        anchor: None,
+        pick: TargetPick::SameReview,
+    };
+    let (tx, rx) = std::sync::mpsc::channel();
+    tx.send(PrRangeReloadEvent::Done {
+        request: request.clone(),
+        result: Ok(structured_patch(&two_file_plus_added_patch())),
+    })
+    .unwrap();
+    app.pr_range_reload_state = Some(request);
+    app.pr_range_reload_rx = Some(rx);
+
+    // A head-move reload lands on head B before the range fetch for head A.
+    let mut details_b = details_a.clone();
+    details_b.head_sha = "bbbbbbbbbbbbbbbb".to_string();
+    let reload = PrReloadRequest {
+        repository: details_a.repository.clone(),
+        pr_number: details_a.number,
+        head_sha: details_a.head_sha.clone(),
+        started_at: Instant::now(),
+        anchor: None,
+        restore_overview_cursor: None,
+    };
+    app.finish_pr_reload(
+        details_b.clone(),
+        structured_patch(&two_file_patch("newer changed")),
+        Vec::new(),
+        PullRequestReviewMetadata::default(),
+        crate::forge::traits::PullRequestInfo::from_details(details_b),
+        &reload,
+    )
+    .unwrap();
+
+    app.poll_pr_range_reload_events();
+
+    assert_eq!(app.diff_files.len(), 2);
+}
+
 #[test]
 fn should_defer_head_move_reload_while_a_submit_is_in_flight() {
     let (mut app, details) = pr_app_at_head_a(424309);

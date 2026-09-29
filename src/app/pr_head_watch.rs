@@ -155,12 +155,10 @@ impl App {
                 Err("the poll thread exited without an answer".to_string())
             }
         };
-        let same_pr = matches!(
-            &self.diff_source,
-            DiffSource::PullRequest(current)
-                if current.key.repository == poll.repository && current.key.number == poll.number
-        );
-        if !same_pr {
+        if !self
+            .shown_pr_key()
+            .is_some_and(|key| key.repository == poll.repository && key.number == poll.number)
+        {
             return false;
         }
 
