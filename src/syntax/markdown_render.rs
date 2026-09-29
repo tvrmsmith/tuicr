@@ -24,6 +24,10 @@ use crate::theme::Theme;
 
 type Runs = Vec<(Style, String)>;
 
+/// A chip's padding while rows reflow: `wrap` breaks only at `' '`, so the
+/// pads stay glued to the chip text. `to_line` turns it back into a space.
+const NBSP: char = '\u{a0}';
+
 /// One reflowed display row of rendered markdown.
 pub(crate) struct BlockRow {
     pub line: Line<'static>,
@@ -433,7 +437,7 @@ impl<'a> Doc<'a> {
     fn chip(&mut self, r: Range<usize>) {
         let ticks = self.run_len(r.start, '`');
         let chip = self.look.chip;
-        let pad = vec![(chip, " ".to_string())];
+        let pad = vec![(chip, NBSP.to_string())];
         self.paint(r.start + ticks..r.end.saturating_sub(ticks), chip);
         self.replace(r.start..r.start + ticks, pad.clone());
         self.replace(r.end.saturating_sub(ticks)..r.end, pad);
@@ -937,7 +941,7 @@ fn pin_underline(style: Style) -> Style {
 fn to_line(runs: Runs) -> Line<'static> {
     Line::from(
         runs.into_iter()
-            .map(|(style, text)| Span::styled(text, pin_underline(style)))
+            .map(|(style, text)| Span::styled(text.replace(NBSP, " "), pin_underline(style)))
             .collect::<Vec<_>>(),
     )
 }
@@ -1452,6 +1456,27 @@ mod tests {
         assert!(pad.content.trim().is_empty());
         assert_ne!(pad.style.bg, Some(theme.bg_highlight));
         assert!(has(pad, Modifier::BOLD) && has(pad, Modifier::UNDERLINED));
+    }
+
+    #[test]
+    fn should_move_chip_that_lands_on_wrap_boundary_to_next_row_with_its_pads() {
+        let theme = Theme::dark();
+        let rows = render("see and `inline_code()` here", 16);
+
+        let texts: Vec<String> = rows.iter().map(text).collect();
+        assert_eq!(texts, ["see and ", " inline_code()  ", "here"]);
+        assert!(
+            rows[0]
+                .line
+                .spans
+                .iter()
+                .all(|s| s.style.bg != Some(theme.bg_highlight))
+        );
+        assert!(
+            styles_of(&rows[1], " inline_code() ")
+                .iter()
+                .all(|s| s.bg == Some(theme.bg_highlight))
+        );
     }
 
     #[test]

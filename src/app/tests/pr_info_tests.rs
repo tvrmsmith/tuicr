@@ -509,3 +509,19 @@ fn should_reuse_pr_info_rows_until_width_or_markdown_mode_changes() {
     let plain = crate::ui::pr_info_panel::pr_info_rows(&app);
     assert!(!std::rc::Rc::ptr_eq(&narrower, &plain));
 }
+
+#[test]
+fn should_draw_the_panel_at_full_width_on_the_first_frame() {
+    let mut info = sample_pr_info();
+    info.details.body = "Readable on the very first frame".to_string();
+    let mut app = build_pr_app();
+    app.pr_info = Some(info);
+
+    let buffer = draw_once(&mut app);
+
+    assert!(
+        rows_of(&buffer)
+            .iter()
+            .any(|row| row.contains("Readable on the very first frame"))
+    );
+}
