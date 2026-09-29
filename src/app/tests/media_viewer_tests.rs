@@ -13,6 +13,7 @@ use crate::app::media::{LoadError, LoadRequest, LoadResult, MediaJobs, MediaSlot
 use crate::app::tests::pr_info_tests::build_pr_app;
 use crate::app::{App, InputMode};
 use crate::forge::traits::ForgeRepository;
+use crate::input::Action;
 use crate::media::graphics::ImageProtocolSetting;
 use crate::media::open::{MediaError, Opened};
 use crate::media::{MediaKind, MediaRef};
@@ -59,11 +60,30 @@ impl FakeMediaJobs {
     }
 
     fn send_open(&self, call: usize, result: Result<Opened, MediaError>) {
-        let _ = self.open_senders.borrow()[call].send(result);
+        self.open_senders.borrow()[call]
+            .send(result)
+            .expect("app still holds this open call's receiver");
     }
 
     fn send_load(&self, call: usize, result: LoadResult) {
-        let _ = self.load_senders.borrow()[call].send(result);
+        self.load_senders.borrow()[call]
+            .send(result)
+            .expect("app still holds this load call's receiver");
+    }
+
+    /// Drops the call's `Sender`, as a worker thread that panicked would.
+    fn disconnect_open(&self, call: usize) {
+        drop(std::mem::replace(
+            &mut self.open_senders.borrow_mut()[call],
+            mpsc::channel().0,
+        ));
+    }
+
+    fn disconnect_load(&self, call: usize) {
+        drop(std::mem::replace(
+            &mut self.load_senders.borrow_mut()[call],
+            mpsc::channel().0,
+        ));
     }
 }
 
@@ -133,6 +153,26 @@ fn setup(probe_result: Option<Picker>) -> (App, Rc<FakeMediaJobs>) {
     (app, fake)
 }
 
+/// Enter through the real diff-view handler.
+fn press_enter(app: &mut App) {
+    crate::handler::handle_diff_action(app, Action::SelectFile);
+}
+
+/// A viewer key through the real media-viewer handler.
+fn press_in_viewer(app: &mut App, action: Action) {
+    crate::handler::handle_media_viewer_action(app, action);
+}
+
+fn protocol_for(area: Rect) -> ratatui_image::protocol::Protocol {
+    Picker::halfblocks()
+        .new_protocol(
+            image::DynamicImage::new_rgb8(4, 4),
+            area.as_size(),
+            ratatui_image::Resize::Fit(None),
+        )
+        .unwrap()
+}
+
 fn viewer(app: &App) -> &crate::app::media::MediaViewer {
     app.media_viewer.as_ref().expect("media viewer open")
 }
@@ -142,7 +182,7 @@ fn viewer(app: &App) -> &crate::app::media::MediaViewer {
 fn enter_with_no_picker_opens_externally() {
     let (mut app, fake) = setup(None);
     app.diff_state.cursor_line = 2;
-    app.enter_media(crate::ui::pr_info_panel::pr_info_media_at_cursor(&app).unwrap());
+    press_enter(&mut app);
     assert_eq!(app.input_mode, InputMode::Normal);
     assert_eq!(*fake.open_calls.borrow(), vec!["https://x.test/1.png"]);
     assert_eq!(app.message.as_ref().unwrap().content, "Opening one…");
@@ -153,7 +193,7 @@ fn enter_with_no_picker_opens_externally() {
 fn open_result_file_reports_opened() {
     let (mut app, fake) = setup(None);
     app.diff_state.cursor_line = 2;
-    app.enter_media(crate::ui::pr_info_panel::pr_info_media_at_cursor(&app).unwrap());
+    press_enter(&mut app);
     fake.send_open(0, Ok(Opened::File("/tmp/one.png".into())));
     assert!(app.poll_media_open_events());
     assert_eq!(app.message.as_ref().unwrap().content, "Opened one");
@@ -164,7 +204,7 @@ fn open_result_file_reports_opened() {
 fn open_result_browser_reports_opened_in_browser() {
     let (mut app, fake) = setup(None);
     app.diff_state.cursor_line = 2;
-    app.enter_media(crate::ui::pr_info_panel::pr_info_media_at_cursor(&app).unwrap());
+    press_enter(&mut app);
     fake.send_open(0, Ok(Opened::Browser));
     app.poll_media_open_events();
     assert_eq!(
@@ -178,7 +218,7 @@ fn open_result_browser_reports_opened_in_browser() {
 fn open_result_error_sets_error_message() {
     let (mut app, fake) = setup(None);
     app.diff_state.cursor_line = 2;
-    app.enter_media(crate::ui::pr_info_panel::pr_info_media_at_cursor(&app).unwrap());
+    press_enter(&mut app);
     fake.send_open(0, Err(MediaError::Http { status: 500 }));
     app.poll_media_open_events();
     assert_eq!(
@@ -192,8 +232,8 @@ fn open_result_error_sets_error_message() {
 fn probe_runs_at_most_once() {
     let (mut app, fake) = setup(None);
     app.diff_state.cursor_line = 2;
-    app.enter_media(crate::ui::pr_info_panel::pr_info_media_at_cursor(&app).unwrap());
-    app.enter_media(crate::ui::pr_info_panel::pr_info_media_at_cursor(&app).unwrap());
+    press_enter(&mut app);
+    press_enter(&mut app);
     assert_eq!(fake.probe_calls.get(), 1);
 }
 
@@ -203,7 +243,7 @@ fn output_to_stdout_skips_the_probe() {
     let (mut app, fake) = setup(Some(Picker::halfblocks()));
     app.output_to_stdout = true;
     app.diff_state.cursor_line = 2;
-    app.enter_media(crate::ui::pr_info_panel::pr_info_media_at_cursor(&app).unwrap());
+    press_enter(&mut app);
     assert_eq!(fake.probe_calls.get(), 0);
     assert_eq!(fake.open_calls.borrow().len(), 1);
 }
@@ -213,7 +253,7 @@ fn output_to_stdout_skips_the_probe() {
 fn enter_with_a_picker_opens_the_viewer() {
     let (mut app, fake) = setup(Some(Picker::halfblocks()));
     app.diff_state.cursor_line = 3;
-    app.enter_media(crate::ui::pr_info_panel::pr_info_media_at_cursor(&app).unwrap());
+    press_enter(&mut app);
     assert_eq!(app.input_mode, InputMode::MediaViewer);
     let v = viewer(&app);
     assert_eq!(v.index, 1);
@@ -226,7 +266,7 @@ fn enter_with_a_picker_opens_the_viewer() {
 fn set_area_issues_a_load_request() {
     let (mut app, fake) = setup(Some(Picker::halfblocks()));
     app.diff_state.cursor_line = 3;
-    app.enter_media(crate::ui::pr_info_panel::pr_info_media_at_cursor(&app).unwrap());
+    press_enter(&mut app);
     app.media_viewer.as_mut().unwrap().set_area(rect_r());
     app.poll_media_viewer_events();
     let calls = fake.load_calls.borrow();
@@ -241,7 +281,7 @@ fn set_area_issues_a_load_request() {
 fn polling_again_does_not_reissue_the_same_request() {
     let (mut app, fake) = setup(Some(Picker::halfblocks()));
     app.diff_state.cursor_line = 3;
-    app.enter_media(crate::ui::pr_info_panel::pr_info_media_at_cursor(&app).unwrap());
+    press_enter(&mut app);
     app.media_viewer.as_mut().unwrap().set_area(rect_r());
     app.poll_media_viewer_events();
     app.poll_media_viewer_events();
@@ -253,10 +293,10 @@ fn polling_again_does_not_reissue_the_same_request() {
 fn media_next_advances_and_reissues_a_load() {
     let (mut app, fake) = setup(Some(Picker::halfblocks()));
     app.diff_state.cursor_line = 3;
-    app.enter_media(crate::ui::pr_info_panel::pr_info_media_at_cursor(&app).unwrap());
+    press_enter(&mut app);
     app.media_viewer.as_mut().unwrap().set_area(rect_r());
     app.poll_media_viewer_events();
-    app.media_next();
+    press_in_viewer(&mut app, Action::MediaNext);
     app.poll_media_viewer_events();
     assert_eq!(viewer(&app).index, 2);
     let calls = fake.load_calls.borrow();
@@ -271,12 +311,12 @@ fn media_next_advances_and_reissues_a_load() {
 fn media_next_at_the_last_item_is_a_no_op() {
     let (mut app, _fake) = setup(Some(Picker::halfblocks()));
     app.diff_state.cursor_line = 3;
-    app.enter_media(crate::ui::pr_info_panel::pr_info_media_at_cursor(&app).unwrap());
+    press_enter(&mut app);
     app.media_viewer.as_mut().unwrap().set_area(rect_r());
     app.poll_media_viewer_events();
-    app.media_next();
+    press_in_viewer(&mut app, Action::MediaNext);
     let repaint_before = app.force_full_repaint;
-    app.media_next();
+    press_in_viewer(&mut app, Action::MediaNext);
     assert_eq!(viewer(&app).index, 2);
     assert_eq!(app.force_full_repaint, repaint_before);
 }
@@ -286,36 +326,32 @@ fn media_next_at_the_last_item_is_a_no_op() {
 fn media_prev_at_the_first_item_is_a_no_op() {
     let (mut app, _fake) = setup(Some(Picker::halfblocks()));
     app.diff_state.cursor_line = 2;
-    app.enter_media(crate::ui::pr_info_panel::pr_info_media_at_cursor(&app).unwrap());
+    press_enter(&mut app);
     assert_eq!(viewer(&app).index, 0);
-    app.media_prev();
+    press_in_viewer(&mut app, Action::MediaPrev);
     assert_eq!(viewer(&app).index, 0);
 }
 
-// 13: after #10, sends the 1st call's LoadResult (old generation, Ok).
+// 13: the viewer pages away and back before the 1st call's LoadResult
+// (old generation, Ok) arrives on its still-open channel.
 #[test]
 fn a_stale_generation_result_is_dropped() {
     let (mut app, fake) = setup(Some(Picker::halfblocks()));
     app.diff_state.cursor_line = 3;
-    app.enter_media(crate::ui::pr_info_panel::pr_info_media_at_cursor(&app).unwrap());
+    press_enter(&mut app);
     app.media_viewer.as_mut().unwrap().set_area(rect_r());
     app.poll_media_viewer_events();
-    app.media_next();
-    app.poll_media_viewer_events();
+    press_in_viewer(&mut app, Action::MediaNext);
+    press_in_viewer(&mut app, Action::MediaPrev);
     let stale_generation = fake.load_calls.borrow()[0].generation;
+    assert!(viewer(&app).generation > stale_generation);
     fake.send_load(
         0,
         LoadResult {
             generation: stale_generation,
             index: 1,
             area: rect_r(),
-            outcome: Ok(Picker::halfblocks()
-                .new_protocol(
-                    image::DynamicImage::new_rgb8(4, 4),
-                    rect_r().as_size(),
-                    ratatui_image::Resize::Fit(None),
-                )
-                .unwrap()),
+            outcome: Ok(protocol_for(rect_r())),
         },
     );
     app.poll_media_viewer_events();
@@ -327,10 +363,10 @@ fn a_stale_generation_result_is_dropped() {
 fn a_current_generation_ok_result_becomes_ready() {
     let (mut app, fake) = setup(Some(Picker::halfblocks()));
     app.diff_state.cursor_line = 3;
-    app.enter_media(crate::ui::pr_info_panel::pr_info_media_at_cursor(&app).unwrap());
+    press_enter(&mut app);
     app.media_viewer.as_mut().unwrap().set_area(rect_r());
     app.poll_media_viewer_events();
-    app.media_next();
+    press_in_viewer(&mut app, Action::MediaNext);
     app.poll_media_viewer_events();
     let generation = fake.load_calls.borrow()[1].generation;
     let protocol = Picker::halfblocks()
@@ -363,10 +399,10 @@ fn a_current_generation_ok_result_becomes_ready() {
 fn a_new_area_reissues_the_load_at_the_new_size() {
     let (mut app, fake) = setup(Some(Picker::halfblocks()));
     app.diff_state.cursor_line = 3;
-    app.enter_media(crate::ui::pr_info_panel::pr_info_media_at_cursor(&app).unwrap());
+    press_enter(&mut app);
     app.media_viewer.as_mut().unwrap().set_area(rect_r());
     app.poll_media_viewer_events();
-    app.media_next();
+    press_in_viewer(&mut app, Action::MediaNext);
     app.poll_media_viewer_events();
     let generation = fake.load_calls.borrow()[1].generation;
     let protocol = Picker::halfblocks()
@@ -400,10 +436,10 @@ fn a_new_area_reissues_the_load_at_the_new_size() {
 fn a_current_generation_error_result_becomes_failed() {
     let (mut app, fake) = setup(Some(Picker::halfblocks()));
     app.diff_state.cursor_line = 3;
-    app.enter_media(crate::ui::pr_info_panel::pr_info_media_at_cursor(&app).unwrap());
+    press_enter(&mut app);
     app.media_viewer.as_mut().unwrap().set_area(rect_r());
     app.poll_media_viewer_events();
-    app.media_next();
+    press_in_viewer(&mut app, Action::MediaNext);
     app.poll_media_viewer_events();
     let generation = fake.load_calls.borrow()[1].generation;
     fake.send_load(
@@ -429,8 +465,8 @@ fn a_current_generation_error_result_becomes_failed() {
 fn media_open_external_fetches_the_current_item_and_keeps_the_viewer_open() {
     let (mut app, fake) = setup(Some(Picker::halfblocks()));
     app.diff_state.cursor_line = 3;
-    app.enter_media(crate::ui::pr_info_panel::pr_info_media_at_cursor(&app).unwrap());
-    app.media_open_external();
+    press_enter(&mut app);
+    press_in_viewer(&mut app, Action::MediaOpenExternal);
     assert_eq!(app.input_mode, InputMode::MediaViewer);
     assert_eq!(*fake.open_calls.borrow(), vec!["https://x.test/2.png"]);
     assert_eq!(app.message.as_ref().unwrap().content, "Opening two…");
@@ -441,8 +477,8 @@ fn media_open_external_fetches_the_current_item_and_keeps_the_viewer_open() {
 fn media_close_resets_mode_and_forces_a_repaint() {
     let (mut app, _fake) = setup(Some(Picker::halfblocks()));
     app.diff_state.cursor_line = 3;
-    app.enter_media(crate::ui::pr_info_panel::pr_info_media_at_cursor(&app).unwrap());
-    app.media_close();
+    press_enter(&mut app);
+    press_in_viewer(&mut app, Action::MediaClose);
     assert_eq!(app.input_mode, InputMode::Normal);
     assert!(app.media_viewer.is_none());
     assert!(app.force_full_repaint);
@@ -453,10 +489,10 @@ fn media_close_resets_mode_and_forces_a_repaint() {
 fn a_load_result_after_close_does_not_panic() {
     let (mut app, fake) = setup(Some(Picker::halfblocks()));
     app.diff_state.cursor_line = 3;
-    app.enter_media(crate::ui::pr_info_panel::pr_info_media_at_cursor(&app).unwrap());
+    press_enter(&mut app);
     app.media_viewer.as_mut().unwrap().set_area(rect_r());
     app.poll_media_viewer_events();
-    app.media_close();
+    press_in_viewer(&mut app, Action::MediaClose);
     let protocol = Picker::halfblocks()
         .new_protocol(
             image::DynamicImage::new_rgb8(4, 4),
@@ -482,14 +518,53 @@ fn a_load_result_after_close_does_not_panic() {
 fn enter_on_a_prose_row_falls_through_unchanged() {
     let (mut app, fake) = setup(Some(Picker::halfblocks()));
     app.diff_state.cursor_line = 1;
-    assert!(crate::ui::pr_info_panel::pr_info_media_at_cursor(&app).is_none());
-    if let Some(index) = crate::ui::pr_info_panel::pr_info_media_at_cursor(&app) {
-        app.enter_media(index);
-    }
+    press_enter(&mut app);
     assert_eq!(fake.probe_calls.get(), 0);
     assert_eq!(fake.open_calls.borrow().len(), 0);
     assert_eq!(app.input_mode, InputMode::Normal);
     assert!(app.message.is_none());
+}
+
+// A load worker that dies without sending (a decoder panic) ends the spinner
+// with an error instead of leaving the item Loading forever.
+#[test]
+fn a_load_worker_that_disconnects_fails_the_current_item() {
+    let (mut app, fake) = setup(Some(Picker::halfblocks()));
+    app.diff_state.cursor_line = 3;
+    press_enter(&mut app);
+    app.media_viewer.as_mut().unwrap().set_area(rect_r());
+    app.poll_media_viewer_events();
+    fake.disconnect_load(0);
+    assert!(app.poll_media_viewer_events());
+    assert!(matches!(viewer(&app).current, MediaSlot::Failed(_)));
+    assert_eq!(fake.load_calls.borrow().len(), 1);
+}
+
+// A disconnect from a load the viewer already paged away from leaves the new
+// item's Loading slot alone.
+#[test]
+fn a_stale_load_worker_disconnect_is_ignored() {
+    let (mut app, fake) = setup(Some(Picker::halfblocks()));
+    app.diff_state.cursor_line = 3;
+    press_enter(&mut app);
+    app.media_viewer.as_mut().unwrap().set_area(rect_r());
+    app.poll_media_viewer_events();
+    press_in_viewer(&mut app, Action::MediaNext);
+    fake.disconnect_load(0);
+    app.poll_media_viewer_events();
+    assert!(matches!(viewer(&app).current, MediaSlot::Loading));
+    assert_eq!(fake.load_calls.borrow()[1].index, 2);
+}
+
+// An open worker that dies without sending replaces "Opening …" with an error.
+#[test]
+fn an_open_worker_that_disconnects_reports_an_error() {
+    let (mut app, fake) = setup(None);
+    app.diff_state.cursor_line = 2;
+    press_enter(&mut app);
+    fake.disconnect_open(0);
+    assert!(app.poll_media_open_events());
+    assert_eq!(app.message.as_ref().unwrap().content, "Failed to open one");
 }
 
 /// Opens the viewer on item 2 (`two`), writes `bytes` to a download named
@@ -498,19 +573,14 @@ fn enter_on_a_prose_row_falls_through_unchanged() {
 fn viewer_rows_for_download(file_name: &str, bytes: &[u8]) -> Vec<String> {
     let (mut app, fake) = setup(Some(Picker::halfblocks()));
     app.diff_state.cursor_line = 3;
-    app.enter_media(crate::ui::pr_info_panel::pr_info_media_at_cursor(&app).unwrap());
+    press_enter(&mut app);
     app.media_viewer.as_mut().unwrap().set_area(rect_r());
     app.poll_media_viewer_events();
 
     let dir = tempfile::tempdir().expect("temp dir");
     let path = dir.path().join(file_name);
     std::fs::write(&path, bytes).expect("write download");
-    let outcome = crate::app::media::render_file(
-        &MediaKind::Attachment,
-        &path,
-        &Picker::halfblocks(),
-        rect_r(),
-    );
+    let outcome = crate::app::media::render_file(&path, &Picker::halfblocks(), rect_r());
     fake.send_load(
         0,
         LoadResult {
@@ -568,13 +638,55 @@ fn an_image_that_fails_to_decode_shows_its_error_on_the_card() {
     assert_eq!(card[2], "press o to open outside tuicr");
 }
 
-// A declared `<video>` never reaches the decoder, whatever its file is named.
+// A declared `<video>` is not downloaded: the load resolves to the
+// open-outside card even when its URL cannot be fetched.
 #[test]
 fn a_declared_video_is_not_an_image() {
+    let outcome = crate::app::media::decode_and_render(&LoadRequest {
+        generation: 0,
+        index: 0,
+        media: MediaRef {
+            url: "http://127.0.0.1:1/v.mp4".to_string(),
+            label: "v.mp4".to_string(),
+            kind: MediaKind::Video,
+        },
+        repo: None,
+        picker: Picker::halfblocks(),
+        area: rect_r(),
+    });
+    assert!(matches!(outcome, Err(LoadError::NotImage)));
+}
+
+// A bare attachment saved without an extension decodes by sniffing its bytes
+// and shows as Ready.
+#[test]
+fn an_extensionless_png_download_becomes_ready() {
+    let (mut app, fake) = setup(Some(Picker::halfblocks()));
+    app.diff_state.cursor_line = 3;
+    press_enter(&mut app);
+    app.media_viewer.as_mut().unwrap().set_area(rect_r());
+    app.poll_media_viewer_events();
+
     let dir = tempfile::tempdir().expect("temp dir");
     let path = dir.path().join("0123456789abcdef");
-    std::fs::write(&path, b"\x00\x00\x00\x18ftypmp42").expect("write download");
-    let outcome =
-        crate::app::media::render_file(&MediaKind::Video, &path, &Picker::halfblocks(), rect_r());
-    assert!(matches!(outcome, Err(LoadError::NotImage)));
+    image::DynamicImage::new_rgb8(4, 4)
+        .save_with_format(&path, image::ImageFormat::Png)
+        .expect("write png");
+    let outcome = crate::app::media::render_file(&path, &Picker::halfblocks(), rect_r());
+    fake.send_load(
+        0,
+        LoadResult {
+            generation: fake.load_calls.borrow()[0].generation,
+            index: 1,
+            area: rect_r(),
+            outcome,
+        },
+    );
+    app.poll_media_viewer_events();
+    match &viewer(&app).current {
+        MediaSlot::Ready { area, .. } => assert_eq!(*area, rect_r()),
+        MediaSlot::Loading => panic!("expected Ready, got Loading"),
+        MediaSlot::NotImage => panic!("expected Ready, got NotImage"),
+        MediaSlot::Failed(message) => panic!("expected Ready, got Failed({message:?})"),
+    }
 }

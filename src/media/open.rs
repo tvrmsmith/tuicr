@@ -44,7 +44,7 @@ impl std::fmt::Display for MediaError {
 
 impl std::error::Error for MediaError {}
 
-/// Download `media` into `temp_dir()/tuicr-media`, reusing a cached file.
+/// Download `media` into the per-user cache dir, reusing a cached file.
 /// Blocking; call off the UI thread.
 pub fn fetch(media: &MediaRef, repo: Option<&ForgeRepository>) -> Result<PathBuf, MediaError> {
     let token = if wants_token(&media.url, repo) {
@@ -55,14 +55,19 @@ pub fn fetch(media: &MediaRef, repo: Option<&ForgeRepository>) -> Result<PathBuf
     fetch_to_dir(&media.url, token.as_deref(), &cache_dir())
 }
 
-/// `fetch`, then hand the file to the OS viewer. On an unauthorized fetch of
-/// a URL that wanted a token, falls back to opening the URL in the browser
-/// instead of propagating the error.
+/// `fetch`, then hand the file to the OS viewer. Opens the URL in the browser
+/// instead when the download has no known media extension, so the OS never
+/// picks a handler for an unknown type, or on an unauthorized fetch of a URL
+/// that wanted a token.
 pub fn open_external(
     media: &MediaRef,
     repo: Option<&ForgeRepository>,
 ) -> Result<Opened, MediaError> {
     match fetch(media, repo) {
+        Ok(path) if path.extension().is_none() => {
+            spawn_viewer(&media.url)?;
+            Ok(Opened::Browser)
+        }
         Ok(path) => {
             spawn_viewer(path.as_os_str().to_string_lossy().as_ref())?;
             Ok(Opened::File(path))
@@ -75,9 +80,22 @@ pub fn open_external(
     }
 }
 
-/// The directory `fetch` downloads into and caches from.
+/// The directory `fetch` downloads into and caches from: the user's platform
+/// cache dir, or the temp dir when no home directory resolves.
 fn cache_dir() -> PathBuf {
-    std::env::temp_dir().join("tuicr-media")
+    directories::ProjectDirs::from("", "", "tuicr")
+        .map(|dirs| dirs.cache_dir().join("media"))
+        .unwrap_or_else(|| std::env::temp_dir().join("tuicr-media"))
+}
+
+/// Create `dir` and its parents, owner-only on Unix so no other local user
+/// can plant or read cached files.
+fn create_private_dir(dir: &Path) -> io::Result<()> {
+    let mut builder = std::fs::DirBuilder::new();
+    builder.recursive(true);
+    #[cfg(unix)]
+    std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
+    builder.create(dir)
 }
 
 /// `gh`'s cached token for `host`, or `None` on any failure (not installed,
@@ -113,7 +131,7 @@ fn spawn_viewer(target: &str) -> Result<(), MediaError> {
 }
 
 /// Whether a GitHub token should be sent with the request: the repo is on
-/// GitHub and the URL's host matches the repo's host.
+/// GitHub and the URL is https on the repo's host.
 fn wants_token(url: &str, repo: Option<&ForgeRepository>) -> bool {
     let Some(repo) = repo else {
         return false;
@@ -124,18 +142,17 @@ fn wants_token(url: &str, repo: Option<&ForgeRepository>) -> bool {
     let Ok(uri) = url.parse::<ureq::http::Uri>() else {
         return false;
     };
-    uri.host() == Some(repo.host.as_str())
+    uri.scheme_str() == Some("https") && uri.host() == Some(repo.host.as_str())
 }
 
-/// A file already in `dir` for `hash`, either bare or with an extension,
-/// ignoring any in-progress `.part` download.
+/// A file already in `dir` for `hash`, either bare or with an extension.
 fn cached_file(dir: &Path, hash: &str) -> Option<PathBuf> {
     let prefix_with_ext = format!("{hash}.");
     std::fs::read_dir(dir).ok()?.find_map(|entry| {
         let entry = entry.ok()?;
         let name = entry.file_name();
         let name = name.to_str()?;
-        if name == hash || (name.starts_with(&prefix_with_ext) && !name.ends_with(".part")) {
+        if name == hash || name.starts_with(&prefix_with_ext) {
             Some(entry.path())
         } else {
             None
@@ -160,17 +177,23 @@ fn extension_from_content_type(content_type: &str) -> Option<&'static str> {
     }
 }
 
+/// The image and video extensions a download may be saved with; anything
+/// else is saved bare so the OS opener never sees a type the PR author chose.
+const MEDIA_EXTENSIONS: [&str; 9] = [
+    "png", "jpg", "jpeg", "gif", "webp", "svg", "mp4", "mov", "webm",
+];
+
 /// File extension from the URL path's last segment (query/fragment
-/// stripped), when it is 1-5 alphanumeric characters. Case is preserved.
+/// stripped), when it is in `MEDIA_EXTENSIONS` ignoring case. Case is
+/// preserved.
 fn extension_from_url_path(url: &str) -> Option<&str> {
     let path = url.split(['?', '#']).next().unwrap_or(url);
     let last_segment = path.rsplit('/').next().unwrap_or(path);
     let (_, ext) = last_segment.rsplit_once('.')?;
-    if (1..=5).contains(&ext.len()) && ext.chars().all(|c| c.is_ascii_alphanumeric()) {
-        Some(ext)
-    } else {
-        None
-    }
+    MEDIA_EXTENSIONS
+        .iter()
+        .any(|known| ext.eq_ignore_ascii_case(known))
+        .then_some(ext)
 }
 
 /// Download `url` into `dir`, reusing a cached file. Blocking; the internal
@@ -217,25 +240,18 @@ fn fetch_to_dir(url: &str, token: Option<&str>, dir: &Path) -> Result<PathBuf, M
         None => hash,
     };
 
-    std::fs::create_dir_all(dir).map_err(|err| MediaError::Io(err.to_string()))?;
     let final_path = dir.join(&file_name);
-    let part_path = dir.join(format!("{file_name}.part"));
-
-    let write_result = (|| -> io::Result<()> {
-        let mut file = std::fs::File::create(&part_path)?;
+    // Each download streams into its own temp file, so concurrent fetches of
+    // one URL never share a file; the atomic rename picks the cached copy.
+    let persist_result = (|| -> io::Result<()> {
+        create_private_dir(dir)?;
+        let mut file = tempfile::NamedTempFile::new_in(dir)?;
         let mut reader = response.body_mut().as_reader();
         io::copy(&mut reader, &mut file)?;
+        file.persist(&final_path)?;
         Ok(())
     })();
-    if let Err(err) = write_result {
-        let _ = std::fs::remove_file(&part_path);
-        return Err(MediaError::Io(err.to_string()));
-    }
-
-    std::fs::rename(&part_path, &final_path).map_err(|err| {
-        let _ = std::fs::remove_file(&part_path);
-        MediaError::Io(err.to_string())
-    })?;
+    persist_result.map_err(|err| MediaError::Io(err.to_string()))?;
 
     Ok(final_path)
 }
@@ -351,6 +367,12 @@ mod tests {
     }
 
     #[test]
+    fn does_not_want_token_over_plain_http() {
+        let repo = ForgeRepository::github("github.com", "owner", "repo");
+        assert!(!wants_token("http://github.com/a.png", Some(&repo)));
+    }
+
+    #[test]
     fn does_not_want_token_for_a_different_host() {
         let repo = ForgeRepository::github("github.com", "owner", "repo");
         assert!(!wants_token(
@@ -454,6 +476,43 @@ mod tests {
     }
 
     #[test]
+    fn fetch_to_dir_drops_a_url_extension_outside_the_media_set() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (url, _seen) = spawn_server(1, |_index, _path, _base_url| StubResponse {
+            status: 200,
+            headers: vec![("Content-Type", "application/octet-stream".to_string())],
+            body: b"BYTES".to_vec(),
+        });
+        let url = format!("{url}/x.jar");
+
+        let path = fetch_to_dir(&url, None, dir.path()).expect("fetch succeeds");
+
+        let expected_name = format!("{:016x}", crate::hash::fnv1a_64(url.as_bytes()));
+        assert_eq!(path, dir.path().join(expected_name));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn fetch_to_dir_creates_a_missing_cache_dir_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = tempfile::tempdir().expect("temp dir");
+        let dir = root.path().join("tuicr").join("media");
+        let (url, _seen) = spawn_server(1, |_index, _path, _base_url| StubResponse {
+            status: 200,
+            headers: vec![("Content-Type", "image/png".to_string())],
+            body: b"PNGDATA".to_vec(),
+        });
+
+        fetch_to_dir(&url, None, &dir).expect("fetch succeeds");
+
+        let mode = std::fs::metadata(&dir)
+            .expect("dir metadata")
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o777, 0o700);
+    }
+
+    #[test]
     fn fetch_to_dir_has_no_extension_when_none_is_known() {
         let dir = tempfile::tempdir().expect("temp dir");
         let (url, _seen) = spawn_server(1, |_index, path, _base_url| {
@@ -552,23 +611,23 @@ mod tests {
         assert_eq!(error, MediaError::Http { status: 500 });
     }
 
-    fn has_no_part_file(dir: &Path) -> bool {
+    fn dir_entries(dir: &Path) -> Vec<PathBuf> {
         std::fs::read_dir(dir)
             .expect("read dir")
-            .filter_map(|entry| entry.ok())
-            .all(|entry| !entry.file_name().to_string_lossy().ends_with(".part"))
+            .map(|entry| entry.expect("dir entry").path())
+            .collect()
     }
 
     #[test]
-    fn fetch_to_dir_leaves_no_part_file_after_success_or_http_error() {
+    fn fetch_to_dir_leaves_no_temp_file_after_success_or_http_error() {
         let dir = tempfile::tempdir().expect("temp dir");
         let (ok_url, _seen) = spawn_server(1, |_index, _path, _base_url| StubResponse {
             status: 200,
             headers: vec![("Content-Type", "image/png".to_string())],
             body: b"PNGDATA".to_vec(),
         });
-        fetch_to_dir(&ok_url, None, dir.path()).expect("fetch succeeds");
-        assert!(has_no_part_file(dir.path()));
+        let fetched = fetch_to_dir(&ok_url, None, dir.path()).expect("fetch succeeds");
+        assert_eq!(dir_entries(dir.path()), vec![fetched.clone()]);
 
         let (error_url, _seen) = spawn_server(1, |_index, _path, _base_url| StubResponse {
             status: 500,
@@ -576,7 +635,7 @@ mod tests {
             body: Vec::new(),
         });
         fetch_to_dir(&error_url, None, dir.path()).expect_err("fetch fails");
-        assert!(has_no_part_file(dir.path()));
+        assert_eq!(dir_entries(dir.path()), vec![fetched]);
     }
 
     #[test]

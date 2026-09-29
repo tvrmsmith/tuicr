@@ -295,8 +295,8 @@ pub fn build_pr_info_lines(
 }
 
 /// Index into [`pr_body_media`] of the media on the cursor row, when the
-/// cursor is on a rendered PR-info line. The Enter handler (`App::enter_media`)
-/// calls this to decide whether a row opens the media viewer.
+/// cursor is on a rendered PR-info line. `handle_diff_action`'s `SelectFile`
+/// arm calls this and hands the index to `App::enter_media`.
 pub(crate) fn pr_info_media_at_cursor(app: &App) -> Option<usize> {
     if !is_cursor_in_pr_info(app) {
         return None;
@@ -351,6 +351,8 @@ fn push_body_rows(
                 media_only_here.push(media_idx);
                 media_idx += 1;
             }
+            media_only_here.extend(inline_here);
+            media_only_here.sort_unstable();
             for idx in media_only_here {
                 rows.push(placeholder_row(
                     theme,
@@ -740,6 +742,19 @@ mod tests {
                 ("[image: i.png]".to_string(), Some(1)),
                 (String::new(), None),
                 ("[image: after]".to_string(), Some(2)),
+            ]
+        );
+    }
+
+    #[test]
+    fn inline_media_sharing_a_line_with_media_only_media_keeps_its_placeholder() {
+        let body = "<img src=\"https://x.test/a.png\"> <video src=\"https://x.test/b.mp4\">\n</video> more";
+        assert_eq!(
+            body_rows(body, 80),
+            vec![
+                ("[image: a.png]".to_string(), Some(0)),
+                ("[video: b.mp4]".to_string(), Some(1)),
+                ("</video> more".to_string(), None),
             ]
         );
     }

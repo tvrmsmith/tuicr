@@ -51,8 +51,9 @@ pub(crate) trait MediaJobs {
         media: MediaRef,
         repo: Option<ForgeRepository>,
     ) -> Receiver<Result<Opened, MediaError>>;
-    /// Real adapter: thread running `media::open::fetch`, `image::open`
-    /// (decode), then `req.picker.new_protocol(..)`.
+    /// Real adapter: thread running `decode_and_render`, which fetches the
+    /// item and hands it to `render_file` (format sniffed from the bytes,
+    /// then `req.picker.new_protocol(..)`).
     fn load(&self, req: LoadRequest) -> Receiver<LoadResult>;
 }
 
@@ -139,27 +140,27 @@ impl MediaViewer {
     }
 }
 
-fn decode_and_render(req: &LoadRequest) -> Result<Protocol, LoadError> {
+/// A declared video is `NotImage` without being downloaded; anything else is
+/// fetched and handed to `render_file`.
+pub(crate) fn decode_and_render(req: &LoadRequest) -> Result<Protocol, LoadError> {
+    if req.media.kind == MediaKind::Video {
+        return Err(LoadError::NotImage);
+    }
     let path =
         open::fetch(&req.media, req.repo.as_ref()).map_err(|e| LoadError::Failed(e.to_string()))?;
-    render_file(&req.media.kind, &path, &req.picker, req.area)
+    render_file(&path, &req.picker, req.area)
 }
 
-/// Decode the downloaded `path` into a protocol sized for `area`. A declared
-/// video, or a file `fetch` named with a video extension (from the served
-/// Content-Type or the URL), is `NotImage` without a decode attempt.
-pub(crate) fn render_file(
-    kind: &MediaKind,
-    path: &Path,
-    picker: &Picker,
-    area: Rect,
-) -> Result<Protocol, LoadError> {
+/// Decode the downloaded `path` into a protocol sized for `area`. A file
+/// `fetch` named with a video extension (from the served Content-Type or the
+/// URL) is `NotImage` without a decode attempt.
+pub(crate) fn render_file(path: &Path, picker: &Picker, area: Rect) -> Result<Protocol, LoadError> {
     let is_video_file = path.extension().is_some_and(|ext| {
         ["mp4", "mov", "webm"]
             .iter()
             .any(|video| ext.eq_ignore_ascii_case(video))
     });
-    if *kind == MediaKind::Video || is_video_file {
+    if is_video_file {
         return Err(LoadError::NotImage);
     }
     let failed = |e: &dyn std::fmt::Display| LoadError::Failed(e.to_string());
@@ -312,7 +313,17 @@ impl App {
             Err(mpsc::TryRecvError::Empty) => false,
             Err(mpsc::TryRecvError::Disconnected) => {
                 self.media_load_rx = None;
-                false
+                let Some(viewer) = self.media_viewer.as_mut() else {
+                    return false;
+                };
+                let is_current = viewer.requested.is_some_and(|(generation, index, _)| {
+                    generation == viewer.generation && index == viewer.index
+                });
+                if !is_current {
+                    return false;
+                }
+                viewer.current = MediaSlot::Failed("media loader stopped unexpectedly".to_string());
+                true
             }
         }
     }
@@ -381,8 +392,9 @@ impl App {
             Err(mpsc::TryRecvError::Empty) => false,
             Err(mpsc::TryRecvError::Disconnected) => {
                 self.media_open_rx = None;
-                self.media_open_label = None;
-                false
+                let label = self.media_open_label.take().unwrap_or_default();
+                self.set_error(format!("Failed to open {label}"));
+                true
             }
         }
     }
