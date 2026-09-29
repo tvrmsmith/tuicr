@@ -193,10 +193,16 @@ pub enum Action {
     FeedbackDeleteWord,
 
     // Media viewer (`gd-lc6.1`)
-    /// `→` / `l` — advance to the next media item.
-    MediaNext,
-    /// `←` / `h` — go back to the previous media item.
-    MediaPrev,
+    /// `→` / `l` — next media item, or pan right while zoomed.
+    MediaRight,
+    /// `←` / `h` — previous media item, or pan left while zoomed.
+    MediaLeft,
+    /// `↑` / `k` — pan up while zoomed.
+    MediaUp,
+    /// `↓` / `j` — pan down while zoomed.
+    MediaDown,
+    /// `z` — toggle between fit and 1:1.
+    MediaZoom,
     /// `o` — open the current media item with the external opener.
     MediaOpenExternal,
     /// `Esc` / `q` — close the media viewer.
@@ -243,8 +249,11 @@ pub fn map_key_to_action_with_q_quits(
 /// Enter on a PR-description media placeholder row.
 fn map_media_viewer_mode(key: KeyEvent) -> Action {
     match (key.code, key.modifiers) {
-        (KeyCode::Right | KeyCode::Char('l'), KeyModifiers::NONE) => Action::MediaNext,
-        (KeyCode::Left | KeyCode::Char('h'), KeyModifiers::NONE) => Action::MediaPrev,
+        (KeyCode::Right | KeyCode::Char('l'), KeyModifiers::NONE) => Action::MediaRight,
+        (KeyCode::Left | KeyCode::Char('h'), KeyModifiers::NONE) => Action::MediaLeft,
+        (KeyCode::Down | KeyCode::Char('j'), KeyModifiers::NONE) => Action::MediaDown,
+        (KeyCode::Up | KeyCode::Char('k'), KeyModifiers::NONE) => Action::MediaUp,
+        (KeyCode::Char('z'), KeyModifiers::NONE) => Action::MediaZoom,
         (KeyCode::Char('o'), KeyModifiers::NONE) => Action::MediaOpenExternal,
         (KeyCode::Esc | KeyCode::Char('q'), KeyModifiers::NONE) => Action::MediaClose,
         _ => Action::None,
@@ -1344,7 +1353,7 @@ mod tests {
         let mode = InputMode::MediaViewer;
         assert_eq!(
             map_key_to_action_with_q_quits(key(KeyCode::Right), mode, DEFAULT_LEADER_KEY, false),
-            Action::MediaNext
+            Action::MediaRight
         );
         assert_eq!(
             map_key_to_action_with_q_quits(
@@ -1353,11 +1362,11 @@ mod tests {
                 DEFAULT_LEADER_KEY,
                 false
             ),
-            Action::MediaNext
+            Action::MediaRight
         );
         assert_eq!(
             map_key_to_action_with_q_quits(key(KeyCode::Left), mode, DEFAULT_LEADER_KEY, false),
-            Action::MediaPrev
+            Action::MediaLeft
         );
         assert_eq!(
             map_key_to_action_with_q_quits(
@@ -1366,7 +1375,7 @@ mod tests {
                 DEFAULT_LEADER_KEY,
                 false
             ),
-            Action::MediaPrev
+            Action::MediaLeft
         );
         assert_eq!(
             map_key_to_action_with_q_quits(
@@ -1390,14 +1399,17 @@ mod tests {
             ),
             Action::MediaClose
         );
-        assert_eq!(
-            map_key_to_action_with_q_quits(
-                key(KeyCode::Char('j')),
-                mode,
-                DEFAULT_LEADER_KEY,
-                false
-            ),
-            Action::None
-        );
+        for (code, expected) in [
+            (KeyCode::Char('j'), Action::MediaDown),
+            (KeyCode::Down, Action::MediaDown),
+            (KeyCode::Char('k'), Action::MediaUp),
+            (KeyCode::Up, Action::MediaUp),
+            (KeyCode::Char('z'), Action::MediaZoom),
+        ] {
+            assert_eq!(
+                map_key_to_action_with_q_quits(key(code), mode, DEFAULT_LEADER_KEY, false),
+                expected
+            );
+        }
     }
 }

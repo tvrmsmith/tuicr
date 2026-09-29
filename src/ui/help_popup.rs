@@ -614,14 +614,35 @@ pub fn render_help(frame: &mut Frame, app: &mut App) {
                 "  \u{2192}/l       ",
                 Style::default().add_modifier(Modifier::BOLD),
             ),
-            Span::raw("Next media item"),
+            Span::raw("Next media item; pan right while zoomed"),
         ]),
         Line::from(vec![
             Span::styled(
                 "  \u{2190}/h       ",
                 Style::default().add_modifier(Modifier::BOLD),
             ),
-            Span::raw("Previous media item"),
+            Span::raw("Previous media item; pan left while zoomed"),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                "  \u{2193}/j       ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("Pan down while zoomed"),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                "  \u{2191}/k       ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("Pan up while zoomed"),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                "  z         ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("Toggle zoom between fit and 1:1"),
         ]),
         Line::from(vec![
             Span::styled(

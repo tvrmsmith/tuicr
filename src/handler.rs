@@ -1717,8 +1717,11 @@ pub fn handle_theme_picker_action(app: &mut App, action: Action) {
 /// Handle input while `InputMode::MediaViewer` is open.
 pub fn handle_media_viewer_action(app: &mut App, action: Action) {
     match action {
-        Action::MediaNext => app.media_next(),
-        Action::MediaPrev => app.media_prev(),
+        Action::MediaRight => app.media_right(),
+        Action::MediaLeft => app.media_left(),
+        Action::MediaUp => app.media_up(),
+        Action::MediaDown => app.media_down(),
+        Action::MediaZoom => app.media_zoom(),
         Action::MediaOpenExternal => app.media_open_external(),
         Action::MediaClose => app.media_close(),
         _ => {}
