@@ -1031,10 +1031,25 @@ fn push_str(out: &mut Runs, style: Style, s: &str) {
     }
 }
 
+/// Orca's terminal draws an underline white after SGR 59 (reset underline
+/// colour), which ratatui sends at the end of every frame. Pinning the
+/// underline colour to the text colour sidesteps it.
+fn pin_underline(style: Style) -> Style {
+    match style.fg {
+        Some(fg)
+            if style.add_modifier.contains(Modifier::UNDERLINED)
+                && style.underline_color.is_none() =>
+        {
+            style.underline_color(fg)
+        }
+        _ => style,
+    }
+}
+
 fn to_line(runs: Runs) -> Line<'static> {
     Line::from(
         runs.into_iter()
-            .map(|(style, text)| Span::styled(text, style))
+            .map(|(style, text)| Span::styled(text, pin_underline(style)))
             .collect::<Vec<_>>(),
     )
 }
@@ -1043,7 +1058,14 @@ fn to_line(runs: Runs) -> Line<'static> {
 pub fn render_lines(theme: &Theme, lines: &[&str], variant: Variant) -> Vec<Runs> {
     let src = lines.join("\n");
     let doc = Doc::build(theme, &src, variant, LINE_MODE_RULE_WIDTH, false);
-    (0..lines.len()).map(|i| doc.render_line(i)).collect()
+    (0..lines.len())
+        .map(|i| {
+            doc.render_line(i)
+                .into_iter()
+                .map(|(style, text)| (pin_underline(style), text))
+                .collect()
+        })
+        .collect()
 }
 
 /// Reflowed rows for the PR description panel.
