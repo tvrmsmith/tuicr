@@ -186,7 +186,10 @@ impl Look {
                         .add_modifier(Modifier::ITALIC),
                 ]
             },
-            code: scoped(&[ROOT, "markup.raw.inline.markdown"]).bg(theme.bg_highlight),
+            // glamour's inline code chip: muted salmon on dark gray.
+            code: Style::default()
+                .fg(Color::Indexed(203))
+                .bg(Color::Indexed(236)),
             code_block: Style::default().fg(theme.fg_secondary),
             link_text: link.add_modifier(Modifier::UNDERLINED),
             link_url: dim,
@@ -381,7 +384,7 @@ impl<'a> Doc<'a> {
                     let n = self.count(r.start, '`');
                     let code_style = self.look.code;
                     self.paint(r.start + n..r.end.saturating_sub(n), code_style);
-                    let pad = if self.variant == Variant::Glow {
+                    let pad = if matches!(self.variant, Variant::Glow | Variant::Clean) {
                         vec![(code_style, " ".to_string())]
                     } else {
                         vec![]
@@ -808,26 +811,20 @@ impl<'a> Doc<'a> {
         }
 
         let clean = self.variant == Variant::Clean;
-        // In the PR panel a clean table spans the panel: the last column
-        // absorbs the spare width.
-        if clean && self.block {
-            let used = 4 + widths.iter().sum::<usize>() + 3 * widths.len().saturating_sub(1);
-            if let Some(last) = widths.last_mut() {
-                *last += self.rule_width.saturating_sub(used);
-            }
-        }
         let row_lines: Vec<usize> = rows.iter().map(|r| r.0).collect();
         // In the PR panel a clean table underlines its header instead of
         // spending a row on the delimiter.
         let underline_head = clean && self.block;
         for (line, is_head, cells) in rows {
+            let bar = (border, "│".to_string());
+            let gap = (self.look.base, " ".to_string());
             let mut out: Runs = Vec::new();
             if clean {
-                out.push((border, "│ ".to_string()));
+                out.extend([bar.clone(), gap.clone()]);
             }
             for (i, width) in widths.iter().enumerate() {
                 if i > 0 {
-                    out.push((border, " │ ".to_string()));
+                    out.extend([gap.clone(), bar.clone(), gap.clone()]);
                 }
                 let cell = cells.get(i).cloned().unwrap_or_default();
                 let pad = width.saturating_sub(runs_width(&cell));
@@ -844,13 +841,16 @@ impl<'a> Doc<'a> {
                     out.push((self.look.base, " ".repeat(right)));
                 }
             }
-            if underline_head && is_head {
-                for (style, _) in out.iter_mut().skip(1) {
-                    *style = style.add_modifier(Modifier::UNDERLINED);
-                }
-            }
             if clean {
-                out.push((border, " │".to_string()));
+                out.extend([gap.clone(), bar.clone()]);
+            }
+            // Underline runs bar to bar: every span but the bars themselves.
+            if underline_head && is_head {
+                for (style, text) in out.iter_mut() {
+                    if text != "│" {
+                        *style = style.add_modifier(Modifier::UNDERLINED);
+                    }
+                }
             }
             self.overrides.insert(line, out);
         }
