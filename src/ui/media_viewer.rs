@@ -82,9 +82,11 @@ pub fn render(frame: &mut Frame, app: &mut App) {
                 Style::default().fg(theme.fg_primary),
             ))];
             if let MediaSlot::Failed(message) = &viewer.current {
+                // `message_error_fg` only reads on the error pill's red; the
+                // pill red itself is the error colour that reads on the panel.
                 text.push(Line::from(Span::styled(
                     message.clone(),
-                    Style::default().fg(theme.message_error_fg),
+                    Style::default().fg(theme.message_error_bg),
                 )));
             }
             text.push(Line::from(Span::styled(
@@ -142,11 +144,13 @@ mod tests {
     use ratatui::backend::TestBackend;
     use ratatui::buffer::Buffer;
     use ratatui::layout::Rect;
+    use ratatui::style::Color;
 
     use crate::app::App;
     use crate::app::InputMode;
     use crate::app::media::{MediaSlot, MediaViewer};
     use crate::app::tests::pr_info_tests::build_pr_app;
+    use crate::theme::{ThemeArg, resolve_theme};
 
     #[test]
     fn fit_area_leaves_room_for_rounded_cell_sizes() {
@@ -219,5 +223,48 @@ mod tests {
                 .any(|y| row_text(&buffer, y).contains("press o to open outside tuicr"))
         );
         assert!((0..buffer.area.height).any(|y| row_text(&buffer, y).contains("two")));
+    }
+
+    /// WCAG relative luminance of an sRGB colour.
+    fn luminance(color: Color) -> f64 {
+        let Color::Rgb(r, g, b) = color else {
+            panic!("expected an RGB theme colour, got {color:?}");
+        };
+        let linear = |c: u8| {
+            let c = f64::from(c) / 255.0;
+            if c <= 0.04045 {
+                c / 12.92
+            } else {
+                ((c + 0.055) / 1.055).powf(2.4)
+            }
+        };
+        0.2126 * linear(r) + 0.7152 * linear(g) + 0.0722 * linear(b)
+    }
+
+    fn contrast(a: Color, b: Color) -> f64 {
+        let (la, lb) = (luminance(a), luminance(b));
+        (la.max(lb) + 0.05) / (la.min(lb) + 0.05)
+    }
+
+    #[test]
+    fn failed_message_is_readable_against_the_panel_background_in_every_theme() {
+        for name in crate::theme::built_in_theme_names() {
+            let arg = ThemeArg::parse_name(&name).expect("built-in theme name parses");
+            let mut app = app_with_viewer(MediaSlot::Failed("decode-error-text".to_string()));
+            app.theme = resolve_theme(arg);
+            let buffer = draw_app(&mut app, 60, 12);
+
+            let y = (0..buffer.area.height)
+                .find(|&y| row_text(&buffer, y).contains("decode-error-text"))
+                .unwrap_or_else(|| panic!("{name}: error message not drawn"));
+            let x = row_text(&buffer, y).find("decode-error-text").unwrap() as u16;
+            let fg = buffer[(x, y)].fg;
+            let ratio = contrast(fg, app.theme.panel_bg);
+            assert!(
+                ratio >= 3.0,
+                "{name}: error text {fg:?} on panel {:?} has contrast {ratio:.2}",
+                app.theme.panel_bg
+            );
+        }
     }
 }
