@@ -9,11 +9,11 @@ use std::sync::mpsc::{self, Receiver, Sender};
 use ratatui::layout::Rect;
 use ratatui_image::picker::Picker;
 
-use crate::app::media::{LoadRequest, LoadResult, MediaJobs, MediaSlot};
+use crate::app::media::{LoadError, LoadRequest, LoadResult, MediaJobs, MediaSlot};
 use crate::app::tests::pr_info_tests::build_pr_app;
 use crate::app::{App, InputMode};
 use crate::forge::traits::ForgeRepository;
-use crate::media::MediaRef;
+use crate::media::{MediaKind, MediaRef};
 use crate::media::graphics::ImageProtocolSetting;
 use crate::media::open::{MediaError, Opened};
 
@@ -353,6 +353,7 @@ fn a_current_generation_ok_result_becomes_ready() {
     match &viewer(&app).current {
         MediaSlot::Ready { area, .. } => assert_eq!(*area, rect_r()),
         MediaSlot::Loading => panic!("expected Ready, got Loading"),
+        MediaSlot::NotImage => panic!("expected Ready, got NotImage"),
         MediaSlot::Failed(message) => panic!("expected Ready, got Failed({message:?})"),
     }
 }
@@ -411,13 +412,14 @@ fn a_current_generation_error_result_becomes_failed() {
             generation,
             index: 2,
             area: rect_r(),
-            outcome: Err("decode failed".to_string()),
+            outcome: Err(LoadError::Failed("decode failed".to_string())),
         },
     );
     app.poll_media_viewer_events();
     match &viewer(&app).current {
         MediaSlot::Failed(message) => assert_eq!(message, "decode failed"),
         MediaSlot::Loading => panic!("expected Failed, got Loading"),
+        MediaSlot::NotImage => panic!("expected Failed, got NotImage"),
         MediaSlot::Ready { .. } => panic!("expected Failed, got Ready"),
     }
 }
@@ -488,4 +490,96 @@ fn enter_on_a_prose_row_falls_through_unchanged() {
     assert_eq!(fake.open_calls.borrow().len(), 0);
     assert_eq!(app.input_mode, InputMode::Normal);
     assert!(app.message.is_none());
+}
+
+/// Opens the viewer on item 2 (`two`), writes `bytes` to a download named
+/// `file_name`, runs the real `render_file` on it as a bare attachment, feeds
+/// that result back through polling, and returns the drawn screen's rows.
+fn viewer_rows_for_download(file_name: &str, bytes: &[u8]) -> Vec<String> {
+    let (mut app, fake) = setup(Some(Picker::halfblocks()));
+    app.diff_state.cursor_line = 3;
+    app.enter_media(crate::ui::pr_info_panel::pr_info_media_at_cursor(&app).unwrap());
+    app.media_viewer.as_mut().unwrap().set_area(rect_r());
+    app.poll_media_viewer_events();
+
+    let dir = tempfile::tempdir().expect("temp dir");
+    let path = dir.path().join(file_name);
+    std::fs::write(&path, bytes).expect("write download");
+    let outcome = crate::app::media::render_file(
+        &MediaKind::Attachment,
+        &path,
+        &Picker::halfblocks(),
+        rect_r(),
+    );
+    fake.send_load(
+        0,
+        LoadResult {
+            generation: fake.load_calls.borrow()[0].generation,
+            index: 1,
+            area: rect_r(),
+            outcome,
+        },
+    );
+    app.poll_media_viewer_events();
+
+    let mut terminal =
+        ratatui::Terminal::new(ratatui::backend::TestBackend::new(60, 12)).unwrap();
+    terminal
+        .draw(|frame| crate::ui::render(frame, &mut app))
+        .expect("draw frame");
+    let buffer = terminal.backend().buffer().clone();
+    (0..buffer.area.height)
+        .map(|y| {
+            (0..buffer.area.width)
+                .map(|x| buffer[(x, y)].symbol().to_string())
+                .collect::<String>()
+                .trim()
+                .to_string()
+        })
+        .collect()
+}
+
+// A bare user-attachments URL served as video/mp4 is saved with an .mp4
+// extension; the viewer shows the declared-video card, not a decoder error.
+#[test]
+fn an_attachment_that_downloads_as_video_shows_the_open_outside_card() {
+    let mp4 = b"\x00\x00\x00\x18ftypmp42\x00\x00\x00\x00mp42isom";
+    let rows = viewer_rows_for_download("0123456789abcdef.mp4", mp4);
+    let card: Vec<&str> = rows[1..rows.len() - 1]
+        .iter()
+        .map(String::as_str)
+        .filter(|row| !row.is_empty())
+        .collect();
+    assert_eq!(card, vec!["two", "press o to open outside tuicr"]);
+}
+
+// A file that claims to be an image but does not decode keeps a readable
+// error between the label and the hint.
+#[test]
+fn an_image_that_fails_to_decode_shows_its_error_on_the_card() {
+    let rows = viewer_rows_for_download("0123456789abcdef.png", b"not a png");
+    let card: Vec<&str> = rows[1..rows.len() - 1]
+        .iter()
+        .map(String::as_str)
+        .filter(|row| !row.is_empty())
+        .collect();
+    assert_eq!(card.len(), 3, "{card:?}");
+    assert_eq!(card[0], "two");
+    assert!(card[1].to_lowercase().contains("png"), "{card:?}");
+    assert_eq!(card[2], "press o to open outside tuicr");
+}
+
+// A declared `<video>` never reaches the decoder, whatever its file is named.
+#[test]
+fn a_declared_video_is_not_an_image() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let path = dir.path().join("0123456789abcdef");
+    std::fs::write(&path, b"\x00\x00\x00\x18ftypmp42").expect("write download");
+    let outcome = crate::app::media::render_file(
+        &MediaKind::Video,
+        &path,
+        &Picker::halfblocks(),
+        rect_r(),
+    );
+    assert!(matches!(outcome, Err(LoadError::NotImage)));
 }

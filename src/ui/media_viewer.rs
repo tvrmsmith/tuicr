@@ -76,26 +76,27 @@ pub fn render(frame: &mut Frame, app: &mut App) {
             };
             frame.render_widget(Image::new(protocol), centered);
         }
-        MediaSlot::Failed(message) => {
-            let text = vec![
-                Line::from(Span::styled(
-                    label.to_string(),
-                    Style::default().fg(theme.fg_primary),
-                )),
-                Line::from(Span::styled(
+        MediaSlot::NotImage | MediaSlot::Failed(_) => {
+            let mut text = vec![Line::from(Span::styled(
+                label.to_string(),
+                Style::default().fg(theme.fg_primary),
+            ))];
+            if let MediaSlot::Failed(message) = &viewer.current {
+                text.push(Line::from(Span::styled(
                     message.clone(),
                     Style::default().fg(theme.message_error_fg),
-                )),
-                Line::from(Span::styled(
-                    "press o to open outside tuicr",
-                    Style::default().fg(theme.fg_secondary),
-                )),
-            ];
+                )));
+            }
+            text.push(Line::from(Span::styled(
+                "press o to open outside tuicr",
+                Style::default().fg(theme.fg_secondary),
+            )));
+            let height = text.len() as u16;
             frame.render_widget(
                 Paragraph::new(text)
                     .alignment(Alignment::Center)
                     .wrap(Wrap { trim: false }),
-                center_block(image_area, 3),
+                center_block(image_area, height),
             );
         }
     }

@@ -4,6 +4,7 @@
 //! hands back a `Receiver` whose `Sender` the test holds.
 
 use std::io::IsTerminal;
+use std::path::Path;
 use std::sync::mpsc::{self, Receiver};
 
 use ratatui::layout::Rect;
@@ -13,7 +14,7 @@ use ratatui_image::{FilterType, Resize};
 
 use super::{App, InputMode};
 use crate::forge::traits::ForgeRepository;
-use crate::media::MediaRef;
+use crate::media::{MediaKind, MediaRef};
 use crate::media::graphics::{self, ImageProtocolSetting};
 use crate::media::open::{self, MediaError, Opened};
 
@@ -30,7 +31,14 @@ pub(crate) struct LoadResult {
     pub generation: u64,
     pub index: usize,
     pub area: Rect,
-    pub outcome: Result<Protocol, String>,
+    pub outcome: Result<Protocol, LoadError>,
+}
+
+pub(crate) enum LoadError {
+    /// A declared video, or a download that turned out to be one: the viewer
+    /// shows the open-outside card instead of a decoder error.
+    NotImage,
+    Failed(String),
 }
 
 pub(crate) trait MediaJobs {
@@ -109,6 +117,7 @@ pub(crate) struct MediaViewer {
 pub(crate) enum MediaSlot {
     Loading,
     Ready { protocol: Protocol, area: Rect },
+    NotImage,
     Failed(String),
 }
 
@@ -130,22 +139,40 @@ impl MediaViewer {
     }
 }
 
-fn decode_and_render(req: &LoadRequest) -> Result<Protocol, String> {
-    let path = open::fetch(&req.media, req.repo.as_ref()).map_err(|e| e.to_string())?;
+fn decode_and_render(req: &LoadRequest) -> Result<Protocol, LoadError> {
+    let path = open::fetch(&req.media, req.repo.as_ref())
+        .map_err(|e| LoadError::Failed(e.to_string()))?;
+    render_file(&req.media.kind, &path, &req.picker, req.area)
+}
+
+/// Decode the downloaded `path` into a protocol sized for `area`. A declared
+/// video, or a file `fetch` named with a video extension (from the served
+/// Content-Type or the URL), is `NotImage` without a decode attempt.
+pub(crate) fn render_file(
+    kind: &MediaKind,
+    path: &Path,
+    picker: &Picker,
+    area: Rect,
+) -> Result<Protocol, LoadError> {
+    let is_video_file = path.extension().is_some_and(|ext| {
+        ["mp4", "mov", "webm"]
+            .iter()
+            .any(|video| ext.eq_ignore_ascii_case(video))
+    });
+    if *kind == MediaKind::Video || is_video_file {
+        return Err(LoadError::NotImage);
+    }
+    let failed = |e: &dyn std::fmt::Display| LoadError::Failed(e.to_string());
     // Sniff the format from the bytes: a bare user-attachments download is
     // saved without an extension when the server sends no known Content-Type.
-    let image = image::ImageReader::open(&path)
+    let image = image::ImageReader::open(path)
         .and_then(|reader| reader.with_guessed_format())
-        .map_err(|e| e.to_string())?
+        .map_err(|e| failed(&e))?
         .decode()
-        .map_err(|e| e.to_string())?;
-    req.picker
-        .new_protocol(
-            image,
-            req.area.as_size(),
-            Resize::Fit(Some(FilterType::Lanczos3)),
-        )
-        .map_err(|e| e.to_string())
+        .map_err(|e| failed(&e))?;
+    picker
+        .new_protocol(image, area.as_size(), Resize::Fit(Some(FilterType::Lanczos3)))
+        .map_err(|e| failed(&e))
 }
 
 impl App {
@@ -273,7 +300,8 @@ impl App {
                         protocol,
                         area: result.area,
                     },
-                    Err(message) => MediaSlot::Failed(message),
+                    Err(LoadError::NotImage) => MediaSlot::NotImage,
+                    Err(LoadError::Failed(message)) => MediaSlot::Failed(message),
                 };
                 true
             }
