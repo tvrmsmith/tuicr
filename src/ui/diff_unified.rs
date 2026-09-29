@@ -48,6 +48,7 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
     // Update viewport height for scroll calculations
     app.diff_state.viewport_height = inner.height as usize;
     app.diff_inner_area = Some(inner);
+    app.sync_viewport_width(inner.width as usize);
 
     // Reset comment input annotation offset (will be set if a comment input box is rendered)
     app.comment_input_annotation_offset = None;
@@ -1218,7 +1219,6 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
 
     let max_content_width = line_widths.iter().copied().max().unwrap_or(0);
 
-    app.sync_viewport_width(inner.width as usize);
     app.diff_state.max_content_width = max_content_width;
 
     let scroll_offset = app.diff_state.scroll_offset;
@@ -2349,6 +2349,25 @@ mod remote_comments_snapshot_tests {
             expected_bg,
             "rendered addition-line background must come from the live theme, \
              not the cached span's baked-in color"
+        );
+    }
+
+    #[test]
+    fn should_wrap_pr_description_at_viewport_width_on_first_frame() {
+        let mut app = crate::app::tests::pr_info_tests::build_pr_app();
+        assert_eq!(app.diff_state.viewport_width, 0, "test needs a first frame");
+        app.diff_view_mode = crate::app::DiffViewMode::Unified;
+
+        let backend = TestBackend::new(100, 12);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| super::render_unified_diff(frame, &mut app, Rect::new(0, 0, 100, 12)))
+            .expect("draw first frame");
+        let text = body_text(terminal.backend().buffer());
+
+        assert!(
+            text.lines().any(|row| row.contains("Ship it")),
+            "PR description should wrap at the viewport width on the first frame:\n{text}"
         );
     }
 }
