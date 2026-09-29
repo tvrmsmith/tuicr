@@ -170,11 +170,16 @@ pub fn build_pr_info_lines(
     } else {
         details.body.clone()
     };
-    lines.extend(comment_panel::markdown_body_lines(
-        theme,
-        &body,
-        content_width,
-    ));
+    // PROTOTYPE (gd-ww9): variant switch for rendered markdown.
+    use crate::syntax::md_render_prototype as proto;
+    match proto::variant() {
+        proto::Variant::Off => lines.extend(comment_panel::markdown_body_lines(
+            theme,
+            &body,
+            content_width,
+        )),
+        v => lines.extend(proto::render_block(theme, &body, content_width, v)),
+    }
 
     push_blank(&mut lines);
     push_section_header(

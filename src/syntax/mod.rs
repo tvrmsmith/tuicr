@@ -1,4 +1,5 @@
 mod cmark;
+pub mod md_render_prototype;
 
 use ratatui::style::{Color, Modifier, Style};
 use std::path::Path;

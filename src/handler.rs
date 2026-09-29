@@ -74,6 +74,7 @@ const COMMAND_SPECS: &[CommandSpec] = &[
     ),
     CommandSpec::new(&["set groups!"], CommandKind::ToggleGroups),
     CommandSpec::new(&["diff"], CommandKind::Diff),
+    CommandSpec::new(&["mdv"], CommandKind::MdPrototype),
     CommandSpec::new(&["focus", "f"], CommandKind::Focus),
     CommandSpec::new(&["stage"], CommandKind::Stage),
     CommandSpec::new(
@@ -135,6 +136,7 @@ impl CommandSpec {
 /// CommandKind is the parsed meaning of one command-mode input.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum CommandKind {
+    MdPrototype,
     Quit,
     ForceQuit,
     Write,
@@ -1114,6 +1116,12 @@ fn dispatch_command(app: &mut App, kind: CommandKind) -> CommandAfterDispatch {
         }
         CommandKind::Diff => {
             app.toggle_diff_view_mode();
+            CommandAfterDispatch::ExitCommandMode
+        }
+        CommandKind::MdPrototype => {
+            let v = crate::syntax::md_render_prototype::cycle();
+            app.rebuild_annotations();
+            app.set_message(format!("markdown prototype: {} (:mdv to cycle)", v.label()));
             CommandAfterDispatch::ExitCommandMode
         }
         CommandKind::Focus => {

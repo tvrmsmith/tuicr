@@ -57,6 +57,19 @@ impl App {
     /// - Comments are added/removed
     /// - Diff view mode changes
     pub fn rebuild_annotations(&mut self) {
+        // PROTOTYPE (gd-ww9): swap `.md` rows to the active markdown variant.
+        let full_new: Vec<_> = {
+            let provider = self.context_provider();
+            self.diff_files
+                .iter()
+                .map(|f| crate::syntax::md_render_prototype::full_new_text(f, provider.as_ref()))
+                .collect()
+        };
+        crate::syntax::md_render_prototype::apply_to_diff(
+            &self.theme,
+            &mut self.diff_files,
+            &full_new,
+        );
         if self.file_line_count_cache.is_empty() {
             self.populate_file_line_count_cache();
         }
