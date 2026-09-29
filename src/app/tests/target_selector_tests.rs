@@ -2190,6 +2190,49 @@ fn should_defer_head_move_reload_while_reviewer_is_mid_comment() {
 }
 
 #[test]
+fn should_hold_a_landed_head_move_reload_while_reviewer_starts_a_comment_mid_fetch() {
+    let (mut app, details_a) = pr_app_at_head_a(424317);
+    app.note_polled_pr_head("bbbbbbbbbbbbbbbb");
+    assert!(app.apply_pending_pr_head_move());
+    let request = app.pr_reload_state.clone().expect("reload started");
+
+    // The reviewer opens a comment while the fetch runs, then the fetch lands
+    // on head B.
+    app.enter_comment_mode(false, Some((1, LineSide::New)));
+    app.comment_buffer.push_str("typed during the fetch");
+    let (tx, rx) = std::sync::mpsc::channel();
+    app.pr_reload_rx = Some(rx);
+    let mut details_b = details_a.clone();
+    details_b.head_sha = "bbbbbbbbbbbbbbbb".to_string();
+    tx.send(PrReloadEvent::Done {
+        request,
+        result: Ok((
+            details_b.clone(),
+            structured_patch(&two_file_patch("newer changed")),
+            Vec::new(),
+            PullRequestReviewMetadata::default(),
+            crate::forge::traits::PullRequestInfo::from_details(details_b),
+        )),
+    })
+    .unwrap();
+
+    app.poll_pr_reload_events();
+
+    assert_eq!(app.input_mode, InputMode::Comment);
+    assert_eq!(app.comment_buffer, "typed during the fetch");
+    assert!(app.pr_reload_state.is_some());
+
+    app.exit_comment_mode();
+    app.poll_pr_reload_events();
+
+    assert!(app.pr_reload_state.is_none());
+    let DiffSource::PullRequest(current) = &app.diff_source else {
+        panic!("left PR mode");
+    };
+    assert_eq!(current.key.head_sha, "bbbbbbbbbbbbbbbb");
+}
+
+#[test]
 fn should_drop_pending_head_move_when_the_head_moves_back() {
     let (mut app, _details) = pr_app_at_head_a(424304);
     app.enter_comment_mode(false, Some((1, LineSide::New)));

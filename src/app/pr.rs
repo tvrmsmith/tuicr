@@ -530,6 +530,11 @@ impl App {
         let Some(rx) = self.pr_reload_rx.as_ref() else {
             return;
         };
+        // Applying a new head resets the input mode; leave the result queued
+        // so a draft or modal opened during the fetch is not torn down.
+        if self.input_mode != InputMode::Normal {
+            return;
+        }
         let event = match rx.try_recv() {
             Ok(e) => e,
             Err(_) => return,
