@@ -617,6 +617,8 @@ impl App {
                 _ => self.set_message(reloaded),
             }
         } else {
+            // A pending move means the poll saw a newer head than this fetch
+            // returned; keep it so the stale-head warning still fires.
             if self.pr_head_move.is_none() {
                 self.current_pr_head = Some(opened.details.head_sha.clone());
             }
