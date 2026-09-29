@@ -2233,6 +2233,63 @@ fn should_hold_a_landed_head_move_reload_while_reviewer_starts_a_comment_mid_fet
 }
 
 #[test]
+fn should_hold_a_landed_head_move_reload_while_a_submit_is_in_flight() {
+    let (mut app, details_a) = pr_app_at_head_a(424318);
+    app.note_polled_pr_head("bbbbbbbbbbbbbbbb");
+    assert!(app.apply_pending_pr_head_move());
+    let request = app.pr_reload_state.clone().expect("reload started");
+
+    // The reviewer confirms a submit while the fetch runs; `spawn_pr_submit`
+    // returns to Normal mode while the submit still runs.
+    app.pr_submit_state = Some(SubmitInFlightState {
+        event: crate::forge::submit::SubmitEvent::Comment,
+        mappable: Vec::new(),
+        summary_comment_ids: Vec::new(),
+        review_comment_ids: Vec::new(),
+        moved_to_summary_count: 0,
+        head_sha_snapshot: details_a.head_sha.clone(),
+        repository: details_a.repository.clone(),
+        pr_number: details_a.number,
+        started_at: Instant::now(),
+    });
+    assert_eq!(app.input_mode, InputMode::Normal);
+    let session_before = app.session.id.clone();
+    let (tx, rx) = std::sync::mpsc::channel();
+    app.pr_reload_rx = Some(rx);
+    let mut details_b = details_a.clone();
+    details_b.head_sha = "bbbbbbbbbbbbbbbb".to_string();
+    tx.send(PrReloadEvent::Done {
+        request,
+        result: Ok((
+            details_b.clone(),
+            structured_patch(&two_file_patch("newer changed")),
+            Vec::new(),
+            PullRequestReviewMetadata::default(),
+            crate::forge::traits::PullRequestInfo::from_details(details_b),
+        )),
+    })
+    .unwrap();
+
+    app.poll_pr_reload_events();
+
+    assert!(app.pr_reload_state.is_some());
+    assert_eq!(app.session.id, session_before);
+    let DiffSource::PullRequest(current) = &app.diff_source else {
+        panic!("left PR mode");
+    };
+    assert_eq!(current.key.head_sha, details_a.head_sha);
+
+    app.pr_submit_state = None;
+    app.poll_pr_reload_events();
+
+    assert!(app.pr_reload_state.is_none());
+    let DiffSource::PullRequest(current) = &app.diff_source else {
+        panic!("left PR mode");
+    };
+    assert_eq!(current.key.head_sha, "bbbbbbbbbbbbbbbb");
+}
+
+#[test]
 fn should_drop_pending_head_move_when_the_head_moves_back() {
     let (mut app, _details) = pr_app_at_head_a(424304);
     app.enter_comment_mode(false, Some((1, LineSide::New)));

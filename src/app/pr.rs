@@ -530,9 +530,11 @@ impl App {
         let Some(rx) = self.pr_reload_rx.as_ref() else {
             return;
         };
-        // Applying a new head resets the input mode; leave the result queued
-        // so a draft or modal opened during the fetch is not torn down.
-        if self.input_mode != InputMode::Normal {
+        // Applying a new head resets the input mode and swaps the session;
+        // leave the result queued so a draft or modal opened during the fetch
+        // is not torn down, and an in-flight submit (which runs in Normal
+        // mode) marks the session it posted from.
+        if self.input_mode != InputMode::Normal || self.pr_submit_state.is_some() {
             return;
         }
         let event = match rx.try_recv() {
