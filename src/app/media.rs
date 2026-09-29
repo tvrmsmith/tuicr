@@ -14,9 +14,9 @@ use ratatui_image::{FilterType, Resize};
 
 use super::{App, InputMode};
 use crate::forge::traits::ForgeRepository;
-use crate::media::{MediaKind, MediaRef};
 use crate::media::graphics::{self, ImageProtocolSetting};
 use crate::media::open::{self, MediaError, Opened};
+use crate::media::{MediaKind, MediaRef};
 
 pub(crate) struct LoadRequest {
     pub generation: u64,
@@ -140,8 +140,8 @@ impl MediaViewer {
 }
 
 fn decode_and_render(req: &LoadRequest) -> Result<Protocol, LoadError> {
-    let path = open::fetch(&req.media, req.repo.as_ref())
-        .map_err(|e| LoadError::Failed(e.to_string()))?;
+    let path =
+        open::fetch(&req.media, req.repo.as_ref()).map_err(|e| LoadError::Failed(e.to_string()))?;
     render_file(&req.media.kind, &path, &req.picker, req.area)
 }
 
@@ -171,7 +171,11 @@ pub(crate) fn render_file(
         .decode()
         .map_err(|e| failed(&e))?;
     picker
-        .new_protocol(image, area.as_size(), Resize::Fit(Some(FilterType::Lanczos3)))
+        .new_protocol(
+            image,
+            area.as_size(),
+            Resize::Fit(Some(FilterType::Lanczos3)),
+        )
         .map_err(|e| failed(&e))
 }
 

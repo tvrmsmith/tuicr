@@ -13,9 +13,9 @@ use crate::app::media::{LoadError, LoadRequest, LoadResult, MediaJobs, MediaSlot
 use crate::app::tests::pr_info_tests::build_pr_app;
 use crate::app::{App, InputMode};
 use crate::forge::traits::ForgeRepository;
-use crate::media::{MediaKind, MediaRef};
 use crate::media::graphics::ImageProtocolSetting;
 use crate::media::open::{MediaError, Opened};
+use crate::media::{MediaKind, MediaRef};
 
 const BODY: &str = "Intro\n![one](https://x.test/1.png)\n![two](https://x.test/2.png)\n<video src=\"https://x.test/v.mp4\"></video>";
 
@@ -522,8 +522,7 @@ fn viewer_rows_for_download(file_name: &str, bytes: &[u8]) -> Vec<String> {
     );
     app.poll_media_viewer_events();
 
-    let mut terminal =
-        ratatui::Terminal::new(ratatui::backend::TestBackend::new(60, 12)).unwrap();
+    let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(60, 12)).unwrap();
     terminal
         .draw(|frame| crate::ui::render(frame, &mut app))
         .expect("draw frame");
@@ -575,11 +574,7 @@ fn a_declared_video_is_not_an_image() {
     let dir = tempfile::tempdir().expect("temp dir");
     let path = dir.path().join("0123456789abcdef");
     std::fs::write(&path, b"\x00\x00\x00\x18ftypmp42").expect("write download");
-    let outcome = crate::app::media::render_file(
-        &MediaKind::Video,
-        &path,
-        &Picker::halfblocks(),
-        rect_r(),
-    );
+    let outcome =
+        crate::app::media::render_file(&MediaKind::Video, &path, &Picker::halfblocks(), rect_r());
     assert!(matches!(outcome, Err(LoadError::NotImage)));
 }
