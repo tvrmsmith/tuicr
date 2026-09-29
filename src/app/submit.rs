@@ -242,9 +242,8 @@ impl App {
     }
 
     /// True iff the original review head and the latest known PR head
-    /// disagree. PR 5 cannot trigger this (the open-time head equals
-    /// `current_pr_head`), but the field is exposed so the renderer can
-    /// fold the warning in once PR 6 refreshes the remote head.
+    /// disagree. The PR head poll refreshes `current_pr_head`, so this fires
+    /// while a head-move reload is pending.
     pub fn submit_head_is_stale(&self) -> bool {
         let Some(state) = self.submit_state.as_ref() else {
             return false;

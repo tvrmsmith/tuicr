@@ -25,9 +25,9 @@ impl PrHeadMove {
 /// An in-flight head poll, tagged with the PR it asked about so a result
 /// outliving a switch to another PR is dropped.
 pub(crate) struct PrHeadPoll {
-    repository: ForgeRepository,
-    number: u64,
-    rx: Receiver<std::result::Result<String, String>>,
+    pub(in crate::app) repository: ForgeRepository,
+    pub(in crate::app) number: u64,
+    pub(in crate::app) rx: Receiver<std::result::Result<String, String>>,
 }
 
 impl App {
@@ -84,8 +84,7 @@ impl App {
             self.pr_head_move = None;
             return true;
         }
-        if self.pr_head_move.is_none()
-            || self.input_mode != InputMode::Normal
+        if self.input_mode != InputMode::Normal
             || self.pr_reload_state.is_some()
             || self.pr_submit_state.is_some()
         {
@@ -143,18 +142,18 @@ impl App {
     /// Pumps a landed head poll. A failure warns once per distinct error so a
     /// dropped network connection does not repeat the warning every minute.
     fn poll_pr_head_poll_events(&mut self) -> bool {
-        let Some(poll) = self.pr_head_poll.as_ref() else {
+        let Some(poll) = self.pr_head_poll.take() else {
             return false;
         };
         let result = match poll.rx.try_recv() {
             Ok(result) => result,
-            Err(TryRecvError::Empty) => return false,
+            Err(TryRecvError::Empty) => {
+                self.pr_head_poll = Some(poll);
+                return false;
+            }
             Err(TryRecvError::Disconnected) => {
                 Err("the poll thread exited without an answer".to_string())
             }
-        };
-        let Some(poll) = self.pr_head_poll.take() else {
-            return false;
         };
         let same_pr = matches!(
             &self.diff_source,

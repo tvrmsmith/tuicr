@@ -796,12 +796,8 @@ mod header_snapshot_tests {
         let buffer = draw_app(&mut app, 120, 12);
         let status = row_text(&buffer, 11);
         assert!(
-            status.contains("PR head moved abcdef0 → fedcba9"),
-            "status bar should name the move: {status}"
-        );
-        assert!(
-            status.contains("reload pending"),
-            "status bar should say the reload waits: {status}"
+            status.contains("PR head moved abcdef0 → fedcba9 · reload pending"),
+            "status bar should name the move and say the reload waits: {status}"
         );
     }
 

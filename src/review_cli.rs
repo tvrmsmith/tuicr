@@ -909,7 +909,12 @@ mod tests {
             .unwrap();
         assert_eq!(listed.len(), 1);
         assert_eq!(listed[0].slug, "gh:slatedb/slatedb/pr/1745");
-        assert_eq!(listed[0].kind.id(), "pr");
+        assert_eq!(
+            listed[0].kind,
+            crate::review_store::SessionKind::Pr {
+                head_sha: "43e3566924690c06a45b2177b4dd2df59a0f09c6".into()
+            }
+        );
 
         // The emitted slug resolves the same way regardless of --repo.
         let resolved =

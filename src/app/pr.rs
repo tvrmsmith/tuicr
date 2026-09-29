@@ -617,6 +617,7 @@ impl App {
                 _ => self.set_message(reloaded),
             }
         } else {
+            self.current_pr_head = Some(opened.details.head_sha.clone());
             self.set_pr_last_reviewed_commit_from_metadata(
                 &opened.commits,
                 &opened.review_metadata,
