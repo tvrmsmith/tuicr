@@ -96,9 +96,8 @@ pub fn cycle() -> Variant {
 struct Look {
     base: Style,
     marker: Style,
-    h1: Style,
-    h2: Style,
-    h3: Style,
+    /// Heading styles, h1 through h6.
+    headings: [Style; 6],
     code: Style,
     code_block: Style,
     link_text: Style,
@@ -122,12 +121,17 @@ impl Look {
             return Self {
                 base: Style::default().fg(c(252)),
                 marker: dim,
-                h1: Style::default()
-                    .fg(c(228))
-                    .bg(c(63))
-                    .add_modifier(Modifier::BOLD),
-                h2: heading,
-                h3: heading,
+                headings: [
+                    Style::default()
+                        .fg(c(228))
+                        .bg(c(63))
+                        .add_modifier(Modifier::BOLD),
+                    heading,
+                    heading,
+                    heading,
+                    heading,
+                    Style::default().fg(c(35)),
+                ],
                 code: Style::default().fg(c(203)).bg(c(236)),
                 code_block: Style::default().fg(c(244)),
                 link_text: Style::default().fg(c(35)).add_modifier(Modifier::BOLD),
@@ -167,9 +171,21 @@ impl Look {
         Self {
             base: scoped(&[ROOT]),
             marker: dim,
-            h1: heading.add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
-            h2: heading.add_modifier(Modifier::UNDERLINED),
-            h3: heading.add_modifier(Modifier::BOLD),
+            // Themes often bold headings already, so each level states both
+            // bold and underline explicitly. h1/h2 underline spans the panel.
+            headings: {
+                let plain = heading.remove_modifier(Modifier::BOLD | Modifier::UNDERLINED);
+                [
+                    plain.add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
+                    plain.add_modifier(Modifier::UNDERLINED),
+                    plain.add_modifier(Modifier::BOLD),
+                    plain.add_modifier(Modifier::UNDERLINED),
+                    plain.add_modifier(Modifier::ITALIC),
+                    Style::default()
+                        .fg(theme.fg_dim)
+                        .add_modifier(Modifier::ITALIC),
+                ]
+            },
             code: scoped(&[ROOT, "markup.raw.inline.markdown"]).bg(theme.bg_highlight),
             code_block: Style::default().fg(theme.fg_secondary),
             link_text: link.add_modifier(Modifier::UNDERLINED),
@@ -507,11 +523,7 @@ impl<'a> Doc<'a> {
     }
 
     fn heading(&mut self, level: usize, r: Range<usize>) {
-        let style = match level {
-            1 => self.look.h1,
-            2 => self.look.h2,
-            _ => self.look.h3,
-        };
+        let style = self.look.headings[level.clamp(1, 6) - 1];
         let first = self.line_of(r.start);
         self.no_reflow[first] = true;
         self.headings.insert(first, level);
@@ -718,7 +730,7 @@ impl<'a> Doc<'a> {
                 } else {
                     vec![
                         (border, "╭─ ".to_string()),
-                        (self.look.h3, lang.to_string()),
+                        (self.look.headings[2], lang.to_string()),
                         (border, format!(" {}", "─".repeat(fill))),
                     ]
                 };
@@ -1116,7 +1128,7 @@ pub fn render_block(
             && doc.headings.get(&i).is_some_and(|level| *level <= 2)
             && let Some(row) = rows.last_mut()
         {
-            let style = row.last().map(|(s, _)| *s).unwrap_or(doc.look.h1);
+            let style = row.last().map(|(s, _)| *s).unwrap_or(doc.look.headings[0]);
             let gap = inner.saturating_sub(runs_width(row));
             row.push((style, " ".repeat(gap)));
         }
