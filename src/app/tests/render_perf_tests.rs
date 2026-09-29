@@ -228,3 +228,84 @@ fn render_perf_with_comments() {
         );
     }
 }
+
+/// About 400 source lines of PR description: headings, prose, lists, a
+/// table, and several rust blocks, the shape that costs the most to render.
+fn long_pr_body() -> String {
+    let mut body = String::new();
+    for section in 0..10 {
+        body.push_str(&format!("# Section {section}\n\n"));
+        body.push_str(
+            "The `compute` call ignores its second argument, so every branch collapses \
+             to the same value, which is **not** what the _spec_ asks for.\n\n",
+        );
+        for item in 0..6 {
+            body.push_str(&format!(
+                "- item {item} with a [link](https://x.test/{item})\n"
+            ));
+            body.push_str("  - nested detail\n");
+        }
+        body.push_str("\n| Name | Qty |\n| --- | ---: |\n");
+        for row in 0..5 {
+            body.push_str(&format!("| row {row} | {row} |\n"));
+        }
+        body.push_str("\n```rust\n");
+        for row in 0..12 {
+            body.push_str(&format!("let value_{row} = compute(input, {row});\n"));
+        }
+        body.push_str("```\n\n");
+    }
+    body
+}
+
+/// Median frame time in microseconds over `frames` draws of a PR panel with
+/// `long_pr_body`, wrap on and the cursor inside the panel.
+fn pr_panel_frame_micros(render_markdown: bool, frames: usize) -> u128 {
+    let mut info = super::pr_info_tests::sample_pr_info();
+    info.details.body = long_pr_body();
+    let mut app = super::pr_info_tests::build_pr_app();
+    app.pr_info = Some(info);
+    app.diff_state.wrap_lines = true;
+    app.render_markdown = render_markdown;
+
+    let mut terminal = Terminal::new(TestBackend::new(180, 50)).unwrap();
+    // The first frame records the panel width the annotations need.
+    terminal
+        .draw(|frame| crate::ui::render(frame, &mut app))
+        .expect("draw frame");
+    app.rebuild_annotations();
+    app.diff_state.cursor_line = 20;
+
+    let mut samples = Vec::new();
+    for _ in 0..frames {
+        let start = Instant::now();
+        terminal
+            .draw(|frame| crate::ui::render(frame, &mut app))
+            .expect("draw frame");
+        samples.push(start.elapsed().as_micros());
+    }
+    samples.sort_unstable();
+    samples[samples.len() / 2]
+}
+
+#[test]
+#[ignore = "timing measurement, run explicitly"]
+fn render_perf_pr_panel() {
+    for render_markdown in [false, true] {
+        let micros = pr_panel_frame_micros(render_markdown, 21);
+        println!(
+            "PR panel, ~400 body lines, wrap on, render_markdown={render_markdown}: {:>8.2} ms/frame",
+            micros as f64 / 1000.0
+        );
+    }
+}
+
+#[test]
+fn rendered_pr_panel_frame_costs_at_most_three_times_the_source_frame() {
+    let off = pr_panel_frame_micros(false, 11);
+    let on = pr_panel_frame_micros(true, 11);
+    assert!(
+        on <= off * 3,
+        "rendered frame {on}us exceeds 3x the source frame {off}us"
+    );
+}

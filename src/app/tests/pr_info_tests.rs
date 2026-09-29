@@ -1,5 +1,10 @@
 use std::path::PathBuf;
 
+use ratatui::Terminal;
+use ratatui::backend::TestBackend;
+use ratatui::buffer::Buffer;
+use ratatui::style::Modifier;
+
 use crate::app::{App, DiffSource, InputMode, PullRequestDiffSource};
 use crate::forge::traits::{
     ForgeRepository, PrSessionKey, PullRequestCheckStatus, PullRequestDetails, PullRequestInfo,
@@ -10,7 +15,7 @@ use crate::theme::Theme;
 use crate::vcs::traits::VcsType;
 use crate::vcs::{PrNoopVcs, VcsInfo};
 
-fn sample_pr_info() -> PullRequestInfo {
+pub(crate) fn sample_pr_info() -> PullRequestInfo {
     PullRequestInfo {
         details: PullRequestDetails {
             repository: ForgeRepository::github("github.com", "owner", "repo"),
@@ -183,9 +188,9 @@ fn should_walk_from_overview_to_first_file_with_next_file() {
 
 #[test]
 fn should_build_pr_info_panel_lines() {
-    let lines =
-        crate::ui::pr_info_panel::build_pr_info_lines(&sample_pr_info(), 80, &Theme::dark());
-    assert!(lines.len() > 5);
+    let rows =
+        crate::ui::pr_info_panel::build_pr_info_rows(&sample_pr_info(), 80, &Theme::dark(), true);
+    assert!(rows.len() > 5);
 }
 
 #[test]
@@ -314,4 +319,174 @@ fn should_keep_pr_info_annotations_in_sync_with_rendered_lines_at_wrap_boundary(
         lines.len(),
         "PrInfoLine annotation count must equal the rendered PR-info line count"
     );
+}
+
+/// Draws twice around `rebuild_annotations`: the first frame records the
+/// real panel width, which the annotations need before the second frame.
+fn draw_app(app: &mut App) -> Buffer {
+    draw_once(app);
+    app.rebuild_annotations();
+    draw_once(app)
+}
+
+fn draw_once(app: &mut App) -> Buffer {
+    let backend = TestBackend::new(120, 60);
+    let mut terminal = Terminal::new(backend).unwrap();
+    terminal
+        .draw(|frame| crate::ui::render(frame, app))
+        .expect("draw frame");
+    terminal.backend().buffer().clone()
+}
+
+fn row_text(buffer: &Buffer, y: u16) -> String {
+    (0..buffer.area.width)
+        .map(|x| buffer[(x, y)].symbol().to_string())
+        .collect()
+}
+
+fn rows_of(buffer: &Buffer) -> Vec<String> {
+    (0..buffer.area.height)
+        .map(|y| row_text(buffer, y))
+        .collect()
+}
+
+/// Draws a PR app whose description is `body`.
+fn draw_body(body: &str, render_markdown: bool) -> Buffer {
+    let mut info = sample_pr_info();
+    info.details.body = body.to_string();
+    let mut app = build_pr_app();
+    app.pr_info = Some(info);
+    app.render_markdown = render_markdown;
+    draw_app(&mut app)
+}
+
+/// Column of the first cell of `needle` on the row containing it.
+fn find_text(buffer: &Buffer, needle: &str) -> (u16, u16) {
+    for y in 0..buffer.area.height {
+        let cells: Vec<String> = (0..buffer.area.width)
+            .map(|x| buffer[(x, y)].symbol().to_string())
+            .collect();
+        let row = cells.concat();
+        if let Some(byte) = row.find(needle) {
+            let x = cells.concat()[..byte].chars().count() as u16;
+            return (x, y);
+        }
+    }
+    panic!("{needle:?} not drawn");
+}
+
+#[test]
+fn should_default_render_markdown_to_true() {
+    assert!(build_pr_app().render_markdown);
+}
+
+#[test]
+fn should_draw_headings_without_markers_bold_and_underlined() {
+    let buffer = draw_body("# Summary\n\n## Details\n\ntext", true);
+    let rows = rows_of(&buffer);
+    assert!(rows.iter().any(|row| row.contains("Summary")));
+    assert!(!rows.iter().any(|row| row.contains("# Summary")));
+    assert!(!rows.iter().any(|row| row.contains("## Details")));
+
+    let (x, y) = find_text(&buffer, "Summary");
+    let s = &buffer[(x, y)];
+    assert!(s.modifier.contains(Modifier::BOLD));
+    assert!(s.modifier.contains(Modifier::UNDERLINED));
+    let far = &buffer[(x + 7 + 2, y)];
+    assert!(far.modifier.contains(Modifier::UNDERLINED));
+    let y_col = x + "Summar".len() as u16;
+    assert_eq!(buffer[(y_col, y)].symbol(), "y");
+    assert!(
+        buffer[(y_col + 10, y)]
+            .modifier
+            .contains(Modifier::UNDERLINED)
+    );
+
+    let (x, y) = find_text(&buffer, "Details");
+    let d = &buffer[(x, y)];
+    assert!(d.modifier.contains(Modifier::UNDERLINED));
+    assert!(!d.modifier.contains(Modifier::BOLD));
+}
+
+#[test]
+fn should_draw_tables_with_aligned_columns_and_no_delimiter_row() {
+    let buffer = draw_body(
+        "| Name | Qty |\n| --- | ---: |\n| apple | 3 |\n| kiwi | 12 |",
+        true,
+    );
+    let rows = rows_of(&buffer);
+    let at = rows
+        .iter()
+        .position(|row| row.contains("Name  │ Qty"))
+        .expect("header row");
+    assert!(rows[at + 1].contains("apple │   3"));
+    assert!(rows[at + 2].contains("kiwi  │  12"));
+    assert!(!rows.iter().any(|row| row.contains("---")));
+}
+
+#[test]
+fn should_draw_fenced_code_with_gutter_and_language_tag() {
+    let buffer = draw_body("```rust\nfn main() {}\n```", true);
+    let rows = rows_of(&buffer);
+    assert!(rows.iter().any(|row| row.contains("│ fn main() {}")));
+    assert!(rows.iter().any(|row| row.contains("rust")));
+    assert!(!rows.iter().any(|row| row.contains("```")));
+}
+
+#[test]
+fn should_draw_markdown_source_when_render_markdown_is_off() {
+    let buffer = draw_body("# Summary\n\n## Details\n\ntext", false);
+    assert!(rows_of(&buffer).iter().any(|row| row.contains("# Summary")));
+}
+
+#[test]
+fn should_keep_annotations_and_drawn_rows_in_step_for_a_mixed_body() {
+    let mut info = sample_pr_info();
+    info.details.body = "# T\n\npara\n\n\n\n- a\n  - b\n\n| x | y |\n| - | - |\n| 1 | 2 |\n\n```rust\nlet a = 1;\n```\n\n\n".to_string();
+    let mut app = build_pr_app();
+    app.pr_info = Some(info);
+    let rows = rows_of(&draw_app(&mut app));
+
+    let annotated = app
+        .line_annotations
+        .iter()
+        .filter(|line| matches!(line, crate::app::AnnotatedLine::PrInfoLine { .. }))
+        .count();
+    let mut lines = Vec::new();
+    let mut line_idx = 0usize;
+    crate::ui::pr_info_panel::append_pr_info_section(&app, &mut lines, &mut line_idx, usize::MAX);
+    assert_eq!(annotated, lines.len());
+
+    let code = rows
+        .iter()
+        .position(|row| row.contains("│ let a = 1;"))
+        .expect("code row");
+    let status = rows
+        .iter()
+        .position(|row| row.contains("PR #42 Status"))
+        .expect("status header");
+    assert_eq!(status - code, 2, "exactly one blank row between");
+    assert!(!rows[code + 1].chars().any(char::is_alphanumeric));
+}
+
+#[test]
+fn should_restyle_the_panel_when_the_theme_switches() {
+    let mut info = sample_pr_info();
+    info.details.body = "`x`".to_string();
+    let mut app = build_pr_app();
+    app.pr_info = Some(info);
+    draw_app(&mut app);
+
+    app.theme = Theme::light();
+    let buffer = draw_app(&mut app);
+    let (x, y) = (0..buffer.area.height)
+        .flat_map(|y| (0..buffer.area.width).map(move |x| (x, y)))
+        .find(|&(x, y)| {
+            buffer[(x, y)].symbol() == "x"
+                && buffer[(x + 1, y)].symbol() == " "
+                && buffer[(x - 1, y)].symbol() == " "
+                && buffer[(x - 1, y)].bg == Theme::light().bg_highlight
+        })
+        .expect("chip cell");
+    assert_eq!(buffer[(x, y)].bg, Theme::light().bg_highlight);
 }

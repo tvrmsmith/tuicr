@@ -31,14 +31,14 @@ use super::{HighlightedLines, SyntaxHighlighter};
 /// walking the theme's selectors for nine scopes is small but strictly wasted
 /// work on a path that runs for every comment on every frame.
 pub(super) struct MarkdownPalette {
-    base: Style,
-    heading: Style,
+    pub(super) base: Style,
+    pub(super) heading: Style,
     bold: Style,
     italic: Style,
-    code: Style,
-    link: Style,
-    quote: Style,
-    list: Style,
+    pub(super) code: Style,
+    pub(super) link: Style,
+    pub(super) quote: Style,
+    pub(super) list: Style,
     strike: Style,
 }
 

@@ -510,6 +510,8 @@ impl App {
             search_matches_stale: false,
             search_highlight_visible: false,
             search_highlight_enabled: true,
+            render_markdown: true,
+            pr_info_rows_cache: std::cell::RefCell::new(None),
             search_return_mode: InputMode::Normal,
             overlay_return_mode: InputMode::Normal,
             comment_buffer: String::new(),

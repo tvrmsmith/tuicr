@@ -1,4 +1,5 @@
 mod cmark;
+pub(crate) mod markdown_render;
 
 use ratatui::style::{Color, Modifier, Style};
 use std::path::Path;
