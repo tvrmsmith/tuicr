@@ -1070,9 +1070,9 @@ pub fn render_block(
         out.push(line);
     };
 
-    // Clean drops a blank row after a heading and collapses blank runs.
+    // Clean collapses runs of blank rows to one.
     let compact = variant == Variant::Clean;
-    let mut prev_blank_or_heading = true;
+    let mut prev_blank = true;
     let mut i = 0;
     while i < n {
         if doc.skip.contains(&i) {
@@ -1082,11 +1082,11 @@ pub fn render_block(
         let blank = !doc.no_reflow[i]
             && !doc.overrides.contains_key(&i)
             && doc.src[doc.line_range(i)].trim().is_empty();
-        if compact && blank && prev_blank_or_heading {
+        if compact && blank && prev_blank {
             i += 1;
             continue;
         }
-        prev_blank_or_heading = blank || doc.headings.contains_key(&i);
+        prev_blank = blank;
         let mut logical = doc.render_line(i);
         let reflow = variant != Variant::Dimmed && !doc.no_reflow[i];
         let lead_end = doc.content_start(i, true);
