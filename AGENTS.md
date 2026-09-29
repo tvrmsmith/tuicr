@@ -340,7 +340,7 @@ Network calls run on a background thread. Parsing + state mutation run on the ma
 3. The thread sends the result on an `mpsc` channel; `poll_*_events()` drains the channel each tick.
 4. The main-thread `finish_*` function parses the diff and builds the `ReviewSession`. `SyntaxHighlighter` is not trivially `Send`, so parsing has to happen on the main thread.
 
-In-flight requests carry an identity tuple (repo, PR#, head SHA). A late result is discarded if the user has since opened a different PR.
+In-flight requests carry an identity tuple (repo, PR#, head SHA). A late result is discarded if the screen no longer shows that PR (the user opened a different PR or a local target); `shown_pr_key` supplies the on-screen identity.
 
 ### Session key + lifecycle
 
