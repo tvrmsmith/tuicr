@@ -262,29 +262,9 @@ fn should_keep_pr_info_annotations_in_sync_with_rendered_lines_for_media_placeho
 
         let mut app = build_pr_app();
         app.pr_info = Some(info);
-        app.rebuild_annotations();
+        draw_app(&mut app);
 
-        let annotated = app
-            .line_annotations
-            .iter()
-            .filter(|line| matches!(line, crate::app::AnnotatedLine::PrInfoLine { .. }))
-            .count();
-
-        let mut lines = Vec::new();
-        let mut line_idx = 0usize;
-        crate::ui::pr_info_panel::append_pr_info_section(
-            &app,
-            &mut lines,
-            &mut line_idx,
-            usize::MAX,
-        );
-
-        assert!(annotated > 0, "expected PR-info annotations for {body:?}");
-        assert_eq!(
-            annotated,
-            lines.len(),
-            "PrInfoLine annotation count must equal the rendered PR-info line count for {body:?}"
-        );
+        assert_panel_annotations_match_drawn_rows(&mut app);
     }
 }
 
@@ -294,31 +274,48 @@ fn should_keep_pr_info_annotations_in_sync_with_rendered_lines_at_wrap_boundary(
     // `width` but wraps at `width - 1`. The counter (line_annotations) and
     // the renderer must agree on the wrap width, or every row below the
     // panel maps to the wrong annotation. Regression guard for the desync.
-    let width = 60usize;
-    let mut info = sample_pr_info();
-    info.details.body = format!("{} {}", "X".repeat(30), "Y".repeat(29)); // 30 + 1 + 29 = 60
-
     let mut app = build_pr_app();
-    app.pr_info = Some(info);
-    app.diff_state.viewport_width = width;
-    app.rebuild_annotations();
+    app.pr_info = Some(sample_pr_info());
+    draw_app(&mut app);
+    let width = crate::ui::pr_info_panel::pr_info_content_width(app.diff_state.viewport_width);
+    let (xs, ys) = ("X".repeat(30), "Y".repeat(width - 31));
+    app.pr_info.as_mut().unwrap().details.body = format!("{xs} {ys}");
+    draw_app(&mut app);
 
-    let annotated = app
+    let body_row = drawn_cursor_row(&mut app, 1);
+    assert!(body_row.contains(&format!("{xs} {ys}")), "{body_row:?}");
+    assert_panel_annotations_match_drawn_rows(&mut app);
+}
+
+/// The drawn row carrying the cursor marker after moving the cursor to
+/// annotation `line`. Drawing places the marker by counting drawn rows, so
+/// annotations that drift from the drawn rows put it on the wrong text.
+fn drawn_cursor_row(app: &mut App, line: usize) -> String {
+    app.diff_state.cursor_line = line;
+    app.ensure_cursor_visible();
+    let buffer = draw_once(app);
+    let (title_x, _) = find_text(&buffer, "═══ PR #42 ");
+    let marker_x = title_x - 2;
+    let y = (0..buffer.area.height)
+        .find(|&y| buffer[(marker_x, y)].symbol() == "▶")
+        .expect("cursor marker drawn");
+    row_text(&buffer, y)
+}
+
+/// Asserts through the drawn frame that the `PrInfoLine` annotations cover
+/// exactly the drawn panel: the last one lands on the panel's last row (the
+/// check) and the next one on the comments header below it.
+fn assert_panel_annotations_match_drawn_rows(app: &mut App) {
+    let panel = app
         .line_annotations
         .iter()
         .filter(|line| matches!(line, crate::app::AnnotatedLine::PrInfoLine { .. }))
         .count();
-
-    let mut lines = Vec::new();
-    let mut line_idx = 0usize;
-    crate::ui::pr_info_panel::append_pr_info_section(&app, &mut lines, &mut line_idx, usize::MAX);
-
-    assert!(annotated > 0, "expected PR-info annotations");
-    assert_eq!(
-        annotated,
-        lines.len(),
-        "PrInfoLine annotation count must equal the rendered PR-info line count"
-    );
+    assert!(panel > 0, "expected PR-info annotations");
+    let last = drawn_cursor_row(app, panel - 1);
+    assert!(last.contains("✓ build"), "{last:?}");
+    let next = drawn_cursor_row(app, panel);
+    assert!(next.contains("═══ PR #42 Comments"), "{next:?}");
 }
 
 /// Draws twice around `rebuild_annotations`: the first frame records the
@@ -447,15 +444,8 @@ fn should_keep_annotations_and_drawn_rows_in_step_for_a_mixed_body() {
     app.pr_info = Some(info);
     let rows = rows_of(&draw_app(&mut app));
 
-    let annotated = app
-        .line_annotations
-        .iter()
-        .filter(|line| matches!(line, crate::app::AnnotatedLine::PrInfoLine { .. }))
-        .count();
-    let mut lines = Vec::new();
-    let mut line_idx = 0usize;
-    crate::ui::pr_info_panel::append_pr_info_section(&app, &mut lines, &mut line_idx, usize::MAX);
-    assert_eq!(annotated, lines.len());
+    assert!(drawn_cursor_row(&mut app, 1).contains(" T "));
+    assert_panel_annotations_match_drawn_rows(&mut app);
 
     let code = rows
         .iter()

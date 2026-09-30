@@ -511,7 +511,11 @@ impl<'a> Doc<'a> {
         let fence = self.src[r.start..].chars().next();
         // An unclosed fence runs to the end of the body, with no closing row.
         let closed = last > first
-            && fence.is_some_and(|f| self.src[self.content_start(last, false)..].starts_with(f));
+            && fence.is_some_and(|f| {
+                let close =
+                    self.src[self.content_start(last, false)..self.line_range(last).end].trim_end();
+                close.len() >= self.run_len(r.start, f) && close.chars().all(|c| c == f)
+            });
         let content = first + 1..if closed { last } else { last + 1 };
         // A list marker before the fence (`- ```rust`) keeps its row.
         if self.content_start(first, false) < r.start {
@@ -1608,5 +1612,18 @@ mod tests {
         let rows = render("> ```\n> a\n> ```", 30);
 
         assert_eq!(rows.len(), 1, "{:?}", texts(&rows));
+    }
+
+    #[test]
+    fn should_keep_the_last_line_of_an_unclosed_fence_that_starts_with_the_fence_char() {
+        assert_eq!(
+            texts_trimmed(&render("```\n`foo` bar", 30)),
+            ["│ `foo` bar"]
+        );
+        assert_eq!(
+            texts_trimmed(&render("~~~\nfoo\n~ bar", 30)),
+            ["│ foo", "│ ~ bar"]
+        );
+        assert_eq!(texts_trimmed(&render("````\nx\n```", 30)), ["│ x", "│ ```"]);
     }
 }
