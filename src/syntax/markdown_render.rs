@@ -582,7 +582,9 @@ impl<'a> Doc<'a> {
             if is_head {
                 let underline = |style: Style| {
                     let style = style.add_modifier(Modifier::UNDERLINED);
-                    border.fg.map_or(style, |color| style.underline_color(color))
+                    border
+                        .fg
+                        .map_or(style, |color| style.underline_color(color))
                 };
                 for (style, _) in &mut out {
                     *style = underline(*style);
@@ -817,7 +819,8 @@ impl<'a> Doc<'a> {
                     first.extend(label.iter().cloned());
                 }
             }
-            if let (Some(&(style, to)), Some(row)) = (self.underline_pad.get(&line), rows.last_mut())
+            if let (Some(&(style, to)), Some(row)) =
+                (self.underline_pad.get(&line), rows.last_mut())
             {
                 let gap = to.min(width).saturating_sub(runs_width(row));
                 push_spaces(row, style, gap);
