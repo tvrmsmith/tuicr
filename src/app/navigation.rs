@@ -1452,7 +1452,9 @@ impl App {
 
     /// Update viewport_width and trigger annotation rebuild if it changed.
     /// Called from render functions when inner.width is computed — keeps
-    /// line_annotations.len() in sync with the rendered Vec<Line>.
+    /// line_annotations.len() in sync with the rendered Vec<Line>. Call it
+    /// before building any lines: width-dependent sections such as the PR
+    /// description wrap at viewport_width, which is 0 until the first sync.
     pub fn sync_viewport_width(&mut self, new_width: usize) {
         if self.diff_state.viewport_width != new_width {
             self.diff_state.viewport_width = new_width;
