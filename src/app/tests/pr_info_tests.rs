@@ -508,6 +508,16 @@ fn should_reuse_pr_info_rows_until_width_or_markdown_mode_changes() {
     app.render_markdown = false;
     let plain = crate::ui::pr_info_panel::pr_info_rows(&app);
     assert!(!std::rc::Rc::ptr_eq(&narrower, &plain));
+
+    draw_app(&mut app);
+    let drawn = crate::ui::pr_info_panel::pr_info_rows(&app);
+    app.pr_info.as_mut().unwrap().details.body = "Refreshed description".to_string();
+    let refreshed = crate::ui::pr_info_panel::pr_info_rows(&app);
+    assert!(!std::rc::Rc::ptr_eq(&drawn, &refreshed));
+
+    let rows = rows_of(&draw_app(&mut app));
+    assert!(rows.iter().any(|row| row.contains("Refreshed description")));
+    assert!(!rows.iter().any(|row| row.contains("Ship it")));
 }
 
 #[test]

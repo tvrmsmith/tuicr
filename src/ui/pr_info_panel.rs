@@ -344,8 +344,8 @@ pub(crate) fn pr_info_media_at_cursor(app: &App) -> Option<usize> {
     pr_info_rows(app).get(line_idx)?.media
 }
 
-/// One merged run of media-only source lines, replaced by placeholder rows
-/// for `media[first..end]` (index order).
+/// One merged run of media-only source lines, replaced by one placeholder
+/// row per index in `media`.
 struct MediaBlock {
     lines: Range<usize>,
     media: Range<usize>,

@@ -192,6 +192,9 @@ struct Doc<'a> {
     /// Marker ranges keyed by start byte: the range's end and what it renders
     /// as (often nothing).
     repl: BTreeMap<usize, (usize, Runs)>,
+    /// Entity references keyed by start byte: the range's end and the text it
+    /// decodes to, drawn in the style of its first byte.
+    decoded: HashMap<usize, (usize, String)>,
     line_starts: Vec<usize>,
     /// Lines that render alone, never joined into a paragraph.
     no_reflow: Vec<bool>,
@@ -225,6 +228,7 @@ impl<'a> Doc<'a> {
             styles: vec![look.base; src.len()],
             look,
             repl: BTreeMap::new(),
+            decoded: HashMap::new(),
             line_starts,
             no_reflow: vec![false; lines],
             block_start: vec![false; lines],
@@ -249,6 +253,10 @@ impl<'a> Doc<'a> {
         let mut links: Vec<OpenLink> = Vec::new();
         // syntect state for the fenced block being walked, if its language is known.
         let mut code: Option<syntect::easy::HighlightLines> = None;
+        let mut in_code = false;
+        // End of the last text event, which owns a backslash right before the
+        // next one; an unowned backslash there is an escape.
+        let mut text_end = 0;
         let mut table: Option<OpenTable> = None;
         let mut list_depth = 0usize;
         let parser = Parser::new_ext(self.src, opts);
@@ -353,9 +361,13 @@ impl<'a> Doc<'a> {
                         .then(|| hl.syntax_set.find_syntax_by_token(lang))
                         .flatten()
                         .map(|syntax| syntect::easy::HighlightLines::new(syntax, &hl.theme));
+                    in_code = true;
                     self.code_block(r, matches!(kind, CodeBlockKind::Fenced(_)), lang);
                 }
-                Event::End(TagEnd::CodeBlock) => code = None,
+                Event::End(TagEnd::CodeBlock) => {
+                    code = None;
+                    in_code = false;
+                }
                 Event::Start(Tag::Table(aligns)) => {
                     table = Some(OpenTable {
                         aligns,
@@ -378,6 +390,15 @@ impl<'a> Doc<'a> {
                     if let Some(t) = table.take() {
                         self.table(t);
                     }
+                }
+                Event::Text(text) if !in_code => {
+                    if r.start > text_end && self.src[..r.start].ends_with('\\') {
+                        self.replace(r.start - 1..r.start, vec![]);
+                    }
+                    if self.src[r.clone()] != *text {
+                        self.decoded.insert(r.start, (r.end, text.to_string()));
+                    }
+                    text_end = r.end;
                 }
                 Event::Text(text) => {
                     let Some(block) = code.as_mut() else {
@@ -487,12 +508,17 @@ impl<'a> Doc<'a> {
         if !fenced {
             return;
         }
-        let fence = self.src[self.line_range(first)].trim_start().chars().next();
+        let fence = self.src[r.start..].chars().next();
         // An unclosed fence runs to the end of the body, with no closing row.
         let closed = last > first
-            && fence.is_some_and(|f| self.src[self.line_range(last)].trim_start().starts_with(f));
+            && fence.is_some_and(|f| self.src[self.content_start(last, false)..].starts_with(f));
         let content = first + 1..if closed { last } else { last + 1 };
-        self.skip[first] = true;
+        // A list marker before the fence (`- ```rust`) keeps its row.
+        if self.content_start(first, false) < r.start {
+            self.replace(r.start..self.line_range(first).end, vec![]);
+        } else {
+            self.skip[first] = true;
+        }
         if closed {
             self.skip[last] = true;
         }
@@ -525,8 +551,8 @@ impl<'a> Doc<'a> {
                     .iter()
                     .map(|cell| {
                         let s = &self.src[cell.clone()];
-                        let lead = s.len() - s.trim_start_matches([' ', '|']).len();
-                        let trail = s.len() - s.trim_end_matches([' ', '|']).len();
+                        let lead = s.len() - s.trim_start().len();
+                        let trail = s.len() - s.trim_end().len();
                         let mut runs =
                             self.emit(cell.start + lead, (cell.end - trail).max(cell.start + lead));
                         if *is_head {
@@ -625,10 +651,12 @@ impl<'a> Doc<'a> {
         let bar = vec![(bar_style, "▎".to_string())];
         self.paint(r.clone(), self.look.quote_text);
         for line in self.lines_of(&r) {
-            let lr = self.line_range(line);
-            for (i, ch) in self.src[lr.clone()].char_indices() {
+            // The first line's markers start at the quote, past any list marker.
+            let from = self.line_range(line).start.max(r.start);
+            let end = self.line_range(line).end;
+            for (i, ch) in self.src[from..end].char_indices() {
                 match ch {
-                    '>' => self.replace(lr.start + i..lr.start + i + 1, bar.clone()),
+                    '>' => self.replace(from + i..from + i + 1, bar.clone()),
                     ' ' => {}
                     _ => break,
                 }
@@ -720,6 +748,11 @@ impl<'a> Doc<'a> {
                 at = (*end).max(at + 1);
                 continue;
             }
+            if let Some((end, text)) = self.decoded.get(&at) {
+                push_str(&mut out, self.styles[at], text);
+                at = (*end).max(at + 1);
+                continue;
+            }
             let Some(ch) = self.src[at..].chars().next() else {
                 break;
             };
@@ -743,6 +776,7 @@ impl<'a> Doc<'a> {
             } else if digits > 0 && [". ", ") "].iter().any(|m| rest[digits..].starts_with(m)) {
                 at += digits + 2;
             }
+            at = s.len() - s[at..].trim_start_matches([' ', '>']).len();
             if ["[ ] ", "[x] ", "[X] "]
                 .iter()
                 .any(|m| s[at..].starts_with(m))
@@ -1522,5 +1556,57 @@ mod tests {
                 .iter()
                 .all(|s| s.add_modifier.contains(Modifier::UNDERLINED))
         );
+    }
+
+    #[test]
+    fn should_show_escaped_characters_and_entities_decoded() {
+        let row = single_row("snake\\_case \\*not bold\\* a &amp; b \\\\ c", 60);
+
+        assert_eq!(text(&row), "snake_case *not bold* a & b \\ c");
+    }
+
+    #[test]
+    fn should_style_an_entity_inside_link_text_as_the_link() {
+        let row = single_row("[Tom &amp; Jerry](https://x.test)", 40);
+
+        assert_eq!(text(&row), "Tom & Jerry");
+        assert!(
+            styles_of(&row, "&")
+                .iter()
+                .all(|s| s.add_modifier.contains(Modifier::UNDERLINED))
+        );
+    }
+
+    #[test]
+    fn should_keep_an_escaped_pipe_in_a_table_cell() {
+        let rows = render("| a |\n|---|\n| x \\| |", 40);
+
+        assert_eq!(texts_trimmed(&rows), ["a", "x |"]);
+    }
+
+    #[test]
+    fn should_bar_a_quote_that_opens_on_a_list_item_line() {
+        let rows = render("- > quoted words\n  > more", 10);
+
+        let texts = texts_trimmed(&rows);
+        assert_eq!(texts, ["• ▎ quoted", "  ▎ words", "  ▎ more"]);
+    }
+
+    #[test]
+    fn should_draw_a_fence_that_opens_on_a_list_item_line() {
+        let rows = render("- ```rust\n  let x = 1;\n  ```", 30);
+
+        let texts = texts_trimmed(&rows);
+        assert_eq!(texts.len(), 2, "{texts:?}");
+        assert_eq!(texts[0], "•");
+        assert!(texts[1].starts_with("│   let x = 1;"), "{texts:?}");
+        assert!(texts[1].ends_with("rust"), "{texts:?}");
+    }
+
+    #[test]
+    fn should_hide_a_closing_fence_inside_a_quote() {
+        let rows = render("> ```\n> a\n> ```", 30);
+
+        assert_eq!(rows.len(), 1, "{:?}", texts(&rows));
     }
 }
