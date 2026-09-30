@@ -302,6 +302,8 @@ pub struct AppConfig {
     pub export_legend: Option<bool>,
     pub cursor_line: Option<bool>,
     pub search_highlight: Option<bool>,
+    /// Render markdown in the PR description panel. Defaults to true.
+    pub render_markdown: Option<bool>,
     pub mouse: Option<bool>,
     /// Enable vim-style modal editing in the review comment text box. When
     /// unset/false the comment box uses the default emacs/readline bindings.
@@ -384,6 +386,7 @@ const KNOWN_KEYS: &[&str] = &[
     "export_legend",
     "cursor_line",
     "search_highlight",
+    "render_markdown",
     "mouse",
     "comment_vim",
     "q_quits",
@@ -764,6 +767,7 @@ fn load_config_from_path(path: &Path) -> Result<ConfigLoadOutcome> {
         export_legend: read_bool(table, "export_legend", &mut warnings),
         cursor_line: read_bool(table, "cursor_line", &mut warnings),
         search_highlight: read_bool(table, "search_highlight", &mut warnings),
+        render_markdown: read_bool(table, "render_markdown", &mut warnings),
         mouse: read_bool(table, "mouse", &mut warnings),
         comment_vim: read_bool(table, "comment_vim", &mut warnings),
         q_quits: read_bool(table, "q_quits", &mut warnings),
@@ -1972,6 +1976,27 @@ mod tests {
         assert_eq!(
             outcome.warnings[0],
             "Warning: Config key 'wrap' must be a boolean; ignoring value"
+        );
+    }
+
+    // render_markdown
+
+    #[test]
+    fn should_parse_render_markdown_false() {
+        let outcome = parse_config("render_markdown = false\n");
+        assert_eq!(
+            outcome.config.as_ref().and_then(|cfg| cfg.render_markdown),
+            Some(false)
+        );
+        assert!(outcome.warnings.is_empty());
+    }
+
+    #[test]
+    fn should_leave_render_markdown_unset_when_absent() {
+        let outcome = parse_config("wrap = true\n");
+        assert_eq!(
+            outcome.config.as_ref().and_then(|cfg| cfg.render_markdown),
+            None
         );
     }
 

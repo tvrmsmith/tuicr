@@ -1,3 +1,7 @@
+use std::ops::Range;
+use std::rc::Rc;
+use std::sync::Arc;
+
 use ratatui::{
     style::Style,
     text::{Line, Span},
@@ -10,6 +14,8 @@ use crate::forge::traits::{
 };
 use crate::media::{MediaKind, MediaLine, MediaRef, detect::find_media};
 use crate::model::CommentType;
+use crate::syntax::SyntaxHighlighter;
+use crate::syntax::markdown_render::{self, BlockRow};
 use crate::theme::Theme;
 use crate::ui::comment_panel::{self, CommentTypePresentation};
 use crate::ui::diff_view::{HEADER_RULE, cursor_indicator, cursor_indicator_spaced};
@@ -26,7 +32,7 @@ pub(crate) struct PrInfoRow {
 /// Every rendered PR-info line is prefixed with a two-column cursor indicator
 /// (`cursor_indicator_spaced`), so the wrapped body has that much less room.
 /// The annotation/height counters and the renderer MUST wrap
-/// `build_pr_info_lines` at this same width — otherwise `line_annotations`
+/// `pr_info_rows` at this same width — otherwise `line_annotations`
 /// desyncs from the rendered `Vec<Line>` and cursor↔line mapping drifts for
 /// every row below the panel.
 pub(crate) const PR_INFO_INDICATOR_WIDTH: usize = 2;
@@ -38,18 +44,55 @@ pub(crate) fn pr_info_content_width(viewport_width: usize) -> usize {
         .max(1)
 }
 
+/// Rows and the inputs they were built from. The panel is rebuilt several
+/// times per frame (and once per `PrInfoLine` under wrap), so `pr_info_rows`
+/// reuses these while every input is unchanged. Tests assign `App` fields
+/// directly, so the key compares by value, and by `Arc` identity for the
+/// theme (a new `Theme` builds a new highlighter).
+pub(crate) struct PrInfoRowsCache {
+    info: PullRequestInfo,
+    width: usize,
+    render_markdown: bool,
+    highlighter: Arc<SyntaxHighlighter>,
+    rows: Rc<Vec<PrInfoRow>>,
+}
+
+/// The one place the panel's rows are built from `App` state, so height,
+/// annotations, search, and drawing always see the same rows. Empty when
+/// there is no PR.
+pub(crate) fn pr_info_rows(app: &App) -> Rc<Vec<PrInfoRow>> {
+    let Some(info) = app.pr_info.as_ref() else {
+        return Rc::default();
+    };
+    let width = pr_info_content_width(app.diff_state.viewport_width);
+    let highlighter = app.theme.syntax_highlighter_arc();
+    let mut cache = app.pr_info_rows_cache.borrow_mut();
+    if let Some(hit) = cache.as_ref().filter(|hit| {
+        hit.width == width
+            && hit.render_markdown == app.render_markdown
+            && Arc::ptr_eq(&hit.highlighter, &highlighter)
+            && hit.info == *info
+    }) {
+        return Rc::clone(&hit.rows);
+    }
+    let rows = Rc::new(build_pr_info_rows(
+        info,
+        width,
+        &app.theme,
+        app.render_markdown,
+    ));
+    *cache = Some(PrInfoRowsCache {
+        info: info.clone(),
+        width,
+        render_markdown: app.render_markdown,
+        highlighter,
+        rows: Rc::clone(&rows),
+    });
+    rows
+}
+
 pub fn pr_info_render_height(app: &App) -> usize {
-    app.pr_info
-        .as_ref()
-        .map(|info| {
-            build_pr_info_lines(
-                info,
-                pr_info_content_width(app.diff_state.viewport_width),
-                &app.theme,
-            )
-            .len()
-        })
-        .unwrap_or(0)
+    pr_info_rows(app).len()
 }
 
 pub fn issue_comments_render_height(app: &App) -> usize {
@@ -83,12 +126,8 @@ pub fn append_pr_info_section(
     line_idx: &mut usize,
     current_line_idx: usize,
 ) {
-    let Some(info) = app.pr_info.as_ref() else {
-        return;
-    };
-
-    let content_width = pr_info_content_width(app.diff_state.viewport_width);
-    for mut pr_line in build_pr_info_lines(info, content_width, &app.theme) {
+    for row in pr_info_rows(app).iter() {
+        let mut pr_line = row.line.clone();
         let indicator = cursor_indicator_spaced(*line_idx, current_line_idx);
         pr_line.spans.insert(
             0,
@@ -171,6 +210,7 @@ pub(crate) fn build_pr_info_rows(
     info: &PullRequestInfo,
     width: usize,
     theme: &Theme,
+    render_markdown: bool,
 ) -> Vec<PrInfoRow> {
     let mut rows = Vec::new();
     let content_width = width.max(1);
@@ -187,7 +227,14 @@ pub(crate) fn build_pr_info_rows(
     } else {
         details.body.clone()
     };
-    push_body_rows(&mut rows, info, theme, &body, content_width);
+    push_body_rows(
+        &mut rows,
+        info,
+        theme,
+        &body,
+        content_width,
+        render_markdown,
+    );
 
     push_blank(&mut rows);
     push_section_header(
@@ -282,18 +329,6 @@ pub(crate) fn build_pr_info_rows(
     rows
 }
 
-/// Unchanged signature for existing callers: strips [`PrInfoRow::media`].
-pub fn build_pr_info_lines(
-    info: &PullRequestInfo,
-    width: usize,
-    theme: &Theme,
-) -> Vec<Line<'static>> {
-    build_pr_info_rows(info, width, theme)
-        .into_iter()
-        .map(|row| row.line)
-        .collect()
-}
-
 /// Index into [`pr_body_media`] of the media on the cursor row, when the
 /// cursor is on a rendered PR-info line. `handle_diff_action`'s `SelectFile`
 /// arm calls this and hands the index to `App::enter_media`.
@@ -301,77 +336,102 @@ pub(crate) fn pr_info_media_at_cursor(app: &App) -> Option<usize> {
     if !is_cursor_in_pr_info(app) {
         return None;
     }
-    let info = app.pr_info.as_ref()?;
     let &AnnotatedLine::PrInfoLine { line_idx } =
         app.line_annotations.get(app.diff_state.cursor_line)?
     else {
         return None;
     };
-    let content_width = pr_info_content_width(app.diff_state.viewport_width);
-    build_pr_info_rows(info, content_width, &app.theme)
-        .get(line_idx)?
-        .media
+    pr_info_rows(app).get(line_idx)?.media
 }
 
-/// Walks the source lines of `body` with their pre-wrapped row groups,
-/// replacing media-only line ranges with one placeholder row per media entry
-/// and appending a placeholder after any line that carries inline media.
+/// One merged run of media-only source lines, replaced by one placeholder
+/// row per index in `media`.
+struct MediaBlock {
+    lines: Range<usize>,
+    media: Range<usize>,
+}
+
+/// Splits `media` (document order) into merged, non-overlapping placeholder
+/// blocks and the inline media that ride after their prose line. Media
+/// starting inside a block's covered lines (an `<img>` within a multi-line
+/// `<video>`) joins the block, and inline media on a media-only line joins it
+/// too; skipping either would stall every later entry.
+fn plan_media(media: &[MediaLine]) -> (Vec<MediaBlock>, Vec<(usize, usize)>) {
+    let mut blocks = Vec::new();
+    let mut inline = Vec::new();
+    let mut idx = 0usize;
+    while idx < media.len() {
+        let line = media[idx].line;
+        let same_line_end = idx
+            + media[idx..]
+                .iter()
+                .take_while(|entry| entry.line == line)
+                .count();
+        let covered_end = media[idx..same_line_end]
+            .iter()
+            .filter(|entry| entry.media_only)
+            .map(|entry| entry.lines.end)
+            .max();
+        let Some(mut covered_end) = covered_end else {
+            inline.extend((idx..same_line_end).map(|i| (line, i)));
+            idx = same_line_end;
+            continue;
+        };
+        covered_end = covered_end.max(line + 1);
+        let mut end = same_line_end;
+        while end < media.len() && media[end].line < covered_end {
+            covered_end = covered_end.max(media[end].lines.end);
+            end += 1;
+        }
+        blocks.push(MediaBlock {
+            lines: line..covered_end,
+            media: idx..end,
+        });
+        idx = end;
+    }
+    (blocks, inline)
+}
+
+/// Appends the body rows, replacing media-only blocks with one placeholder
+/// row per media entry and following each inline media line's last row with
+/// its placeholders. Both render paths produce [`BlockRow`]s, so one walk
+/// keyed on source position serves them.
 fn push_body_rows(
     rows: &mut Vec<PrInfoRow>,
     info: &PullRequestInfo,
     theme: &Theme,
     body: &str,
     content_width: usize,
+    render_markdown: bool,
 ) {
     let media = pr_body_media(info);
-    let groups = comment_panel::markdown_body_line_groups(theme, body, content_width);
+    let (blocks, inline) = plan_media(&media);
+    let body_rows = if render_markdown {
+        let apart: Vec<Range<usize>> = blocks.iter().map(|block| block.lines.clone()).collect();
+        markdown_render::render_block(theme, body, content_width, &apart)
+    } else {
+        comment_panel::markdown_body_line_groups(theme, body, content_width)
+            .into_iter()
+            .enumerate()
+            .flat_map(|(idx, group)| {
+                group.into_iter().map(move |line| BlockRow {
+                    line,
+                    source: idx..idx + 1,
+                })
+            })
+            .collect()
+    };
 
-    let mut source_idx = 0usize;
-    let mut media_idx = 0usize;
-    while source_idx < groups.len() {
-        let mut media_only_here = Vec::new();
-        let mut inline_here = Vec::new();
-        let mut covered_end = source_idx + 1;
-        while media_idx < media.len() && media[media_idx].line == source_idx {
-            if media[media_idx].media_only {
-                covered_end = covered_end.max(media[media_idx].lines.end);
-                media_only_here.push(media_idx);
-            } else {
-                inline_here.push(media_idx);
-            }
-            media_idx += 1;
+    let mut inline_after: Vec<Vec<usize>> = vec![Vec::new(); body_rows.len()];
+    for (line, media_idx) in inline {
+        if let Some(anchor) = body_rows.iter().rposition(|row| row.source.contains(&line)) {
+            inline_after[anchor].push(media_idx);
         }
+    }
 
-        if !media_only_here.is_empty() {
-            // Media starting inside the covered range (an <img> within a
-            // multi-line <video> block) shares its placeholder block;
-            // skipping it would stall `media_idx` for every later entry.
-            while media_idx < media.len() && media[media_idx].line < covered_end {
-                covered_end = covered_end.max(media[media_idx].lines.end);
-                media_only_here.push(media_idx);
-                media_idx += 1;
-            }
-            media_only_here.extend(inline_here);
-            media_only_here.sort_unstable();
-            for idx in media_only_here {
-                rows.push(placeholder_row(
-                    theme,
-                    idx,
-                    &media[idx].media,
-                    content_width,
-                ));
-            }
-            source_idx = covered_end;
-            continue;
-        }
-
-        for line in &groups[source_idx] {
-            rows.push(PrInfoRow {
-                line: line.clone(),
-                media: None,
-            });
-        }
-        for idx in inline_here {
+    let mut pending = blocks.iter().peekable();
+    let push_block = |rows: &mut Vec<PrInfoRow>, block: &MediaBlock| {
+        for idx in block.media.clone() {
             rows.push(placeholder_row(
                 theme,
                 idx,
@@ -379,7 +439,31 @@ fn push_body_rows(
                 content_width,
             ));
         }
-        source_idx += 1;
+    };
+    let mut skip_until = 0usize;
+    for (row, after) in body_rows.into_iter().zip(inline_after) {
+        while let Some(block) = pending.next_if(|block| block.lines.start <= row.source.start) {
+            push_block(rows, block);
+            skip_until = block.lines.end;
+        }
+        if row.source.start < skip_until {
+            continue;
+        }
+        rows.push(PrInfoRow {
+            line: row.line,
+            media: None,
+        });
+        for idx in after {
+            rows.push(placeholder_row(
+                theme,
+                idx,
+                &media[idx].media,
+                content_width,
+            ));
+        }
+    }
+    for block in pending {
+        push_block(rows, block);
     }
 }
 
@@ -639,9 +723,17 @@ mod tests {
     /// Row text/media from row 1 (row 0 is the header) up to but excluding
     /// the blank row that precedes the Status header.
     fn body_rows(body: &str, width: usize) -> Vec<(String, Option<usize>)> {
+        body_rows_with(body, width, false)
+    }
+
+    fn body_rows_with(
+        body: &str,
+        width: usize,
+        render_markdown: bool,
+    ) -> Vec<(String, Option<usize>)> {
         let mut info = sample_info();
         info.details.body = body.to_string();
-        let rows = build_pr_info_rows(&info, width, &Theme::dark());
+        let rows = build_pr_info_rows(&info, width, &Theme::dark(), render_markdown);
         let status_header = rows
             .iter()
             .position(|row| row_text(row).starts_with(&format!("═══ PR #{} Status ", 42)))
@@ -668,6 +760,27 @@ mod tests {
                 ("Intro".to_string(), None),
                 ("[image: shot]".to_string(), Some(0)),
                 ("Outro".to_string(), None),
+            ]
+        );
+    }
+
+    #[test]
+    fn inline_image_placeholder_follows_the_last_row_of_a_wrapped_line() {
+        let rows: Vec<(String, Option<usize>)> = body_rows_with(
+            "aaaa bbbb cccc dddd eeee ![a](https://x.test/1.png) ffff",
+            20,
+            true,
+        )
+        .into_iter()
+        .map(|(text, media)| (text.trim_end().to_string(), media))
+        .collect();
+
+        assert_eq!(
+            rows,
+            vec![
+                ("aaaa bbbb cccc dddd".to_string(), None),
+                ("eeee ▣ a ffff".to_string(), None),
+                ("[image: a]".to_string(), Some(0)),
             ]
         );
     }
@@ -784,7 +897,7 @@ mod tests {
 
         let mut info = sample_info();
         info.details.body = "Intro\n![shot](https://x.test/a.png)\nOutro".to_string();
-        let full_rows = build_pr_info_rows(&info, 80, &Theme::dark());
+        let full_rows = build_pr_info_rows(&info, 80, &Theme::dark(), false);
         let intro_row = &full_rows[1];
         let placeholder_row = &full_rows[2];
         assert_eq!(placeholder_row.media, Some(0));
@@ -796,7 +909,7 @@ mod tests {
 
     #[test]
     fn header_status_and_checks_rows_carry_no_media() {
-        let rows = build_pr_info_rows(&sample_info(), 80, &Theme::dark());
+        let rows = build_pr_info_rows(&sample_info(), 80, &Theme::dark(), false);
         assert!(rows[0].media.is_none());
         for row in &rows {
             let text = row_text(row);
@@ -809,16 +922,8 @@ mod tests {
 
     #[test]
     fn should_build_title_and_status_sections() {
-        let lines = build_pr_info_lines(&sample_info(), 80, &Theme::dark());
-        let rendered = lines
-            .iter()
-            .map(|line| {
-                line.spans
-                    .iter()
-                    .map(|span| span.content.as_ref())
-                    .collect::<String>()
-            })
-            .collect::<Vec<_>>();
+        let rows = build_pr_info_rows(&sample_info(), 80, &Theme::dark(), false);
+        let rendered = rows.iter().map(row_text).collect::<Vec<_>>();
         assert!(
             rendered
                 .iter()
@@ -834,11 +939,11 @@ mod tests {
     }
 
     #[test]
-    fn should_render_pr_description_markdown() {
+    fn should_highlight_pr_description_source_when_rendering_is_off() {
         let mut info = sample_info();
         info.details.body = "plain `code` plain".to_string();
-        let lines = build_pr_info_lines(&info, 80, &Theme::dark());
-        let description = &lines[1];
+        let lines = build_pr_info_rows(&info, 80, &Theme::dark(), false);
+        let description = &lines[1].line;
 
         assert_eq!(
             description
@@ -854,8 +959,8 @@ mod tests {
         );
 
         info.details.body = "plain description".to_string();
-        let lines = build_pr_info_lines(&info, 80, &Theme::dark());
-        let description = &lines[1];
+        let lines = build_pr_info_rows(&info, 80, &Theme::dark(), false);
+        let description = &lines[1].line;
 
         assert_eq!(
             description
@@ -866,5 +971,95 @@ mod tests {
             info.details.body
         );
         assert_eq!(description.spans.len(), 1);
+    }
+
+    #[test]
+    fn should_render_pr_description_markdown() {
+        let mut info = sample_info();
+        info.details.body = "plain `code` plain".to_string();
+        let theme = Theme::dark();
+        let rows = build_pr_info_rows(&info, 80, &theme, true);
+
+        assert_eq!(row_text(&rows[1]), "plain  code  plain");
+        let chip = rows[1]
+            .line
+            .spans
+            .iter()
+            .find(|span| span.content.contains("code"))
+            .expect("span holding code");
+        assert_eq!(chip.style.bg, Some(theme.bg_highlight));
+    }
+
+    fn rendered(body: &str) -> Vec<(String, Option<usize>)> {
+        body_rows_with(body, 80, true)
+    }
+
+    fn row(text: &str, media: Option<usize>) -> (String, Option<usize>) {
+        (text.to_string(), media)
+    }
+
+    #[test]
+    fn rendered_media_only_line_is_replaced_by_a_placeholder_row() {
+        assert_eq!(
+            rendered("Intro\n![shot](https://x.test/a.png)\nOutro"),
+            vec![
+                row("Intro", None),
+                row("[image: shot]", Some(0)),
+                row("Outro", None)
+            ]
+        );
+    }
+
+    #[test]
+    fn rendered_inline_image_shows_a_glyph_and_appends_a_placeholder() {
+        assert_eq!(
+            rendered("see ![a](https://x.test/1.png) end"),
+            vec![row("see ▣ a end", None), row("[image: a]", Some(0))]
+        );
+    }
+
+    #[test]
+    fn rendered_inline_image_placeholder_follows_the_reflowed_paragraph() {
+        assert_eq!(
+            rendered("one\ntwo ![a](https://x.test/1.png)\nthree"),
+            vec![row("one two ▣ a three", None), row("[image: a]", Some(0))]
+        );
+    }
+
+    #[test]
+    fn rendered_multi_line_media_only_html_block_keeps_lines_outside_its_range() {
+        let body = "<p align=\"center\">\n  <img width=\"400\"\n    alt=\"Login page\"\n    src=\"https://x.test/login.png\">\n</p>";
+        assert_eq!(rendered(body), body_rows(body, 80));
+    }
+
+    #[test]
+    fn rendered_video_and_attachment_match_the_off_path() {
+        let body = "<video src=\"https://x.test/demo.mp4\"></video>\n\nhttps://github.com/user-attachments/assets/abc";
+        assert_eq!(rendered(body), body_rows(body, 80));
+    }
+
+    #[test]
+    fn rendered_media_starting_inside_a_covered_range_matches_the_off_path() {
+        let body = "<video controls>\n<img src=\"https://x.test/i.png\">\n<source src=\"https://x.test/v.mp4\">\n</video>\n\n![after](https://x.test/a.png)";
+        assert_eq!(rendered(body), body_rows(body, 80));
+    }
+
+    #[test]
+    fn rendered_blank_rows_around_a_placeholder_stay() {
+        assert_eq!(
+            rendered("A\n\n![x](https://x.test/x.png)\n\nB"),
+            vec![
+                row("A", None),
+                row("", None),
+                row("[image: x]", Some(0)),
+                row("", None),
+                row("B", None)
+            ]
+        );
+    }
+
+    #[test]
+    fn rendered_body_has_no_trailing_blank_rows() {
+        assert_eq!(rendered("Body\n\n\n"), vec![row("Body", None)]);
     }
 }

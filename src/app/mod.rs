@@ -1250,6 +1250,11 @@ pub struct App {
     pub(crate) search_matches_stale: bool,
     pub(crate) search_highlight_visible: bool,
     pub search_highlight_enabled: bool,
+    /// Render markdown in the PR description panel.
+    pub render_markdown: bool,
+    /// Rows last built by `pr_info_rows`, reused while its key still matches.
+    pub(crate) pr_info_rows_cache:
+        std::cell::RefCell<Option<crate::ui::pr_info_panel::PrInfoRowsCache>>,
     pub(crate) search_return_mode: InputMode,
     pub(crate) overlay_return_mode: InputMode,
     pub comment_buffer: String,

@@ -480,6 +480,9 @@ fn main() -> anyhow::Result<()> {
         if cfg.search_highlight == Some(false) {
             app.search_highlight_enabled = false;
         }
+        if cfg.render_markdown == Some(false) {
+            app.render_markdown = false;
+        }
         if let Some(scroll_offset) = cfg.scroll_offset {
             app.scroll_offset = scroll_offset;
         }

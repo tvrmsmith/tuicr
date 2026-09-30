@@ -133,10 +133,16 @@ src/
 │   ├── mod.rs
 │   └── markdown.rs      # export_to_clipboard(): generate markdown, copy to clipboard
 │
+├── syntax/
+│   ├── mod.rs           # SyntaxHighlighter: syntect highlighting for diffs and code
+│   ├── cmark.rs         # Highlighted markdown source (comment bodies, render_markdown = false)
+│   └── markdown_render.rs # render_block -> BlockRow: rendered, reflowed markdown rows
+│
 └── ui/
     ├── mod.rs
     ├── app_layout.rs    # Main render function, file list, diff view with inline comments
-    ├── pr_info_panel.rs # PR description panel (status, reviewers, checks, body, media rows)
+    ├── pr_info_panel.rs # PR description panel (status, reviewers, checks, body, media rows);
+    │                    # pr_info_rows builds its rows once and caches them on App
     ├── media_viewer.rs  # Full-screen in-TUI image viewer (InputMode::MediaViewer)
     ├── comment_navigator.rs # Sidebar comment index for jumping local/remote comments
     ├── status_bar.rs    # Header, status bar, command line rendering
