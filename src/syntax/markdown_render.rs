@@ -198,9 +198,9 @@ struct Doc<'a> {
     /// Lines where the parser opened a block (an item, a paragraph) or a hard
     /// break ended the previous line, so they never join the line above.
     block_start: Vec<bool>,
-    /// h1 and h2 lines, whose underline pads their last row to the full width
-    /// in the heading's style.
-    heading_pad: HashMap<usize, Style>,
+    /// h1 and h2 lines and table headers, whose underline pads their last row
+    /// in the given style out to the given width, capped at the row width.
+    underline_pad: HashMap<usize, (Style, usize)>,
     /// Lines that render no row at all (code fences, link definitions).
     skip: Vec<bool>,
     /// Runs drawn before a line's own text (the code gutter).
@@ -228,7 +228,7 @@ impl<'a> Doc<'a> {
             line_starts,
             no_reflow: vec![false; lines],
             block_start: vec![false; lines],
-            heading_pad: HashMap::new(),
+            underline_pad: HashMap::new(),
             skip: vec![false; lines],
             prefixes: HashMap::new(),
             labels: HashMap::new(),
@@ -571,19 +571,25 @@ impl<'a> Doc<'a> {
                 };
                 push_spaces(&mut out, base, left);
                 out.extend(cell);
-                // Trailing pad on the last column only makes rows wrap, except
-                // where it carries the header underline to the table's edge.
-                if i + 1 < widths.len() || is_head {
+                // Trailing pad on the last column only makes rows wrap. The
+                // header's underline reaches the table's edge through
+                // `underline_pad` instead, so a table wider than the row
+                // never wraps the pad onto a blank row.
+                if i + 1 < widths.len() {
                     push_spaces(&mut out, base, right);
                 }
             }
             if is_head {
+                let underline = |style: Style| {
+                    let style = style.add_modifier(Modifier::UNDERLINED);
+                    border.fg.map_or(style, |color| style.underline_color(color))
+                };
                 for (style, _) in &mut out {
-                    *style = style.add_modifier(Modifier::UNDERLINED);
-                    if let Some(color) = border.fg {
-                        *style = style.underline_color(color);
-                    }
+                    *style = underline(*style);
                 }
+                let table_width = widths.iter().sum::<usize>() + 3 * (widths.len() - 1);
+                self.underline_pad
+                    .insert(line, (underline(base), table_width));
             }
             self.skip[line] = false;
             self.overrides.insert(line, out);
@@ -649,7 +655,7 @@ impl<'a> Doc<'a> {
             first
         };
         if matches!(level, HeadingLevel::H1 | HeadingLevel::H2) {
-            self.heading_pad.insert(text_last, style);
+            self.underline_pad.insert(text_last, (style, usize::MAX));
         }
         if setext {
             for line in first..=text_last {
@@ -811,8 +817,9 @@ impl<'a> Doc<'a> {
                     first.extend(label.iter().cloned());
                 }
             }
-            if let (Some(&style), Some(row)) = (self.heading_pad.get(&line), rows.last_mut()) {
-                let gap = width.saturating_sub(runs_width(row));
+            if let (Some(&(style, to)), Some(row)) = (self.underline_pad.get(&line), rows.last_mut())
+            {
+                let gap = to.min(width).saturating_sub(runs_width(row));
                 push_spaces(row, style, gap);
             }
             let source = apart[line].clone().unwrap_or(line..last + 1);
@@ -1212,6 +1219,22 @@ mod tests {
                     .all(|s| s.add_modifier.contains(Modifier::BOLD))
             );
         }
+    }
+
+    #[test]
+    fn should_underline_header_to_panel_edge_without_blank_row_when_table_is_wider() {
+        let border = Some(Theme::dark().border_unfocused);
+        let rows = render(
+            "| Long header cell | B |\n| --- | --- |\n| x | a much longer body cell that overflows |",
+            40,
+        );
+
+        assert_eq!(text(&rows[0]).trim_end(), "Long header cell │ B");
+        assert_eq!(row_width(&rows[0]), 40);
+        assert!(spans_all(&rows[0], |s| has(s, Modifier::UNDERLINED)
+            && s.style.underline_color == border));
+        assert!(text(&rows[1]).starts_with("x "), "{:?}", texts(&rows));
+        assert!(rows.iter().all(|row| row_width(row) <= 40));
     }
 
     #[test]
