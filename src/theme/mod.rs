@@ -2465,6 +2465,11 @@ pub fn resolve_theme_with_config(
 }
 
 impl Theme {
+    /// Whether the theme draws on a dark panel.
+    pub fn is_dark(&self) -> bool {
+        is_dark_color(self.panel_bg)
+    }
+
     /// Get the syntax highlighter for this theme (lazily initialized, cached)
     pub fn syntax_highlighter(&self) -> &SyntaxHighlighter {
         self.highlighter
