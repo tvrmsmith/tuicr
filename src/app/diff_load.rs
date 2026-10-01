@@ -828,6 +828,7 @@ impl App {
     /// Reloads diff files from disk. Returns `(file_count, invalidated_count)` where
     /// `invalidated_count` is the number of previously reviewed files whose content changed.
     pub fn reload_diff_files(&mut self) -> Result<(usize, usize)> {
+        self.markdown_diff_cache.forget_failures();
         let diff_files = self.fetch_diff_files()?;
         let full_reload = !Self::is_strict_commit_selection(
             self.commit_selection_range,

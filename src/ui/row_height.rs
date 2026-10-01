@@ -16,9 +16,12 @@
 //! formatted spans are measured here with the same outer wrap pass used by
 //! the renderers.
 
+use std::borrow::Cow;
+
 use ratatui::text::{Line, Span};
 
 use crate::app::{AnnotatedLine, App, DiffViewMode, sbs_overhead};
+use crate::model::DiffLine;
 use crate::ui::text_utils::wrap_spans;
 use crate::ui::{comment_panel, diff_view};
 
@@ -172,10 +175,20 @@ fn sbs_row_contents(
         .and_then(|f| f.hunks.get(hunk_idx));
     let get = |i: Option<usize>| -> String {
         i.and_then(|idx| hunk.and_then(|h| h.lines.get(idx)))
-            .map(|dl| dl.content.clone())
+            .map(|dl| drawn_text(dl).into_owned())
             .unwrap_or_default()
     };
     (get(del_line_idx), get(add_line_idx))
+}
+
+/// The text the renderer draws for `line`: the highlighted spans' text, which
+/// differs from `content` when markdown rendering replaced the source.
+fn drawn_text(line: &DiffLine) -> Cow<'_, str> {
+    match line.highlighted_spans.as_deref() {
+        Some([(_, only)]) => Cow::Borrowed(only),
+        Some(spans) => Cow::Owned(spans.iter().map(|(_, text)| text.as_str()).collect()),
+        None => Cow::Borrowed(&line.content),
+    }
 }
 
 fn expanded_line_content(app: &App, gap_id: &crate::app::GapId, idx: usize) -> Option<String> {
@@ -310,7 +323,7 @@ fn full_row_text(app: &App, annotation: &AnnotatedLine) -> String {
                 Some(dl) => {
                     let lineno = diff_view::unified_line_number_field(dl, lw);
                     let prefix = diff_view::unified_line_origin_marker(dl);
-                    format!("{indicator}{lineno}{prefix} {}", dl.content)
+                    format!("{indicator}{lineno}{prefix} {}", drawn_text(dl))
                 }
                 None => format!("{indicator}{}", " ".repeat(lw + 1)),
             }

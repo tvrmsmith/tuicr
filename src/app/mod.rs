@@ -1280,6 +1280,10 @@ pub struct App {
     /// `<details>` sections of the PR description shown opposite to their
     /// default, by section number. Cleared when a new `pr_info` is installed.
     pub(crate) pr_details_toggled: std::collections::BTreeSet<usize>,
+    /// Render `.md` / `.markdown` diff lines as markdown instead of syntax-highlighted source.
+    pub render_markdown_diffs: bool,
+    /// Fetched sources, rendered rows, and failure memo behind `render_markdown_diffs`.
+    pub(crate) markdown_diff_cache: markdown_diff::MarkdownDiffCache,
     /// Rows last built by `pr_info_rows`, reused while its key still matches.
     pub(crate) pr_info_rows_cache:
         std::cell::RefCell<Option<crate::ui::pr_info_panel::PrInfoRowsCache>>,
@@ -2172,6 +2176,7 @@ mod gaps;
 mod grouping;
 pub mod grouping_feedback;
 mod init;
+mod markdown_diff;
 pub(crate) mod media;
 mod modes;
 mod navigation;
