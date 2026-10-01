@@ -708,6 +708,31 @@ fn should_refetch_once_when_the_hunks_moved_under_a_cached_source() {
     assert_eq!(fetch_count(&served), after_render + 1);
 }
 
+// 14b. A revision change refetches.
+#[test]
+fn should_refetch_once_when_the_revision_changes() {
+    let served = served_with_guide();
+    let mut app = guide_app(&served);
+    app.diff_source = DiffSource::CommitRange(vec!["rev1".to_string()]);
+    app.set_render_markdown_diffs(true);
+    let buffer = draw(&mut app);
+    assert_eq!(row_for_new(&buffer, 6).text, "b    │ second");
+    let after_render = fetch_count(&served);
+
+    let widened = joined(&GUIDE_NEW).replace("| Name | Notes |", "| Label | Notes |");
+    served
+        .lock()
+        .unwrap()
+        .files
+        .insert(GUIDE.to_string(), widened);
+    app.diff_source = DiffSource::CommitRange(vec!["rev2".to_string()]);
+    app.rebuild_annotations();
+
+    let buffer = draw(&mut app);
+    assert_eq!(row_for_new(&buffer, 6).text, "b     │ second");
+    assert_eq!(fetch_count(&served), after_render + 1);
+}
+
 /// A forge that serves the shared files through `fetch_file_lines`, so fetches
 /// through it land in the same counter as the VCS mock's.
 struct MockForge {
