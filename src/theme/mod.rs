@@ -2678,6 +2678,34 @@ mode_bg = "#82aaff"
     }
 
     #[test]
+    fn should_pick_the_fallback_syntax_theme_from_a_named_local_panel_bg() {
+        let dir = tempdir().expect("failed to create temp dir");
+        let cases = [
+            ("white", EmbeddedThemeName::Base16OceanLight),
+            ("lightcyan", EmbeddedThemeName::Base16OceanLight),
+            ("darkgray", EmbeddedThemeName::Base16EightiesDark),
+        ];
+        let picked: Vec<_> = cases
+            .iter()
+            .map(|(panel_bg, _)| {
+                let body = sample_local_theme_body("").replace(
+                    r##"panel_bg = "#011627""##,
+                    &format!(r#"panel_bg = "{panel_bg}""#),
+                );
+                let path = write_local_theme(dir.path(), panel_bg, &body);
+                let (theme, _) = load_local_theme_from_path(&path)
+                    .expect("local theme should load successfully");
+                (*panel_bg, theme.embedded_syntax_theme_name())
+            })
+            .collect();
+        let expected: Vec<_> = cases
+            .iter()
+            .map(|(panel_bg, name)| (*panel_bg, Some(*name)))
+            .collect();
+        assert_eq!(picked, expected);
+    }
+
+    #[test]
     fn should_derive_the_chip_for_a_local_theme_with_a_named_light_highlight() {
         let dir = tempdir().expect("failed to create temp dir");
         let body = sample_local_theme_body("")
