@@ -321,7 +321,7 @@ fn assert_panel_annotations_match_drawn_rows(app: &mut App) {
 
 /// Draws twice around `rebuild_annotations`: the first frame records the
 /// real panel width, which the annotations need before the second frame.
-fn draw_app(app: &mut App) -> Buffer {
+pub(super) fn draw_app(app: &mut App) -> Buffer {
     draw_once(app);
     app.rebuild_annotations();
     draw_once(app)
@@ -342,7 +342,7 @@ fn row_text(buffer: &Buffer, y: u16) -> String {
         .collect()
 }
 
-fn rows_of(buffer: &Buffer) -> Vec<String> {
+pub(super) fn rows_of(buffer: &Buffer) -> Vec<String> {
     (0..buffer.area.height)
         .map(|y| row_text(buffer, y))
         .collect()
@@ -359,7 +359,7 @@ fn draw_body(body: &str, render_markdown: bool) -> Buffer {
 }
 
 /// Column of the first cell of `needle` on the row containing it.
-fn find_text(buffer: &Buffer, needle: &str) -> (u16, u16) {
+pub(super) fn find_text(buffer: &Buffer, needle: &str) -> (u16, u16) {
     for y in 0..buffer.area.height {
         let cells: Vec<String> = (0..buffer.area.width)
             .map(|x| buffer[(x, y)].symbol().to_string())

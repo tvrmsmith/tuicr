@@ -187,6 +187,7 @@ fn comment_block_start_finds_first_row_of_comment() {
 #[test]
 fn comment_current_line_cursor_targets_the_cursor_line() {
     let mut app = build_app();
+    app.render_markdown = false;
     app.comment_buffer = "alpha\nbravo\ncharlie".to_string();
     app.diff_state.viewport_width = 200; // wide => no wrapping
     let block_start = 10;
@@ -209,6 +210,34 @@ fn comment_current_line_cursor_targets_the_cursor_line() {
     app.diff_state.cursor_line = block_start + 99;
     assert_eq!(app.comment_current_line_cursor(block_start, false), 12);
     assert_eq!(app.comment_current_line_cursor(block_start, true), 19);
+}
+
+#[test]
+fn comment_current_line_cursor_targets_the_rendered_row_group() {
+    let mut app = build_app();
+    app.comment_buffer = "alpha\n\nbravo\ncharlie".to_string();
+    app.diff_state.viewport_width = 200; // wide => no wrapping
+    let block_start = 10;
+
+    // Row "alpha" is source line 0: start 0, end 5.
+    app.diff_state.cursor_line = block_start + 1;
+    assert_eq!(app.comment_current_line_cursor(block_start, false), 0);
+    assert_eq!(app.comment_current_line_cursor(block_start, true), 5);
+
+    // Row "bravo charlie" joins source lines 2..4: start of "bravo" (7),
+    // end of "charlie" (20).
+    app.diff_state.cursor_line = block_start + 3;
+    assert_eq!(app.comment_current_line_cursor(block_start, false), 7);
+    assert_eq!(app.comment_current_line_cursor(block_start, true), 20);
+
+    // Top border row maps to the first row's group.
+    app.diff_state.cursor_line = block_start;
+    assert_eq!(app.comment_current_line_cursor(block_start, false), 0);
+
+    // Bottom border / beyond maps to the last row's group.
+    app.diff_state.cursor_line = block_start + 99;
+    assert_eq!(app.comment_current_line_cursor(block_start, false), 7);
+    assert_eq!(app.comment_current_line_cursor(block_start, true), 20);
 }
 
 #[test]

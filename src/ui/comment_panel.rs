@@ -10,6 +10,7 @@ use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 use crate::app::App;
 use crate::forge::traits::ForgeKind;
 use crate::model::LineRange;
+use crate::syntax::markdown_render::{self, BlockRow};
 use crate::theme::Theme;
 use crate::ui::styles;
 
@@ -434,14 +435,15 @@ fn forge_badge_label(kind: Option<ForgeKind>) -> &'static str {
     }
 }
 
-/// Render `content` as markdown-highlighted, pre-wrapped lines, grouped per
-/// source line (`content` split on `'\n'`): `result.len() ==
-/// content.split('\n').count()`. Colors come from the active syntect theme.
+/// Render `content` as markdown-highlighted, pre-wrapped rows, each tagged
+/// with its source line (`content` split on `'\n'`) as `idx..idx + 1`. Every
+/// source line yields at least one row. Colors come from the active syntect
+/// theme.
 pub(crate) fn markdown_body_line_groups(
     theme: &Theme,
     content: &str,
     content_area: usize,
-) -> Vec<Vec<Line<'static>>> {
+) -> Vec<BlockRow> {
     let lines: Vec<&str> = content.split('\n').collect();
     // Highlight the body as a whole so multi-line constructs (e.g. fenced code)
     // carry state across lines.
@@ -451,43 +453,52 @@ pub(crate) fn markdown_body_line_groups(
     for (idx, text) in lines.iter().enumerate() {
         let runs = highlighted.get(idx).and_then(|o| o.as_deref());
         let mut seg_start = 0usize;
-        let mut group = Vec::new();
         for seg in wrap_segments(text, content_area) {
             let seg_end = seg_start + seg.len();
-            group.push(Line::from(highlighted_window_spans(
-                runs, text, seg_start, seg_end,
-            )));
+            out.push(BlockRow {
+                line: Line::from(highlighted_window_spans(runs, text, seg_start, seg_end)),
+                source: idx..idx + 1,
+            });
             seg_start = seg_end;
         }
-        out.push(group);
     }
     out
 }
 
-/// Render `content` as markdown-highlighted, pre-wrapped lines. Colors come
-/// from the active syntect theme.
-pub(crate) fn markdown_body_lines(
+/// The body rows of a comment box drawn at `box_width`, the same width
+/// [`format_comment_lines`] takes: rendered markdown when `render_markdown`
+/// is on, highlighted source otherwise. The one source of a box's body, so
+/// its drawn height, its reserved height, and the edit cursor agree.
+pub(crate) fn comment_body_rows(
     theme: &Theme,
     content: &str,
-    content_area: usize,
-) -> Vec<Line<'static>> {
-    markdown_body_line_groups(theme, content, content_area)
-        .into_iter()
-        .flatten()
-        .collect()
+    box_width: usize,
+    render_markdown: bool,
+) -> Vec<BlockRow> {
+    // "    │  " is the per-line content prefix; everything past that is content.
+    // Subtract two extra: one so ratatui never wraps an exact-fit line, and
+    // one so the terminal cursor at end-of-segment stays clear of the border.
+    let content_area = box_width.saturating_sub(BORDER_PREFIX_WIDTH + 2);
+    if render_markdown {
+        markdown_render::render_block(theme, content, content_area, &[])
+    } else {
+        markdown_body_line_groups(theme, content, content_area)
+    }
 }
 
 /// Format a comment as multiple lines with a box border (themed version).
+///
+/// `body` is the box's [`comment_body_rows`] at this same `width`.
 ///
 /// `author` advertises the comment's author in the top-row badge and tints
 /// the box border. Callers pass `Some(name)` for non-self comments — the
 /// resulting badge reads `[TYPE @name]`, mirroring the remote forge badge
 /// format used for remote PR threads. `None` keeps the existing neutral
 /// `[TYPE]` badge and theme border.
-pub fn format_comment_lines(
+pub(crate) fn format_comment_lines(
     theme: &Theme,
     comment_type: CommentTypePresentation,
-    content: &str,
+    body: &[BlockRow],
     line_range: Option<LineRange>,
     width: usize,
     author: Option<&str>,
@@ -516,11 +527,6 @@ pub fn format_comment_lines(
         None => String::new(),
     };
 
-    // "    │  " is the per-line content prefix; everything past that is content.
-    // Subtract two extra: one so ratatui never wraps an exact-fit line, and
-    // one so the terminal cursor at end-of-segment stays clear of the border.
-    let content_area = width.saturating_sub(BORDER_PREFIX_WIDTH + 2);
-
     let mut result = Vec::new();
 
     let top_corner = if line_range.is_some() { '├' } else { '╭' };
@@ -537,13 +543,12 @@ pub fn format_comment_lines(
         Span::styled("─".repeat(top_fill), border_style),
     ]));
 
-    // Content lines — markdown-highlighted, pre-wrapped at content_area.
-    let mut body_lines = markdown_body_lines(theme, content, content_area);
-    for line in &mut body_lines {
+    result.extend(body.iter().map(|row| {
+        let mut line = row.line.clone();
         line.spans
             .insert(0, Span::styled(BORDER_PREFIX, border_style));
-    }
-    result.extend(body_lines);
+        line
+    }));
 
     // Bottom border — "    ╰" = 5 chars, fill to width
     result.push(Line::from(vec![Span::styled(
@@ -597,6 +602,8 @@ fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
 
 #[cfg(test)]
 mod tests {
+    use std::ops::Range;
+
     use super::*;
     use crate::theme::Theme;
     use ratatui::style::Color;
@@ -605,78 +612,15 @@ mod tests {
         Theme::default()
     }
 
-    /// The renderer replaces off-screen comment boxes with exactly
-    /// `App::comment_display_lines` blank rows, and the annotation builder sizes
-    /// every comment the same way. If that count ever drifted from what
-    /// `format_comment_lines` actually emits, the document would desync — the
-    /// cursor would land on the wrong row and culled boxes would leave the wrong
-    /// number of gaps. Pin the two together.
-    #[test]
-    fn comment_display_lines_matches_rendered_box_height() {
-        let theme = test_theme();
-        let bodies = [
-            "",
-            "single line",
-            "first\nsecond\nthird",
-            "trailing newline\n",
-            "\n\nleading blanks",
-            &"x".repeat(300),
-            &"日本語のテキストです ".repeat(20),
-            "`code` **bold** and a very long tail that will need to wrap at least once or twice",
-        ];
-        // Viewport widths, including degenerate ones narrower than the box chrome.
-        for viewport_width in [9usize, 12, 40, 80, 120] {
-            for body in bodies {
-                let comment = crate::model::Comment::new(
-                    body.to_string(),
-                    crate::model::CommentType::from_id("note"),
-                    None,
-                );
-                let rendered = format_comment_lines(
-                    &theme,
-                    CommentTypePresentation {
-                        label: "NOTE".to_string(),
-                        color: Color::Blue,
-                    },
-                    &comment.content,
-                    None,
-                    // What every call site passes: the viewport minus the
-                    // cursor-indicator column.
-                    viewport_width.saturating_sub(1),
-                    None,
-                );
-                assert_eq!(
-                    App::comment_display_lines(&comment, viewport_width),
-                    rendered.len(),
-                    "width={viewport_width} body={body:?}"
-                );
-            }
-        }
-    }
-
     // -- markdown_body_line_groups tests --
 
     #[test]
-    fn markdown_body_line_groups_has_one_group_per_source_line() {
+    fn markdown_body_line_groups_tags_each_row_with_its_source_line() {
         let theme = test_theme();
         let content = "Intro\nsecond line\nOutro";
-        let groups = markdown_body_line_groups(&theme, content, 80);
-        assert_eq!(groups.len(), content.split('\n').count());
-    }
-
-    #[test]
-    fn markdown_body_line_groups_flattened_matches_markdown_body_lines() {
-        let theme = test_theme();
-        let content = "# Heading\n**bold** and `code`\n- item";
-        let groups = markdown_body_line_groups(&theme, content, 80);
-        let flattened: Vec<Line<'static>> = groups.into_iter().flatten().collect();
-        let expected = markdown_body_lines(&theme, content, 80);
-        assert_eq!(flattened.len(), expected.len());
-        for (a, b) in flattened.iter().zip(expected.iter()) {
-            let a_text: String = a.spans.iter().map(|s| s.content.as_ref()).collect();
-            let b_text: String = b.spans.iter().map(|s| s.content.as_ref()).collect();
-            assert_eq!(a_text, b_text);
-        }
+        let rows = markdown_body_line_groups(&theme, content, 80);
+        let sources: Vec<Range<usize>> = rows.iter().map(|row| row.source.clone()).collect();
+        assert_eq!(sources, vec![0..1, 1..2, 2..3]);
     }
 
     // -- wrap_segments tests --
@@ -1068,7 +1012,7 @@ mod tests {
                 label: "NOTE".to_string(),
                 color: Color::Blue,
             },
-            content,
+            &comment_body_rows(&theme, content, 80, false),
             None,
             80,
             None,

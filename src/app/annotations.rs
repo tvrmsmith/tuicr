@@ -97,7 +97,7 @@ impl App {
         }
         for (comment_idx, comment) in self.session.review_comments.iter().enumerate() {
             let comment_lines =
-                Self::comment_display_lines(comment, self.diff_state.viewport_width);
+                self.comment_display_lines(&comment.content, self.diff_state.viewport_width);
             for _ in 0..comment_lines {
                 self.line_annotations
                     .push(AnnotatedLine::ReviewComment { comment_idx });
@@ -133,10 +133,8 @@ impl App {
                     .push(AnnotatedLine::IssueCommentsHeader);
             }
             for (comment_idx, comment) in info.issue_comments.iter().enumerate() {
-                let comment_lines = crate::ui::pr_info_panel::issue_comment_display_lines(
-                    comment,
-                    self.diff_state.viewport_width,
-                );
+                let comment_lines =
+                    self.comment_display_lines(&comment.body, self.diff_state.viewport_width);
                 for _ in 0..comment_lines {
                     self.line_annotations
                         .push(AnnotatedLine::IssueComment { comment_idx });
@@ -182,8 +180,8 @@ impl App {
                     if !Self::comment_visible_with(comment, commit_set.as_ref()) {
                         continue;
                     }
-                    let comment_lines =
-                        Self::comment_display_lines(comment, self.diff_state.viewport_width);
+                    let comment_lines = self
+                        .comment_display_lines(&comment.content, self.diff_state.viewport_width);
                     for _ in 0..comment_lines {
                         self.line_annotations.push(AnnotatedLine::FileComment {
                             file_idx,
@@ -292,11 +290,14 @@ impl App {
                         continue;
                     }
 
-                    // Diff lines - handle differently based on view mode
+                    // Diff lines - handle differently based on view mode. The
+                    // builders size comment boxes through `self`, so the
+                    // annotations they append to are moved out for the call.
+                    let mut annotations = std::mem::take(&mut self.line_annotations);
                     match self.diff_view_mode {
                         DiffViewMode::Unified => {
                             Self::build_unified_diff_annotations(
-                                &mut self.line_annotations,
+                                &mut annotations,
                                 file_idx,
                                 hunk_idx,
                                 &hunk.lines,
@@ -304,13 +305,13 @@ impl App {
                                 path,
                                 &self.forge_review_threads,
                                 &remote_index,
-                                self.diff_state.viewport_width,
+                                self,
                                 commit_set.as_ref(),
                             );
                         }
                         DiffViewMode::SideBySide => {
                             Self::build_side_by_side_annotations(
-                                &mut self.line_annotations,
+                                &mut annotations,
                                 file_idx,
                                 hunk_idx,
                                 &hunk.lines,
@@ -318,11 +319,12 @@ impl App {
                                 path,
                                 &self.forge_review_threads,
                                 &remote_index,
-                                self.diff_state.viewport_width,
+                                self,
                                 commit_set.as_ref(),
                             );
                         }
                     }
+                    self.line_annotations = annotations;
                 }
 
                 // End-of-file gap (after all hunks, not for deleted files)
@@ -393,7 +395,7 @@ impl App {
         line_no: Option<u32>,
         line_comments: &std::collections::HashMap<u32, Vec<crate::model::Comment>>,
         side: LineSide,
-        viewport_width: usize,
+        app: &App,
         commit_set: Option<&std::collections::HashSet<String>>,
     ) {
         let Some(ln) = line_no else {
@@ -418,7 +420,8 @@ impl App {
                 continue;
             }
 
-            let comment_lines = Self::comment_display_lines(comment, viewport_width);
+            let comment_lines =
+                app.comment_display_lines(&comment.content, app.diff_state.viewport_width);
             for _ in 0..comment_lines {
                 annotations.push(AnnotatedLine::LineComment {
                     file_idx,
@@ -508,7 +511,7 @@ impl App {
         path: &std::path::Path,
         remote_threads: &[crate::forge::remote_comments::RemoteReviewThread],
         remote_index: &RemoteThreadIndex,
-        viewport_width: usize,
+        app: &App,
         commit_set: Option<&std::collections::HashSet<String>>,
     ) {
         for (line_idx, diff_line) in lines.iter().enumerate() {
@@ -528,7 +531,7 @@ impl App {
                     Some(old_ln),
                     line_comments,
                     LineSide::Old,
-                    viewport_width,
+                    app,
                     commit_set,
                 );
                 Self::push_remote_threads(
@@ -549,7 +552,7 @@ impl App {
                     Some(new_ln),
                     line_comments,
                     LineSide::New,
-                    viewport_width,
+                    app,
                     commit_set,
                 );
                 Self::push_remote_threads(
@@ -575,7 +578,7 @@ impl App {
         path: &std::path::Path,
         remote_threads: &[crate::forge::remote_comments::RemoteReviewThread],
         remote_index: &RemoteThreadIndex,
-        viewport_width: usize,
+        app: &App,
         commit_set: Option<&std::collections::HashSet<String>>,
     ) {
         let mut i = 0;
@@ -599,7 +602,7 @@ impl App {
                         diff_line.new_lineno,
                         line_comments,
                         LineSide::New,
-                        viewport_width,
+                        app,
                         commit_set,
                     );
                     if let Some(new_ln) = diff_line.new_lineno {
@@ -665,7 +668,7 @@ impl App {
                             old_lineno,
                             line_comments,
                             LineSide::Old,
-                            viewport_width,
+                            app,
                             commit_set,
                         );
                         if let Some(old_ln) = old_lineno {
@@ -684,7 +687,7 @@ impl App {
                             new_lineno,
                             line_comments,
                             LineSide::New,
-                            viewport_width,
+                            app,
                             commit_set,
                         );
                         if let Some(new_ln) = new_lineno {
@@ -717,7 +720,7 @@ impl App {
                         diff_line.new_lineno,
                         line_comments,
                         LineSide::New,
-                        viewport_width,
+                        app,
                         commit_set,
                     );
                     if let Some(new_ln) = diff_line.new_lineno {

@@ -967,7 +967,7 @@ impl App {
             height += crate::forge::remote_comments::summary_display_lines(summary);
         }
         for comment in &self.session.review_comments {
-            height += Self::comment_display_lines(comment, self.diff_state.viewport_width);
+            height += self.comment_display_lines(&comment.content, self.diff_state.viewport_width);
         }
         // Review-level remote threads (line: None) — must mirror the filter
         // in `rebuild_annotations` or scroll offsets fall out of sync.
@@ -1067,7 +1067,7 @@ impl App {
                     continue;
                 }
                 comment_lines +=
-                    Self::comment_display_lines(comment, self.diff_state.viewport_width);
+                    self.comment_display_lines(&comment.content, self.diff_state.viewport_width);
             }
         }
 
@@ -1121,8 +1121,8 @@ impl App {
                                                 commit_set.as_ref(),
                                             )
                                         {
-                                            comment_lines += Self::comment_display_lines(
-                                                comment,
+                                            comment_lines += self.comment_display_lines(
+                                                &comment.content,
                                                 self.diff_state.viewport_width,
                                             );
                                         }
@@ -1139,8 +1139,8 @@ impl App {
                                                 commit_set.as_ref(),
                                             )
                                         {
-                                            comment_lines += Self::comment_display_lines(
-                                                comment,
+                                            comment_lines += self.comment_display_lines(
+                                                &comment.content,
                                                 self.diff_state.viewport_width,
                                             );
                                         }
@@ -1186,8 +1186,8 @@ impl App {
                                                     commit_set.as_ref(),
                                                 )
                                             {
-                                                comment_lines += Self::comment_display_lines(
-                                                    comment,
+                                                comment_lines += self.comment_display_lines(
+                                                    &comment.content,
                                                     self.diff_state.viewport_width,
                                                 );
                                             }
@@ -1238,9 +1238,9 @@ impl App {
                                                             commit_set.as_ref(),
                                                         )
                                                     {
-                                                        comment_lines +=
-                                                            Self::comment_display_lines(
-                                                                comment,
+                                                        comment_lines += self
+                                                            .comment_display_lines(
+                                                                &comment.content,
                                                                 self.diff_state.viewport_width,
                                                             );
                                                     }
@@ -1259,9 +1259,9 @@ impl App {
                                                             commit_set.as_ref(),
                                                         )
                                                     {
-                                                        comment_lines +=
-                                                            Self::comment_display_lines(
-                                                                comment,
+                                                        comment_lines += self
+                                                            .comment_display_lines(
+                                                                &comment.content,
                                                                 self.diff_state.viewport_width,
                                                             );
                                                     }
@@ -1304,8 +1304,8 @@ impl App {
                                                     commit_set.as_ref(),
                                                 )
                                             {
-                                                comment_lines += Self::comment_display_lines(
-                                                    comment,
+                                                comment_lines += self.comment_display_lines(
+                                                    &comment.content,
                                                     self.diff_state.viewport_width,
                                                 );
                                             }
@@ -1435,19 +1435,46 @@ impl App {
         self.total_lines().saturating_sub(1)
     }
 
-    /// Calculate the number of display lines a comment takes (header + content + footer).
-    /// Uses viewport_width to account for pre-wrapped visual segments so the
-    /// annotation count stays in sync with what format_comment_lines renders.
-    pub(crate) fn comment_display_lines(comment: &Comment, viewport_width: usize) -> usize {
-        // Mirrors the content_area calculation in format_comment_lines:
-        // indicator(1) + border_prefix(7) + safety_margin(2) = 10
-        let content_area = viewport_width.saturating_sub(10);
-        let visual_lines: usize = comment
-            .content
-            .split('\n')
-            .map(|line| crate::ui::comment_panel::wrap_segments(line, content_area).len())
-            .sum();
-        2 + visual_lines // top border + visual segments + bottom border
+    /// Display lines of a comment box holding `content` (top border, body
+    /// rows, bottom border) at `viewport_width`. Counts the same body rows the
+    /// box draws, so annotations and placeholders match the drawn box.
+    pub(crate) fn comment_display_lines(&self, content: &str, viewport_width: usize) -> usize {
+        // Boxes draw at the viewport minus the cursor-indicator column.
+        2 + self
+            .comment_body_rows(content, viewport_width.saturating_sub(1))
+            .len()
+    }
+
+    /// The body rows of a comment box holding `content` drawn at `box_width`,
+    /// built once per content and reused until the width, the theme, or
+    /// `render_markdown` changes.
+    pub(crate) fn comment_body_rows(&self, content: &str, box_width: usize) -> Rc<Vec<BlockRow>> {
+        let highlighter = self.theme.syntax_highlighter_arc();
+        let mut cache = self.comment_rows_cache.borrow_mut();
+        if !cache.as_ref().is_some_and(|hit| {
+            hit.box_width == box_width
+                && hit.render_markdown == self.render_markdown
+                && Arc::ptr_eq(&hit.highlighter, &highlighter)
+        }) {
+            *cache = None;
+        }
+        let cache = cache.get_or_insert_with(|| CommentRowsCache {
+            highlighter,
+            render_markdown: self.render_markdown,
+            box_width,
+            rows: HashMap::new(),
+        });
+        if let Some(rows) = cache.rows.get(content) {
+            return Rc::clone(rows);
+        }
+        let rows = Rc::new(crate::ui::comment_panel::comment_body_rows(
+            &self.theme,
+            content,
+            box_width,
+            self.render_markdown,
+        ));
+        cache.rows.insert(content.to_string(), Rc::clone(&rows));
+        rows
     }
 
     /// Update viewport_width and trigger annotation rebuild if it changed.

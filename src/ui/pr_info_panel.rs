@@ -9,13 +9,11 @@ use ratatui::{
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::app::{AnnotatedLine, App};
-use crate::forge::traits::{
-    PullRequestCheckStatus, PullRequestInfo, PullRequestIssueComment, PullRequestReviewStatus,
-};
+use crate::forge::traits::{PullRequestCheckStatus, PullRequestInfo, PullRequestReviewStatus};
 use crate::media::{MediaKind, MediaLine, MediaRef, detect::find_media};
 use crate::model::CommentType;
 use crate::syntax::SyntaxHighlighter;
-use crate::syntax::markdown_render::{self, BlockRow};
+use crate::syntax::markdown_render;
 use crate::theme::Theme;
 use crate::ui::comment_panel::{self, CommentTypePresentation};
 use crate::ui::diff_view::{HEADER_RULE, cursor_indicator, cursor_indicator_spaced};
@@ -105,7 +103,7 @@ pub fn issue_comments_render_height(app: &App) -> usize {
     let mut height = if app.is_single_file_view { 0 } else { 1 };
     let width = app.diff_state.viewport_width.max(1);
     for comment in &info.issue_comments {
-        height += issue_comment_display_lines(comment, width);
+        height += app.comment_display_lines(&comment.body, width);
     }
     height
 }
@@ -179,15 +177,20 @@ pub fn append_issue_comments_section(
     for comment in &info.issue_comments {
         // Derive the row count from the width the box is actually formatted at
         // — `content_width` is the viewport minus the indicator column, which is
-        // exactly the offset `issue_comment_display_lines` expects.
-        let rows = issue_comment_display_lines(comment, content_width.saturating_add(1));
+        // exactly the offset `comment_display_lines` expects.
+        let rows = app.comment_display_lines(&comment.body, content_width.saturating_add(1));
         if !crate::ui::diff_view::comment_box_visible(*line_idx, rows, visible) {
             crate::ui::diff_view::skip_comment_box(lines, line_idx, rows);
             continue;
         }
-        for mut comment_line in
-            format_issue_comment_lines(&app.theme, comment, content_width, &presentation)
-        {
+        for mut comment_line in comment_panel::format_comment_lines(
+            &app.theme,
+            presentation.clone(),
+            &app.comment_body_rows(&comment.body, content_width),
+            None,
+            content_width,
+            comment.author.as_deref(),
+        ) {
             let indicator = cursor_indicator(*line_idx, current_line_idx);
             comment_line.spans.insert(
                 0,
@@ -411,15 +414,6 @@ fn push_body_rows(
         markdown_render::render_block(theme, body, content_width, &apart)
     } else {
         comment_panel::markdown_body_line_groups(theme, body, content_width)
-            .into_iter()
-            .enumerate()
-            .flat_map(|(idx, group)| {
-                group.into_iter().map(move |line| BlockRow {
-                    line,
-                    source: idx..idx + 1,
-                })
-            })
-            .collect()
     };
 
     let mut inline_after: Vec<Vec<usize>> = vec![Vec::new(); body_rows.len()];
@@ -504,35 +498,6 @@ fn truncate_placeholder(text: &str, width: usize) -> String {
     }
     kept.push('…');
     kept
-}
-
-pub fn issue_comment_display_lines(
-    comment: &PullRequestIssueComment,
-    viewport_width: usize,
-) -> usize {
-    let content_area = viewport_width.saturating_sub(10);
-    let visual_lines: usize = comment
-        .body
-        .split('\n')
-        .map(|line| comment_panel::wrap_segments(line, content_area).len())
-        .sum();
-    2 + visual_lines
-}
-
-fn format_issue_comment_lines(
-    theme: &Theme,
-    comment: &PullRequestIssueComment,
-    width: usize,
-    presentation: &CommentTypePresentation,
-) -> Vec<Line<'static>> {
-    comment_panel::format_comment_lines(
-        theme,
-        presentation.clone(),
-        &comment.body,
-        None,
-        width,
-        comment.author.as_deref(),
-    )
 }
 
 fn push_row(rows: &mut Vec<PrInfoRow>, line: Line<'static>) {
@@ -673,7 +638,7 @@ fn format_check_summary(check: &PullRequestCheckStatus) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::forge::traits::{ForgeRepository, PullRequestDetails};
+    use crate::forge::traits::{ForgeRepository, PullRequestDetails, PullRequestIssueComment};
     use crate::theme::Theme;
 
     fn sample_info() -> PullRequestInfo {

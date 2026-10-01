@@ -11,8 +11,8 @@
 //! module only calls them and concatenates the parts (cursor-indicator
 //! spacing is the sole literal kept locally, since the renderer
 //! constructs it as a styled span rather than as a shared string).
-//! Local comment-box annotations are pre-wrapped by `format_comment_lines`,
-//! so each is exactly one row. Remote comment rows are not pre-wrapped; their
+//! Local comment-box annotations are pre-wrapped body rows from
+//! `comment_panel::comment_body_rows`, so each is exactly one row. Remote comment rows are not pre-wrapped; their
 //! formatted spans are measured here with the same outer wrap pass used by
 //! the renderers.
 
@@ -78,7 +78,7 @@ pub(crate) fn annotation_row_height(app: &App, idx: usize) -> usize {
             })
             .map_or(1, |line| formatted_line_height(line, viewport_width)),
 
-        // Pre-wrapped by comment_panel::wrap_segments to inner width - 1.
+        // Pre-wrapped by comment_panel::comment_body_rows to inner width - 1.
         AnnotatedLine::ReviewComment { .. }
         | AnnotatedLine::FileComment { .. }
         | AnnotatedLine::LineComment { .. }

@@ -152,7 +152,8 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
             comment_cursor_column = 1 + cursor_info.column;
             comment_input_box_range =
                 Some((line_idx, line_idx + input_lines.len().saturating_sub(1)));
-            let annotations_replaced = App::comment_display_lines(comment, inner.width as usize);
+            let annotations_replaced =
+                app.comment_display_lines(&comment.content, inner.width as usize);
             app.comment_input_annotation_offset =
                 Some((line_idx, input_lines.len(), annotations_replaced));
 
@@ -166,7 +167,7 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
                 line_idx += 1;
             }
         } else {
-            let rows = App::comment_display_lines(comment, inner.width as usize);
+            let rows = app.comment_display_lines(&comment.content, inner.width as usize);
             if !comment_box_visible(line_idx, rows, (visible_start, visible_end)) {
                 skip_comment_box(&mut lines, &mut line_idx, rows);
                 continue;
@@ -174,7 +175,7 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
             let comment_lines = comment_panel::format_comment_lines(
                 &app.theme,
                 comment_type_presentation(app, &comment.comment_type),
-                &comment.content,
+                &app.comment_body_rows(&comment.content, comment_width),
                 None,
                 comment_width,
                 (comment.author != app.username).then_some(comment.author.as_str()),
@@ -351,7 +352,7 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
                     comment_input_box_range =
                         Some((line_idx, line_idx + input_lines.len().saturating_sub(1)));
                     let annotations_replaced =
-                        App::comment_display_lines(comment, inner.width as usize);
+                        app.comment_display_lines(&comment.content, inner.width as usize);
                     app.comment_input_annotation_offset =
                         Some((line_idx, input_lines.len(), annotations_replaced));
 
@@ -368,7 +369,7 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
                         line_idx += 1;
                     }
                 } else {
-                    let rows = App::comment_display_lines(comment, inner.width as usize);
+                    let rows = app.comment_display_lines(&comment.content, inner.width as usize);
                     if !comment_box_visible(line_idx, rows, (visible_start, visible_end)) {
                         skip_comment_box(&mut lines, &mut line_idx, rows);
                         continue;
@@ -376,7 +377,7 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
                     let comment_lines = comment_panel::format_comment_lines(
                         &app.theme,
                         comment_type_presentation(app, &comment.comment_type),
-                        &comment.content,
+                        &app.comment_body_rows(&comment.content, comment_width),
                         None,
                         comment_width,
                         (comment.author != app.username).then_some(comment.author.as_str()),
@@ -734,8 +735,8 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
                                             line_idx,
                                             line_idx + input_lines.len().saturating_sub(1),
                                         ));
-                                        let annotations_replaced = App::comment_display_lines(
-                                            comment,
+                                        let annotations_replaced = app.comment_display_lines(
+                                            &comment.content,
                                             inner.width as usize,
                                         );
                                         app.comment_input_annotation_offset = Some((
@@ -769,8 +770,8 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
                                             .line_range
                                             .or_else(|| Some(LineRange::single(old_ln)));
                                         let box_top_row = line_idx;
-                                        let rows = App::comment_display_lines(
-                                            comment,
+                                        let rows = app.comment_display_lines(
+                                            &comment.content,
                                             inner.width as usize,
                                         );
                                         // The bar is recorded either way: it is
@@ -789,7 +790,10 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
                                                     app,
                                                     &comment.comment_type,
                                                 ),
-                                                &comment.content,
+                                                &app.comment_body_rows(
+                                                    &comment.content,
+                                                    comment_width,
+                                                ),
                                                 line_range,
                                                 comment_width,
                                                 (comment.author != app.username)
@@ -922,8 +926,8 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
                                             line_idx,
                                             line_idx + input_lines.len().saturating_sub(1),
                                         ));
-                                        let annotations_replaced = App::comment_display_lines(
-                                            comment,
+                                        let annotations_replaced = app.comment_display_lines(
+                                            &comment.content,
                                             inner.width as usize,
                                         );
                                         app.comment_input_annotation_offset = Some((
@@ -957,8 +961,8 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
                                             .line_range
                                             .or_else(|| Some(LineRange::single(new_ln)));
                                         let box_top_row = line_idx;
-                                        let rows = App::comment_display_lines(
-                                            comment,
+                                        let rows = app.comment_display_lines(
+                                            &comment.content,
                                             inner.width as usize,
                                         );
                                         // The bar is recorded either way: it is
@@ -977,7 +981,10 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
                                                     app,
                                                     &comment.comment_type,
                                                 ),
-                                                &comment.content,
+                                                &app.comment_body_rows(
+                                                    &comment.content,
+                                                    comment_width,
+                                                ),
                                                 line_range,
                                                 comment_width,
                                                 (comment.author != app.username)
