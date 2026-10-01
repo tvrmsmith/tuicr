@@ -504,16 +504,19 @@ fn should_draw_inline_code_as_the_glow_chip_on_a_dark_theme() {
 }
 
 #[test]
-fn should_draw_a_legible_chip_on_a_light_theme() {
+fn should_draw_a_legible_chip_on_a_light_theme_with_a_transparent_background() {
     let mut info = sample_pr_info();
     info.details.body = "run `make_check` before merging".to_string();
     let mut app = build_pr_app();
+    // `transparent_background` defaults to on, and `main` applies it so.
     app.theme = Theme::light();
+    app.theme.panel_bg = Color::Reset;
     app.pr_info = Some(info);
     let buffer = draw_app(&mut app);
     let (left, chip, right) = chip_cells(&buffer, "make_check");
 
     let light = Theme::light();
+    assert_eq!(chip.bg, light.bg_highlight);
     assert_ne!(chip.bg, light.panel_bg);
     assert_ne!(chip.fg, chip.bg);
     assert_ne!(chip.fg, Color::Reset);

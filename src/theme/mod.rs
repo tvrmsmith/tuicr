@@ -2465,9 +2465,11 @@ pub fn resolve_theme_with_config(
 }
 
 impl Theme {
-    /// Whether the theme draws on a dark panel.
+    /// Whether the theme has a dark appearance. Judged by `bg_highlight`, not
+    /// `panel_bg`: `transparent_background` (on by default) resets the panel to
+    /// the terminal's own background, which says nothing about the theme.
     pub fn is_dark(&self) -> bool {
-        is_dark_color(self.panel_bg)
+        is_dark_color(self.bg_highlight)
     }
 
     /// Get the syntax highlighter for this theme (lazily initialized, cached)
@@ -2630,6 +2632,16 @@ mode_bg = "#82aaff"
     fn should_roundtrip_all_canonical_theme_values() {
         for (name, expected_theme) in ThemeArg::choices() {
             assert_eq!(ThemeArg::parse_name(name), Some(*expected_theme));
+        }
+    }
+
+    #[test]
+    fn should_keep_each_theme_appearance_under_a_transparent_background() {
+        for (name, arg) in ThemeArg::choices() {
+            let mut theme = resolve_theme(*arg);
+            let dark = is_dark_color(theme.panel_bg);
+            theme.panel_bg = Color::Reset;
+            assert_eq!(theme.is_dark(), dark, "{name}");
         }
     }
 
