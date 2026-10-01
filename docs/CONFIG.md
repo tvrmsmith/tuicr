@@ -53,6 +53,7 @@ relative_line_numbers = false
 cursor_line = true
 search_highlight = true
 render_markdown = true
+render_markdown_diffs = false
 transparent_background = true
 scroll_offset = 5
 no_update_check = false
@@ -130,6 +131,7 @@ session_header = true
 | `cursor_line`              | `true`       | Highlight the current cursor line and visual selection.                                                                                                    |
 | `search_highlight`         | `true`       | Highlight `/` search matches in the diff view. Clear at runtime with `Esc`; `n` / `N` re-enable.                                                           |
 | `render_markdown`          | `true`       | Render markdown (headings, emphasis, lists, tables, code blocks) in the PR description panel, review comments, and PR conversation comments. Remote forge review threads stay raw. `false` shows the highlighted source. Editing, export, and submit always use the raw markdown. |
+| `render_markdown_diffs`    | `false`      | Render `.md` and `.markdown` diffs as markdown instead of highlighted source. Reads the full file, and a failed read shows source.                         |
 | `transparent_background`   | `true`       | Let the terminal background show through panels. `false` paints the theme's `panel_bg`.                                                                    |
 | `scroll_offset`            | `0`          | Minimum lines visible above and below the cursor when scrolling (like Vim's `scrolloff`).                                                                  |
 | `no_update_check`          | `false`      | Skip startup update check when `true`.                                                                                                                     |

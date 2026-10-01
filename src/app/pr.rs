@@ -598,6 +598,7 @@ impl App {
     ) -> Result<()> {
         use crate::forge::pr_open::prepare_open_pr;
 
+        self.markdown_diff_cache.forget_failures();
         let local_checkout = self
             .forge_backend
             .as_deref()

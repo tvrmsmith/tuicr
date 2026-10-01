@@ -483,6 +483,9 @@ fn main() -> anyhow::Result<()> {
         if cfg.render_markdown == Some(false) {
             app.render_markdown = false;
         }
+        if cfg.render_markdown_diffs == Some(true) {
+            app.set_render_markdown_diffs(true);
+        }
         if let Some(scroll_offset) = cfg.scroll_offset {
             app.scroll_offset = scroll_offset;
         }

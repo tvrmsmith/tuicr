@@ -160,6 +160,8 @@ impl App {
         if let Some(file) = self.diff_files.get_mut(self.diff_state.current_file_idx) {
             highlighter.rehighlight_file_in_place(file);
         }
+        let current = self.diff_state.current_file_idx;
+        self.apply_markdown_diff_renders_to(|idx| idx == current);
     }
 
     /// Re-derive `highlighted_spans` for every loaded file under `self.theme`,
@@ -173,6 +175,7 @@ impl App {
         for file in &mut self.diff_files {
             highlighter.rehighlight_file_in_place(file);
         }
+        self.apply_markdown_diff_renders();
     }
 
     // ---- `/` filter draft ---------------------------------------------

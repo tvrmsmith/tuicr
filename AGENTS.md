@@ -21,6 +21,7 @@ src/
 │   ├── editor_target.rs # Read-only snapshots of a PR revision for `$EDITOR`
 │   ├── file_filter.rs   # File-tree include/exclude regex filters + `/` path search
 │   ├── grouping.rs      # enable_grouping(), the grouping source ranking, group row state
+│   ├── markdown_diff.rs # Rendered .md diff rows: full-file fetch, old-side rebuild, success-only cache
 │   ├── media.rs         # Media viewer state, the lazy graphics probe, MediaJobs loader port
 │   ├── pr_head_watch.rs # PR head poll; reloads onto a moved head once the reviewer is in Normal mode
 │   ├── refine.rs        # Blocking refine: login prompt, stderr wait, in-TUI wait, cancel keys, outcome
@@ -136,7 +137,7 @@ src/
 ├── syntax/
 │   ├── mod.rs           # SyntaxHighlighter: syntect highlighting for diffs and code
 │   ├── cmark.rs         # Highlighted markdown source (comment bodies, render_markdown = false)
-│   └── markdown_render.rs # render_block -> BlockRow: rendered, reflowed markdown rows
+│   └── markdown_render.rs # render_block -> BlockRow (reflowed rows); render_lines: one row per source line
 │
 └── ui/
     ├── mod.rs

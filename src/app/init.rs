@@ -511,6 +511,8 @@ impl App {
             search_highlight_visible: false,
             search_highlight_enabled: true,
             render_markdown: true,
+            render_markdown_diffs: false,
+            markdown_diff_cache: Default::default(),
             pr_info_rows_cache: std::cell::RefCell::new(None),
             comment_rows_cache: std::cell::RefCell::new(None),
             search_return_mode: InputMode::Normal,

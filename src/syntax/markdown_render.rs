@@ -28,6 +28,9 @@ type Runs = Vec<(Style, String)>;
 /// pads stay glued to the chip text. `to_line` turns it back into a space.
 const NBSP: char = '\u{a0}';
 
+/// Width of a rule drawn by `render_lines`, which has no panel width to fill.
+const RULE_WIDTH: usize = 40;
+
 /// One reflowed display row of rendered markdown.
 pub(crate) struct BlockRow {
     pub line: Line<'static>,
@@ -80,6 +83,21 @@ pub(crate) fn render_block(
         }
     }
     rows
+}
+
+/// One row of styled runs per source line of `src` (split on '\n', a CRLF
+/// line's '\r' dropped), so `render_lines(t, s).len() == s.split('\n').count()`.
+///
+/// Markers are hidden and the look is the panel's, but nothing reflows,
+/// nothing is skipped, and blank lines stay: a fence, a link definition, a
+/// setext underline, and a table delimiter each keep a row of their own.
+///
+/// Pure: no I/O, no global state; same inputs give the same rows.
+pub(crate) fn render_lines(theme: &Theme, src: &str) -> Vec<Vec<(Style, String)>> {
+    let doc = Doc::build(theme, src);
+    (0..doc.line_count())
+        .map(|line| settle(doc.line_runs(line)))
+        .collect()
 }
 
 struct Look {
@@ -207,6 +225,9 @@ struct OpenTable {
 struct Table {
     aligns: Vec<Alignment>,
     natural: Vec<usize>,
+    /// Width of the header's last cell, where `render_lines` ends the
+    /// delimiter row.
+    head_last: usize,
 }
 
 /// One source row of a table: its rendered cells, laid out by `table_lines`.
@@ -248,6 +269,12 @@ struct Doc<'a> {
     table_rows: HashMap<usize, TableRow>,
     /// Horizontal rule lines, drawn across the full width.
     rules: Vec<bool>,
+    /// Table delimiter lines keyed to an index into `tables`. Block mode
+    /// replaces them with the header's underline.
+    delimiter_rows: HashMap<usize, usize>,
+    /// A fenced block's language on its opening line, shown by `render_lines`
+    /// in place of the fence.
+    fence_langs: HashMap<usize, Runs>,
 }
 
 impl<'a> Doc<'a> {
@@ -273,6 +300,8 @@ impl<'a> Doc<'a> {
             tables: Vec::new(),
             table_rows: HashMap::new(),
             rules: vec![false; lines],
+            delimiter_rows: HashMap::new(),
+            fence_langs: HashMap::new(),
         };
         doc.walk(hl);
         doc
@@ -566,6 +595,10 @@ impl<'a> Doc<'a> {
             self.prefixes
                 .insert(line, vec![(self.look.border, "│ ".to_string())]);
         }
+        if !lang.is_empty() {
+            self.fence_langs
+                .insert(first, vec![(self.look.dim, lang.to_string())]);
+        }
         if !content.is_empty() && !lang.is_empty() {
             self.labels
                 .insert(content.start, vec![(self.look.dim, lang.to_string())]);
@@ -621,9 +654,15 @@ impl<'a> Doc<'a> {
         // `underline_pad`, since the last column carries no trailing pad.
         let table_width = natural.iter().sum::<usize>() + 3 * (natural.len() - 1);
         let table = self.tables.len();
+        let head_last = rows
+            .iter()
+            .find(|(_, head, _)| *head)
+            .and_then(|(_, _, cells)| cells.last())
+            .map_or(0, |cell| runs_width(cell));
         self.tables.push(Table {
             aligns: t.aligns,
             natural,
+            head_last,
         });
         for (line, head, cells) in rows {
             if head {
@@ -633,6 +672,11 @@ impl<'a> Doc<'a> {
             self.skip[line] = false;
             self.table_rows
                 .insert(line, TableRow { table, head, cells });
+        }
+        for line in self.lines_of(&t.range) {
+            if self.skip[line] {
+                self.delimiter_rows.insert(line, table);
+            }
         }
     }
 
@@ -650,12 +694,27 @@ impl<'a> Doc<'a> {
                 wrap(&cell, w, &[]).into_iter().map(trim_end).collect()
             })
             .collect();
+        let mut lines = self.join_cells(table, &widths, &cells);
+        if row.head
+            && let Some(last) = lines.last_mut()
+        {
+            for (style, _) in last {
+                *style = self.look.header(*style);
+            }
+        }
+        lines
+    }
+
+    /// The display rows of a table row whose columns are `widths` wide, from
+    /// each column's wrapped cell lines: bars between columns, alignment pads,
+    /// and no trailing pad on the last column.
+    fn join_cells(&self, table: &Table, widths: &[usize], cells: &[Vec<Runs>]) -> Vec<Runs> {
         let height = cells.iter().map(Vec::len).max().unwrap_or(1);
         let (base, border) = (self.look.base, self.look.border);
-        let mut lines: Vec<Runs> = (0..height)
+        (0..height)
             .map(|k| {
                 let mut out: Runs = Vec::new();
-                for (i, (&width, cell)) in widths.iter().zip(&cells).enumerate() {
+                for (i, (&width, cell)) in widths.iter().zip(cells).enumerate() {
                     if i > 0 {
                         push_str(&mut out, base, " ");
                         push_str(&mut out, border, "│");
@@ -677,15 +736,40 @@ impl<'a> Doc<'a> {
                 }
                 out
             })
+            .collect()
+    }
+
+    /// A table row at its natural column widths, unwrapped and unpadded at
+    /// its right edge, with the header left plain (the delimiter row divides
+    /// it from the body).
+    fn natural_table_line(&self, row: &TableRow) -> Runs {
+        let table = &self.tables[row.table];
+        let cells: Vec<Vec<Runs>> = (0..table.natural.len())
+            .map(|i| vec![trim_end(row.cells.get(i).cloned().unwrap_or_default())])
             .collect();
-        if row.head
-            && let Some(last) = lines.last_mut()
-        {
-            for (style, _) in last {
-                *style = self.look.header(*style);
+        let line = self
+            .join_cells(table, &table.natural, &cells)
+            .into_iter()
+            .next()
+            .unwrap_or_default();
+        trim_end(line)
+    }
+
+    /// `───┼───`: a dash run per column joined by `┼`, each padded one wider
+    /// on the sides that touch a bar, ending at the header's last cell.
+    fn delimiter_line(&self, table: usize) -> Runs {
+        let table = &self.tables[table];
+        let last = table.natural.len().saturating_sub(1);
+        let mut out: Runs = Vec::new();
+        for (i, &width) in table.natural.iter().enumerate() {
+            let width = if i == last { table.head_last } else { width };
+            let pads = usize::from(i > 0) + usize::from(i < last);
+            if i > 0 {
+                push_str(&mut out, self.look.border, "┼");
             }
+            push_str(&mut out, self.look.border, &"─".repeat(width + pads));
         }
-        lines
+        out
     }
 
     /// Bullets become `•` `◦` `▪` by depth; ordered numbers stay.
@@ -881,6 +965,53 @@ impl<'a> Doc<'a> {
             && !self.block_start[next]
             && !self.is_blank(line)
             && !self.is_blank(next)
+    }
+
+    /// The runs of source lines before `line`'s own text: quote bars and list
+    /// indentation, as `render_lines` keeps them on rows it draws itself.
+    fn lead(&self, line: usize) -> Runs {
+        self.emit(self.line_range(line).start, self.content_start(line, false))
+    }
+
+    /// `emit` for the whole of `line`, dropping the tail of a marker that
+    /// began on an earlier line (a link whose text spans a newline).
+    fn emit_line(&self, line: usize) -> Runs {
+        let range = self.line_range(line);
+        let mut at = range.start;
+        if let Some((_, (end, _))) = self.repl.range(..at).next_back() {
+            at = at.max((*end).min(range.end));
+        }
+        self.emit(at, range.end)
+    }
+
+    /// The single row `render_lines` draws for `line`.
+    fn line_runs(&self, line: usize) -> Runs {
+        if let Some(row) = self.table_rows.get(&line) {
+            let mut out = self.lead(line);
+            out.extend(self.natural_table_line(row));
+            return out;
+        }
+        if let Some(&table) = self.delimiter_rows.get(&line) {
+            let mut out = self.lead(line);
+            out.extend(self.delimiter_line(table));
+            return out;
+        }
+        if self.rules[line] {
+            let mut out = self.lead(line);
+            push_str(&mut out, self.look.border, &"─".repeat(RULE_WIDTH));
+            return out;
+        }
+        let mut out = if self.skip[line] {
+            Runs::new()
+        } else {
+            let mut out = self.prefixes.get(&line).cloned().unwrap_or_default();
+            out.extend(self.emit_line(line));
+            out
+        };
+        if let Some(lang) = self.fence_langs.get(&line) {
+            out.extend(lang.iter().cloned());
+        }
+        out
     }
 
     /// Rows for every line. A row's source is its group's lines, widened to
@@ -1096,10 +1227,18 @@ fn pin_underline(style: Style) -> Style {
     }
 }
 
+/// Runs as they are drawn: chip pads back to spaces, underlines pinned.
+fn settle(runs: Runs) -> Runs {
+    runs.into_iter()
+        .map(|(style, text)| (pin_underline(style), text.replace(NBSP, " ")))
+        .collect()
+}
+
 fn to_line(runs: Runs) -> Line<'static> {
     Line::from(
-        runs.into_iter()
-            .map(|(style, text)| Span::styled(text.replace(NBSP, " "), pin_underline(style)))
+        settle(runs)
+            .into_iter()
+            .map(|(style, text)| Span::styled(text, style))
             .collect::<Vec<_>>(),
     )
 }
@@ -1818,5 +1957,247 @@ mod tests {
             ["│ foo", "│ ~ bar"]
         );
         assert_eq!(texts_trimmed(&render("````\nx\n```", 30)), ["│ x", "│ ```"]);
+    }
+
+    fn lines(src: &str) -> Vec<Runs> {
+        render_lines(&Theme::dark(), src)
+    }
+
+    fn row_text(row: &Runs) -> String {
+        row.iter().map(|(_, t)| t.as_str()).collect()
+    }
+
+    fn line_texts(src: &str) -> Vec<String> {
+        lines(src).iter().map(row_text).collect()
+    }
+
+    /// The style of the first run whose text contains `needle`.
+    fn run_style(row: &Runs, needle: &str) -> Style {
+        row.iter()
+            .find(|(_, t)| t.contains(needle))
+            .unwrap_or_else(|| panic!("no run with {needle:?} in {row:?}"))
+            .0
+    }
+
+    fn mods(style: Style, m: Modifier) -> bool {
+        style.add_modifier.contains(m)
+    }
+
+    #[test]
+    fn should_return_one_row_per_source_line_and_never_join_paragraph_lines() {
+        assert_eq!(line_texts("a\n\nb\n"), ["a", "", "b", ""]);
+        assert_eq!(line_texts(""), [""]);
+        assert_eq!(
+            line_texts("first line\nsecond line"),
+            ["first line", "second line"]
+        );
+    }
+
+    #[test]
+    fn should_drop_the_carriage_return_of_crlf_lines() {
+        assert_eq!(line_texts("# A\r\nb"), ["A", "b"]);
+    }
+
+    #[test]
+    fn should_style_the_heading_ladder_on_the_text_only() {
+        let theme = Theme::dark();
+        let cases = [
+            ("# T", true, true),
+            ("## T", false, true),
+            ("### T", true, false),
+            ("#### T", false, true),
+        ];
+        for (src, bold, underlined) in cases {
+            let rows = lines(src);
+            assert_eq!(row_text(&rows[0]), "T", "{src}");
+            let style = run_style(&rows[0], "T");
+            assert_eq!(mods(style, Modifier::BOLD), bold, "{src} bold");
+            assert_eq!(
+                mods(style, Modifier::UNDERLINED),
+                underlined,
+                "{src} underline"
+            );
+            if underlined {
+                assert_eq!(style.underline_color, style.fg, "{src} underline colour");
+            }
+        }
+        let h5 = lines("##### T");
+        assert_eq!(row_text(&h5[0]), "T");
+        assert!(mods(run_style(&h5[0], "T"), Modifier::ITALIC));
+        let h6 = lines("###### T");
+        assert_eq!(row_text(&h6[0]), "T");
+        let style = run_style(&h6[0], "T");
+        assert!(mods(style, Modifier::ITALIC));
+        assert_eq!(style.fg, Some(theme.fg_dim));
+    }
+
+    #[test]
+    fn should_underline_a_setext_heading_and_blank_its_underline_row() {
+        let rows = lines("Title\n=====");
+        assert_eq!(rows.iter().map(row_text).collect::<Vec<_>>(), ["Title", ""]);
+        let style = run_style(&rows[0], "Title");
+        assert!(mods(style, Modifier::BOLD) && mods(style, Modifier::UNDERLINED));
+    }
+
+    #[test]
+    fn should_hide_inline_markers_and_chip_inline_code() {
+        let rows = lines("Run **fast** with [docs](https://example.com) and `cargo`.");
+        assert_eq!(row_text(&rows[0]), "Run fast with docs and  cargo .");
+        assert!(mods(run_style(&rows[0], "fast"), Modifier::BOLD));
+        let docs = run_style(&rows[0], "docs");
+        assert!(mods(docs, Modifier::UNDERLINED));
+        assert_eq!(docs.underline_color, docs.fg);
+        let chip = run_style(&rows[0], " cargo ");
+        assert_eq!(chip.fg, Some(GLOW_CHIP_FG));
+        assert_eq!(chip.bg, Some(GLOW_CHIP_BG));
+    }
+
+    #[test]
+    fn should_lay_a_table_out_at_natural_width_with_a_delimiter_row() {
+        let theme = Theme::dark();
+        let rows = lines("| Name | Notes |\n| --- | --- |\n| a | longer cell |");
+        assert_eq!(
+            rows.iter().map(row_text).collect::<Vec<_>>(),
+            ["Name │ Notes", "─────┼──────", "a    │ longer cell"]
+        );
+        for needle in ["Name", "Notes"] {
+            let style = run_style(&rows[0], needle);
+            assert!(mods(style, Modifier::BOLD) && !mods(style, Modifier::UNDERLINED));
+        }
+        assert_eq!(run_style(&rows[0], "│").fg, Some(theme.border_unfocused));
+        assert!(
+            rows[1]
+                .iter()
+                .all(|(s, _)| s.fg == Some(theme.border_unfocused))
+        );
+        assert!(rows.iter().all(|r| !row_text(r).ends_with(' ')));
+    }
+
+    #[test]
+    fn should_pad_a_right_aligned_table_column_on_the_left() {
+        assert_eq!(
+            line_texts("| k | n |\n| --- | ---: |\n| a | 100 |"),
+            ["k │   n", "──┼──", "a │ 100"]
+        );
+    }
+
+    #[test]
+    fn should_gutter_fenced_code_and_show_only_the_language_on_the_fence() {
+        let theme = Theme::dark();
+        let rows = lines("Intro\n```python\nx = 1\n```\nAfter");
+        assert_eq!(
+            rows.iter().map(row_text).collect::<Vec<_>>(),
+            ["Intro", "python", "│ x = 1", "", "After"]
+        );
+        assert!(rows[1].iter().all(|(s, _)| s.fg == Some(theme.fg_dim)));
+        assert_eq!(run_style(&rows[2], "│").fg, Some(theme.border_unfocused));
+        let base = theme.syntax_highlighter().markdown_palette.base.fg;
+        assert!(
+            rows[2]
+                .iter()
+                .any(|(s, t)| t.contains(['x', '1']) && s.fg != base),
+            "syntect colours the code: {:?}",
+            rows[2]
+        );
+        assert!(rows[4].iter().all(|(_, t)| !t.contains('│')));
+    }
+
+    #[test]
+    fn should_draw_code_of_an_unknown_or_missing_language_in_the_code_colour() {
+        let theme = Theme::dark();
+        let rows = lines("```foo\nbar\n```");
+        assert_eq!(
+            rows.iter().map(row_text).collect::<Vec<_>>(),
+            ["foo", "│ bar", ""]
+        );
+        assert_eq!(run_style(&rows[1], "bar").fg, Some(theme.fg_secondary));
+        assert_eq!(line_texts("```\ncode\n```"), ["", "│ code", ""]);
+    }
+
+    #[test]
+    fn should_render_an_unclosed_fence_to_the_end_of_the_source() {
+        assert_eq!(line_texts("```rust\nfn a() {}"), ["rust", "│ fn a() {}"]);
+    }
+
+    #[test]
+    fn should_draw_a_rule_forty_columns_wide() {
+        let theme = Theme::dark();
+        let rows = lines("Para\n\n---");
+        assert_eq!(
+            rows.iter().map(row_text).collect::<Vec<_>>(),
+            ["Para".to_string(), String::new(), "─".repeat(40)]
+        );
+        assert!(
+            rows[2]
+                .iter()
+                .all(|(s, _)| s.fg == Some(theme.border_unfocused))
+        );
+    }
+
+    #[test]
+    fn should_keep_list_indentation_and_swap_bullets_by_depth() {
+        assert_eq!(
+            line_texts("- one\n  - two\n    - three"),
+            ["• one", "  ◦ two", "    ▪ three"]
+        );
+        assert_eq!(line_texts("1. first\n2. second"), ["1. first", "2. second"]);
+        assert_eq!(
+            line_texts("- [x] done\n- [ ] open"),
+            ["• ☑ done", "• ☐ open"]
+        );
+    }
+
+    #[test]
+    fn should_bar_quote_lines_and_label_alerts() {
+        assert_eq!(line_texts("> quoted\n> more"), ["▎ quoted", "▎ more"]);
+        let rows = lines("> [!NOTE]\n> body");
+        assert_eq!(
+            rows.iter().map(row_text).collect::<Vec<_>>(),
+            ["▎ ℹ Note", "▎ body"]
+        );
+        assert_eq!(run_style(&rows[0], "ℹ Note").fg, Some(Color::Blue));
+        assert_eq!(run_style(&rows[0], "▎").fg, Some(Color::Blue));
+        assert_eq!(run_style(&rows[1], "▎").fg, Some(Color::Blue));
+    }
+
+    #[test]
+    fn should_show_image_alt_text_and_dim_raw_html() {
+        assert_eq!(
+            line_texts("![alt text](https://x.test/y.png)"),
+            ["▣ alt text"]
+        );
+        let rows = lines("<details>\n</details>");
+        assert_eq!(
+            rows.iter().map(row_text).collect::<Vec<_>>(),
+            ["<details>", "</details>"]
+        );
+        let dim = Some(Theme::dark().fg_dim);
+        assert!(rows.iter().flatten().all(|(s, _)| s.fg == dim));
+    }
+
+    #[test]
+    fn should_leave_a_blank_row_for_a_link_reference_definition() {
+        assert_eq!(
+            line_texts("See [text][d].\n\n[d]: https://example.com"),
+            ["See text.", "", ""]
+        );
+    }
+
+    #[test]
+    fn should_return_one_row_per_line_for_malformed_markdown() {
+        let inputs = [
+            "\n\n",
+            "[a\n](url)",
+            "[a\nb](http://x)\nc",
+            "> | a |\n> | - |\n> | b |",
+            "- ```rust\n  fn a() {}\n  ```",
+            "| a | b |\n|---|\n| 1 |",
+            "```\n\n```\n\n~~~",
+            "**unclosed `chip\n# h ##\n\r\n\r",
+            "é 日本語 | x\n--- | ---\n😀 | y",
+        ];
+        for src in inputs {
+            assert_eq!(lines(src).len(), src.split('\n').count(), "{src:?}");
+        }
     }
 }

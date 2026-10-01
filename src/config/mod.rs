@@ -304,6 +304,9 @@ pub struct AppConfig {
     pub search_highlight: Option<bool>,
     /// Render markdown in the PR description panel. Defaults to true.
     pub render_markdown: Option<bool>,
+    /// Render `.md` / `.markdown` diffs as markdown instead of syntax-highlighted
+    /// source. Defaults to false.
+    pub render_markdown_diffs: Option<bool>,
     pub mouse: Option<bool>,
     /// Enable vim-style modal editing in the review comment text box. When
     /// unset/false the comment box uses the default emacs/readline bindings.
@@ -387,6 +390,7 @@ const KNOWN_KEYS: &[&str] = &[
     "cursor_line",
     "search_highlight",
     "render_markdown",
+    "render_markdown_diffs",
     "mouse",
     "comment_vim",
     "q_quits",
@@ -768,6 +772,7 @@ fn load_config_from_path(path: &Path) -> Result<ConfigLoadOutcome> {
         cursor_line: read_bool(table, "cursor_line", &mut warnings),
         search_highlight: read_bool(table, "search_highlight", &mut warnings),
         render_markdown: read_bool(table, "render_markdown", &mut warnings),
+        render_markdown_diffs: read_bool(table, "render_markdown_diffs", &mut warnings),
         mouse: read_bool(table, "mouse", &mut warnings),
         comment_vim: read_bool(table, "comment_vim", &mut warnings),
         q_quits: read_bool(table, "q_quits", &mut warnings),
@@ -1997,6 +2002,43 @@ mod tests {
         assert_eq!(
             outcome.config.as_ref().and_then(|cfg| cfg.render_markdown),
             None
+        );
+    }
+
+    // render_markdown_diffs
+
+    #[test]
+    fn should_parse_render_markdown_diffs_true() {
+        let outcome = parse_config("render_markdown_diffs = true\n");
+        assert_eq!(
+            outcome
+                .config
+                .as_ref()
+                .and_then(|cfg| cfg.render_markdown_diffs),
+            Some(true)
+        );
+        assert!(outcome.warnings.is_empty());
+    }
+
+    #[test]
+    fn should_leave_render_markdown_diffs_unset_when_absent() {
+        let outcome = parse_config("wrap = true\n");
+        assert_eq!(
+            outcome
+                .config
+                .as_ref()
+                .and_then(|cfg| cfg.render_markdown_diffs),
+            None
+        );
+    }
+
+    #[test]
+    fn should_warn_when_render_markdown_diffs_is_not_a_boolean() {
+        let outcome = parse_config("render_markdown_diffs = \"yes\"\n");
+        assert_eq!(outcome.warnings.len(), 1);
+        assert_eq!(
+            outcome.warnings[0],
+            "Warning: Config key 'render_markdown_diffs' must be a boolean; ignoring value"
         );
     }
 
