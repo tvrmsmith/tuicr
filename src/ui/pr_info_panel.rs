@@ -490,6 +490,14 @@ fn push_body_rows(
                     skip_until = block.lines.end;
                 }
             }
+            for idx in after {
+                rows.push(placeholder_row(
+                    theme,
+                    idx,
+                    &media[idx].media,
+                    content_width,
+                ));
+            }
             continue;
         }
         while let Some(block) = pending.next_if(|block| block.lines.start <= row.source.start) {
@@ -1124,5 +1132,15 @@ mod tests {
         assert!(rows[1].0.starts_with("[image:"), "{rows:?}");
         assert_eq!(rows[1].1, Some(RowAction::Media(0)));
         assert!(rows.iter().all(|(text, _)| !text.contains("Body")));
+    }
+
+    #[test]
+    fn inline_media_in_the_summary_follows_the_summary_row() {
+        let rows = rendered(
+            "<details><summary>Shot <img src=\"https://x.test/x.png\" alt=\"x\"></summary>\n\nBody\n\n</details>",
+        );
+
+        assert_eq!(rows[0], row("▸ Shot", Some(RowAction::Details(0))));
+        assert_eq!(rows[1], row("[image: x]", Some(RowAction::Media(0))));
     }
 }
