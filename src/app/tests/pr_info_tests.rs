@@ -2,8 +2,8 @@ use std::path::PathBuf;
 
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
-use ratatui::buffer::Buffer;
-use ratatui::style::Modifier;
+use ratatui::buffer::{Buffer, Cell};
+use ratatui::style::{Color, Modifier};
 
 use crate::app::{App, DiffSource, InputMode, PullRequestDiffSource};
 use crate::forge::traits::{
@@ -11,6 +11,7 @@ use crate::forge::traits::{
     PullRequestIssueComment, PullRequestReviewStatus,
 };
 use crate::model::{DiffFile, FileStatus, ReviewSession, SessionDiffSource};
+use crate::syntax::markdown_render::{GLOW_CHIP_BG, GLOW_CHIP_FG};
 use crate::theme::Theme;
 use crate::vcs::traits::VcsType;
 use crate::vcs::{PrNoopVcs, VcsInfo};
@@ -419,6 +420,108 @@ fn should_draw_tables_with_aligned_columns_and_no_delimiter_row() {
     assert!(rows[at + 1].contains("apple │   3"));
     assert!(rows[at + 2].contains("kiwi  │  12"));
     assert!(!rows.iter().any(|row| row.contains("---")));
+}
+
+/// Columns of each `│` on row `y` from `x`, short of the panel's right border.
+fn bars_from(buffer: &Buffer, x: u16, y: u16) -> Vec<u16> {
+    (x..buffer.area.width - 1)
+        .filter(|&col| buffer[(col, y)].symbol() == "│")
+        .collect()
+}
+
+#[test]
+fn should_keep_wide_table_columns_aligned_in_the_panel() {
+    let long = "Rotate the signing keys for every staging service, then confirm each \
+                consumer picks up the new key set before the old one expires at the end \
+                of the maintenance window next week";
+    let body = format!(
+        "| Change | Owner | Risk | Done |\n| --- | --- | --- | --- |\n\
+         | {long} | infra | low | yes |\n| Short row | app | none | no |"
+    );
+    let mut info = sample_pr_info();
+    info.details.body = body;
+    let mut app = build_pr_app();
+    app.pr_info = Some(info);
+    let buffer = draw_app(&mut app);
+    let rows = rows_of(&buffer);
+
+    let (x, head) = find_text(&buffer, "Change");
+    for cell in ["Change", "Owner", "Risk", "Done"] {
+        let (cx, cy) = find_text(&buffer, cell);
+        assert_eq!(cy, head, "{cell} off the header row");
+        assert!(buffer[(cx, cy)].modifier.contains(Modifier::BOLD));
+        assert!(buffer[(cx, cy)].modifier.contains(Modifier::UNDERLINED));
+    }
+    let bars = bars_from(&buffer, x, head);
+    assert_eq!(bars.len(), 3, "{:?}", rows[head as usize]);
+    for &bar in &bars {
+        assert!(buffer[(bar, head)].modifier.contains(Modifier::UNDERLINED));
+    }
+
+    let (_, last) = find_text(&buffer, "Short row");
+    assert!(last > head + 2, "the long cell wraps onto several rows");
+    for y in head..=last {
+        assert_eq!(bars_from(&buffer, x, y), bars, "{:?}", rows[y as usize]);
+    }
+    let first_column: String = (head + 1..last)
+        .map(|y| {
+            (x..bars[0])
+                .map(|col| buffer[(col, y)].symbol())
+                .collect::<String>()
+                .trim()
+                .to_string()
+        })
+        .collect::<Vec<_>>()
+        .join(" ");
+    assert_eq!(first_column, long);
+    assert_panel_annotations_match_drawn_rows(&mut app);
+}
+
+/// The cell holding the first `needle` character of a chip, and its pads.
+fn chip_cells(buffer: &Buffer, needle: &str) -> (Cell, Cell, Cell) {
+    let (x, y) = find_text(buffer, needle);
+    let end = x + needle.chars().count() as u16;
+    (
+        buffer[(x - 1, y)].clone(),
+        buffer[(x, y)].clone(),
+        buffer[(end, y)].clone(),
+    )
+}
+
+#[test]
+fn should_draw_inline_code_as_the_glow_chip_on_a_dark_theme() {
+    let buffer = draw_body("run make_check before merging", true);
+    let plain = chip_cells(&buffer, "make_check").1;
+    let buffer = draw_body("run `make_check` before merging", true);
+    let (left, chip, right) = chip_cells(&buffer, "make_check");
+
+    assert_eq!(chip.fg, GLOW_CHIP_FG);
+    assert_eq!(chip.bg, GLOW_CHIP_BG);
+    for pad in [&left, &right] {
+        assert_eq!(pad.symbol(), " ");
+        assert_eq!(pad.bg, GLOW_CHIP_BG);
+    }
+    assert_ne!(plain.bg, GLOW_CHIP_BG);
+}
+
+#[test]
+fn should_draw_a_legible_chip_on_a_light_theme_with_a_transparent_background() {
+    let mut info = sample_pr_info();
+    info.details.body = "run `make_check` before merging".to_string();
+    let mut app = build_pr_app();
+    // `transparent_background` defaults to on, and `main` applies it so.
+    app.theme = Theme::light();
+    app.theme.panel_bg = Color::Reset;
+    app.pr_info = Some(info);
+    let buffer = draw_app(&mut app);
+    let (left, chip, right) = chip_cells(&buffer, "make_check");
+
+    let light = Theme::light();
+    assert_eq!(chip.bg, light.bg_highlight);
+    assert_ne!(chip.bg, light.panel_bg);
+    assert_ne!(chip.fg, chip.bg);
+    assert_ne!(chip.fg, Color::Reset);
+    assert_eq!((left.bg, right.bg), (chip.bg, chip.bg));
 }
 
 #[test]

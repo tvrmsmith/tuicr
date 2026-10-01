@@ -2013,6 +2013,14 @@ pub fn resolve_appearance_arg_with_config(
 fn is_dark_color(c: Color) -> bool {
     match c {
         Color::Rgb(r, g, b) => (u16::from(r) + u16::from(g) + u16::from(b)) / 3 < 128,
+        Color::White
+        | Color::Gray
+        | Color::LightRed
+        | Color::LightGreen
+        | Color::LightYellow
+        | Color::LightBlue
+        | Color::LightMagenta
+        | Color::LightCyan => false,
         _ => true,
     }
 }
@@ -2465,6 +2473,13 @@ pub fn resolve_theme_with_config(
 }
 
 impl Theme {
+    /// Whether the theme has a dark appearance. Judged by `bg_highlight`, not
+    /// `panel_bg`: `transparent_background` (on by default) resets the panel to
+    /// the terminal's own background, which says nothing about the theme.
+    pub fn is_dark(&self) -> bool {
+        is_dark_color(self.bg_highlight)
+    }
+
     /// Get the syntax highlighter for this theme (lazily initialized, cached)
     pub fn syntax_highlighter(&self) -> &SyntaxHighlighter {
         self.highlighter
@@ -2626,6 +2641,89 @@ mode_bg = "#82aaff"
         for (name, expected_theme) in ThemeArg::choices() {
             assert_eq!(ThemeArg::parse_name(name), Some(*expected_theme));
         }
+    }
+
+    #[test]
+    fn should_keep_each_theme_appearance_under_a_transparent_background() {
+        for (name, arg) in ThemeArg::choices() {
+            let mut theme = resolve_theme(*arg);
+            let dark = is_dark_color(theme.panel_bg);
+            theme.panel_bg = Color::Reset;
+            assert_eq!(theme.is_dark(), dark, "{name}");
+        }
+    }
+
+    #[test]
+    fn should_classify_light_named_colors_as_light() {
+        let light = [
+            Color::White,
+            Color::Gray,
+            Color::LightRed,
+            Color::LightGreen,
+            Color::LightYellow,
+            Color::LightBlue,
+            Color::LightMagenta,
+            Color::LightCyan,
+        ];
+        let dark = [
+            Color::Reset,
+            Color::Black,
+            Color::DarkGray,
+            Color::Red,
+            Color::Blue,
+            Color::Indexed(255),
+        ];
+        assert!(light.iter().all(|&c| !is_dark_color(c)), "{light:?}");
+        assert!(dark.iter().all(|&c| is_dark_color(c)), "{dark:?}");
+    }
+
+    #[test]
+    fn should_pick_the_fallback_syntax_theme_from_a_named_local_panel_bg() {
+        let dir = tempdir().expect("failed to create temp dir");
+        let cases = [
+            ("white", EmbeddedThemeName::Base16OceanLight),
+            ("lightcyan", EmbeddedThemeName::Base16OceanLight),
+            ("darkgray", EmbeddedThemeName::Base16EightiesDark),
+        ];
+        let picked: Vec<_> = cases
+            .iter()
+            .map(|(panel_bg, _)| {
+                let body = sample_local_theme_body("").replace(
+                    r##"panel_bg = "#011627""##,
+                    &format!(r#"panel_bg = "{panel_bg}""#),
+                );
+                let path = write_local_theme(dir.path(), panel_bg, &body);
+                let (theme, _) = load_local_theme_from_path(&path)
+                    .expect("local theme should load successfully");
+                (*panel_bg, theme.embedded_syntax_theme_name())
+            })
+            .collect();
+        let expected: Vec<_> = cases
+            .iter()
+            .map(|(panel_bg, name)| (*panel_bg, Some(*name)))
+            .collect();
+        assert_eq!(picked, expected);
+    }
+
+    #[test]
+    fn should_derive_the_chip_for_a_local_theme_with_a_named_light_highlight() {
+        let dir = tempdir().expect("failed to create temp dir");
+        let body = sample_local_theme_body("")
+            .replace(r##"panel_bg = "#011627""##, r##"panel_bg = "#fafafa""##)
+            .replace(r##"bg_highlight = "#1d3b53""##, r#"bg_highlight = "white""#);
+        let path = write_local_theme(dir.path(), "local-paper", &body);
+        let (mut theme, _) =
+            load_local_theme_from_path(&path).expect("local theme should load successfully");
+        theme.panel_bg = Color::Reset;
+
+        let rows = crate::syntax::markdown_render::render_block(&theme, "`x`", 20, &[]);
+        let chip = rows[0]
+            .line
+            .spans
+            .iter()
+            .find(|span| span.content.contains('x'))
+            .expect("span holding the chip");
+        assert_eq!(chip.style.bg, Some(Color::White));
     }
 
     #[test]

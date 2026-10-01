@@ -3,7 +3,7 @@
 //!
 //! One pulldown-cmark pass records, per source byte, the style it renders in,
 //! plus replacement runs for marker ranges (`**`, `[`, `](url)`, list bullets)
-//! and per-line overrides for constructs drawn from scratch (tables, rules).
+//! and table rows, which are laid out once the width is known.
 //! Rows are then built line by line from that record, joining prose lines
 //! into one logical line before word-wrapping it. Keeping the record per
 //! source byte is what lets each row report the source lines it came from.
@@ -37,7 +37,8 @@ pub(crate) struct BlockRow {
 }
 
 /// Render `src` as reflowed markdown rows no wider than `width` columns
-/// (a table or code row wider than `width` wraps with its continuation prefix).
+/// (a code row wider than `width` wraps with its continuation prefix, and a
+/// table wider than `width` wraps text inside its columns).
 ///
 /// `keep_apart` lists merged, non-overlapping source-line ranges. Lines in a
 /// range never join lines outside it, and each range yields at least one row
@@ -102,6 +103,10 @@ struct Look {
     quote_text: Style,
 }
 
+/// glow's inline code chip on a dark theme, in 256-colour.
+pub(crate) const GLOW_CHIP_FG: Color = Color::Indexed(203);
+pub(crate) const GLOW_CHIP_BG: Color = Color::Indexed(236);
+
 impl Look {
     fn new(theme: &Theme) -> Self {
         let palette = &theme.syntax_highlighter().markdown_palette;
@@ -111,7 +116,13 @@ impl Look {
                 .heading
                 .remove_modifier(Modifier::BOLD | Modifier::UNDERLINED),
             dim: Style::default().fg(theme.fg_dim),
-            chip: palette.code.bg(theme.bg_highlight),
+            // glow's chip. Its dark gray would blot a light panel, so light
+            // themes derive theirs.
+            chip: if theme.is_dark() {
+                Style::default().fg(GLOW_CHIP_FG).bg(GLOW_CHIP_BG)
+            } else {
+                palette.code.bg(theme.bg_highlight)
+            },
             link: palette.link.add_modifier(Modifier::UNDERLINED),
             image: palette.link,
             border: Style::default().fg(theme.border_unfocused),
@@ -132,6 +143,14 @@ impl Look {
             HeadingLevel::H5 => self.heading.add_modifier(Modifier::ITALIC),
             HeadingLevel::H6 => self.dim.add_modifier(Modifier::ITALIC),
         }
+    }
+
+    /// `style` underlined in the border colour, as a table header's last row is.
+    fn header(&self, style: Style) -> Style {
+        let style = style.add_modifier(Modifier::UNDERLINED);
+        self.border
+            .fg
+            .map_or(style, |color| style.underline_color(color))
     }
 }
 
@@ -184,6 +203,20 @@ struct OpenTable {
     rows: Vec<(bool, Vec<Range<usize>>)>,
 }
 
+/// A walked table's column alignments and natural column widths.
+struct Table {
+    aligns: Vec<Alignment>,
+    natural: Vec<usize>,
+}
+
+/// One source row of a table: its rendered cells, laid out by `table_lines`.
+struct TableRow {
+    /// Index into `Doc::tables`.
+    table: usize,
+    head: bool,
+    cells: Vec<Runs>,
+}
+
 struct Doc<'a> {
     src: &'a str,
     look: Look,
@@ -210,8 +243,9 @@ struct Doc<'a> {
     prefixes: HashMap<usize, Runs>,
     /// Runs right-aligned on a line's first row (a code block's language).
     labels: HashMap<usize, Runs>,
-    /// Lines drawn from scratch instead of from their source (table rows).
-    overrides: HashMap<usize, Runs>,
+    tables: Vec<Table>,
+    /// Lines drawn as a table row instead of from their source.
+    table_rows: HashMap<usize, TableRow>,
     /// Horizontal rule lines, drawn across the full width.
     rules: Vec<bool>,
 }
@@ -236,7 +270,8 @@ impl<'a> Doc<'a> {
             skip: vec![false; lines],
             prefixes: HashMap::new(),
             labels: HashMap::new(),
-            overrides: HashMap::new(),
+            tables: Vec::new(),
+            table_rows: HashMap::new(),
             rules: vec![false; lines],
         };
         doc.walk(hl);
@@ -537,9 +572,8 @@ impl<'a> Doc<'a> {
         }
     }
 
-    /// Natural-width columns, inner ` │ ` bars, no outer bars. The header row
-    /// is underlined across the whole table in the border colour, which
-    /// replaces the delimiter row.
+    /// Inner ` │ ` bars, no outer bars. The header row is underlined across
+    /// the whole table in the border colour, which replaces the delimiter row.
     fn table(&mut self, t: OpenTable) {
         for line in self.lines_of(&t.range) {
             self.no_reflow[line] = true;
@@ -576,56 +610,82 @@ impl<'a> Doc<'a> {
                 .max()
                 .unwrap_or(0),
         );
-        let mut widths = vec![1; columns];
+        let mut natural = vec![1; columns];
         for (_, _, cells) in &rows {
-            for (width, cell) in widths.iter_mut().zip(cells) {
+            for (width, cell) in natural.iter_mut().zip(cells) {
                 *width = (*width).max(runs_width(cell));
             }
         }
 
-        let (base, border) = (self.look.base, self.look.border);
-        for (line, is_head, cells) in rows {
-            let mut out: Runs = Vec::new();
-            for (i, width) in widths.iter().enumerate() {
-                if i > 0 {
-                    push_str(&mut out, base, " ");
-                    push_str(&mut out, border, "│");
-                    push_str(&mut out, base, " ");
-                }
-                let cell = cells.get(i).cloned().unwrap_or_default();
-                let pad = width.saturating_sub(runs_width(&cell));
-                let (left, right) = match t.aligns.get(i) {
-                    Some(Alignment::Right) => (pad, 0),
-                    Some(Alignment::Center) => (pad / 2, pad - pad / 2),
-                    _ => (0, pad),
-                };
-                push_spaces(&mut out, base, left);
-                out.extend(cell);
-                // Trailing pad on the last column only makes rows wrap. The
-                // header's underline reaches the table's edge through
-                // `underline_pad` instead, so a table wider than the row
-                // never wraps the pad onto a blank row.
-                if i + 1 < widths.len() {
-                    push_spaces(&mut out, base, right);
-                }
-            }
-            if is_head {
-                let underline = |style: Style| {
-                    let style = style.add_modifier(Modifier::UNDERLINED);
-                    border
-                        .fg
-                        .map_or(style, |color| style.underline_color(color))
-                };
-                for (style, _) in &mut out {
-                    *style = underline(*style);
-                }
-                let table_width = widths.iter().sum::<usize>() + 3 * (widths.len() - 1);
+        // The header's underline reaches the table's edge through
+        // `underline_pad`, since the last column carries no trailing pad.
+        let table_width = natural.iter().sum::<usize>() + 3 * (natural.len() - 1);
+        let table = self.tables.len();
+        self.tables.push(Table {
+            aligns: t.aligns,
+            natural,
+        });
+        for (line, head, cells) in rows {
+            if head {
                 self.underline_pad
-                    .insert(line, (underline(base), table_width));
+                    .insert(line, (self.look.header(self.look.base), table_width));
             }
             self.skip[line] = false;
-            self.overrides.insert(line, out);
+            self.table_rows
+                .insert(line, TableRow { table, head, cells });
         }
+    }
+
+    /// The display rows of one table row at `width`: each cell wrapped inside
+    /// its column, the bars on every row, and a header underlined on its last
+    /// row only.
+    fn table_lines(&self, row: &TableRow, width: usize) -> Vec<Runs> {
+        let table = &self.tables[row.table];
+        let widths = fit_columns(&table.natural, width);
+        let cells: Vec<Vec<Runs>> = widths
+            .iter()
+            .enumerate()
+            .map(|(i, &w)| {
+                let cell = row.cells.get(i).cloned().unwrap_or_default();
+                wrap(&cell, w, &[]).into_iter().map(trim_end).collect()
+            })
+            .collect();
+        let height = cells.iter().map(Vec::len).max().unwrap_or(1);
+        let (base, border) = (self.look.base, self.look.border);
+        let mut lines: Vec<Runs> = (0..height)
+            .map(|k| {
+                let mut out: Runs = Vec::new();
+                for (i, (&width, cell)) in widths.iter().zip(&cells).enumerate() {
+                    if i > 0 {
+                        push_str(&mut out, base, " ");
+                        push_str(&mut out, border, "│");
+                        push_str(&mut out, base, " ");
+                    }
+                    let text = cell.get(k).cloned().unwrap_or_default();
+                    let pad = width.saturating_sub(runs_width(&text));
+                    let (left, right) = match table.aligns.get(i) {
+                        Some(Alignment::Right) => (pad, 0),
+                        Some(Alignment::Center) => (pad / 2, pad - pad / 2),
+                        _ => (0, pad),
+                    };
+                    push_spaces(&mut out, base, left);
+                    out.extend(text);
+                    // Trailing pad on the last column only makes rows wrap.
+                    if i + 1 < widths.len() {
+                        push_spaces(&mut out, base, right);
+                    }
+                }
+                out
+            })
+            .collect();
+        if row.head
+            && let Some(last) = lines.last_mut()
+        {
+            for (style, _) in last {
+                *style = self.look.header(*style);
+            }
+        }
+        lines
     }
 
     /// Bullets become `•` `◦` `▪` by depth; ordered numbers stay.
@@ -837,9 +897,7 @@ impl<'a> Doc<'a> {
             let mut logical = self.prefixes.get(&line).cloned().unwrap_or_default();
             if self.rules[line] {
                 logical.push((self.look.border, "─".repeat(width)));
-            } else if let Some(runs) = self.overrides.get(&line) {
-                logical.extend(runs.iter().cloned());
-            } else {
+            } else if !self.table_rows.contains_key(&line) {
                 logical.extend(self.emit(range.start, range.end));
             }
             let mut last = line;
@@ -849,7 +907,17 @@ impl<'a> Doc<'a> {
                 logical
                     .extend(self.emit(self.content_start(last, false), self.line_range(last).end));
             }
-            let mut rows = wrap(&logical, width, &self.continuation(line));
+            let cont = self.continuation(line);
+            let mut rows: Vec<Runs> = match self.table_rows.get(&line) {
+                // Table rows wrap again only when the table cannot give each
+                // column one cell of room.
+                Some(row) => self
+                    .table_lines(row, width)
+                    .iter()
+                    .flat_map(|l| wrap(l, width, &cont))
+                    .collect(),
+                None => wrap(&logical, width, &cont),
+            };
             if let (Some(label), Some(first)) = (self.labels.get(&line), rows.first_mut()) {
                 let gap = width.saturating_sub(runs_width(first) + runs_width(label));
                 if gap > 0 {
@@ -905,13 +973,55 @@ fn push_spaces(out: &mut Runs, style: Style, n: usize) {
     }
 }
 
+/// Column widths for a table drawn in `width` columns: the natural widths
+/// when they fit, else the widest columns shrink first, down to one column
+/// each, and narrow columns keep their natural width.
+fn fit_columns(natural: &[usize], width: usize) -> Vec<usize> {
+    let room = width.saturating_sub(3 * natural.len().saturating_sub(1));
+    let total = |cap: usize| natural.iter().map(|&w| w.min(cap)).sum::<usize>();
+    let widest = natural.iter().copied().max().unwrap_or(1);
+    if total(widest) <= room {
+        return natural.to_vec();
+    }
+    let cap = (1..widest)
+        .rev()
+        .find(|&cap| total(cap) <= room)
+        .unwrap_or(1);
+    // Less than one column per capped column is left, so each gets at most one.
+    let mut spare = room.saturating_sub(total(cap));
+    natural
+        .iter()
+        .map(|&w| {
+            if w > cap && spare > 0 {
+                spare -= 1;
+                cap + 1
+            } else {
+                w.min(cap)
+            }
+        })
+        .collect()
+}
+
+/// `runs` without the trailing spaces a wrapped row can end in.
+fn trim_end(mut runs: Runs) -> Runs {
+    while let Some((_, text)) = runs.last_mut() {
+        let kept = text.trim_end_matches(' ').len();
+        if kept > 0 {
+            text.truncate(kept);
+            break;
+        }
+        runs.pop();
+    }
+    runs
+}
+
 fn runs_width(runs: &[(Style, String)]) -> usize {
     runs.iter().map(|(_, t)| t.width()).sum()
 }
 
 /// Word-wrap styled runs to `width`, starting continuation rows with `cont`.
 /// A word wider than a whole row is split by character.
-fn wrap(runs: &Runs, width: usize, cont: &Runs) -> Vec<Runs> {
+fn wrap(runs: &Runs, width: usize, cont: &[(Style, String)]) -> Vec<Runs> {
     // A hanging indent wider than half the row would leave too little room
     // for text, so narrow rows drop it.
     let cont: &[(Style, String)] = if runs_width(cont) * 2 > width {
@@ -1189,13 +1299,14 @@ mod tests {
         assert!(
             styles_of(&row, " code ")
                 .iter()
-                .all(|s| s.bg == Some(theme.bg_highlight))
+                .all(|s| s.bg == Some(GLOW_CHIP_BG))
         );
         assert!(
             styles_of(&row, "code")
                 .iter()
-                .all(|s| s.fg == code_fg(&theme))
+                .all(|s| s.fg == Some(GLOW_CHIP_FG))
         );
+        assert_ne!(code_fg(&theme), Some(GLOW_CHIP_FG));
     }
 
     fn row_width(row: &BlockRow) -> usize {
@@ -1276,6 +1387,90 @@ mod tests {
             && s.style.underline_color == border));
         assert!(text(&rows[1]).starts_with("x "), "{:?}", texts(&rows));
         assert!(rows.iter().all(|row| row_width(row) <= 40));
+    }
+
+    /// Display columns of each `│` in `row`.
+    fn bar_columns(row: &BlockRow) -> Vec<usize> {
+        let mut at = 0;
+        let mut bars = Vec::new();
+        for ch in text(row).chars() {
+            if ch == '│' {
+                bars.push(at);
+            }
+            at += unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
+        }
+        bars
+    }
+
+    #[test]
+    fn should_wrap_cells_within_their_columns_when_table_is_wider_than_width() {
+        let rows = render(
+            "| Step | Owner | State | Notes |\n| --- | --- | --- | --- |\n\
+             | Move the nightly export job onto the shared scheduler and retire the old cron entry | ops | done | ok |",
+            40,
+        );
+
+        assert_eq!(
+            texts_trimmed(&rows),
+            [
+                "Step             │ Owner │ State │ Notes",
+                "Move the nightly │ ops   │ done  │ ok",
+                "export job onto  │       │       │",
+                "the shared       │       │       │",
+                "scheduler and    │       │       │",
+                "retire the old   │       │       │",
+                "cron entry       │       │       │",
+            ]
+        );
+        assert!(rows.iter().all(|row| bar_columns(row) == [17, 25, 33]));
+        assert!(rows.iter().all(|row| row_width(row) <= 40));
+    }
+
+    #[test]
+    fn should_underline_only_the_last_row_of_a_wrapped_header_across_its_bars() {
+        let border = Some(Theme::dark().border_unfocused);
+        let rows = render("| Alpha beta gamma | B |\n| --- | --- |\n| x | y |", 16);
+
+        assert_eq!(
+            texts(&rows),
+            ["Alpha beta   │ B", "gamma        │  ", "x            │ y"]
+        );
+        for cell in ["Alpha beta", "gamma", "B"] {
+            let row = rows.iter().find(|r| text(r).contains(cell)).unwrap();
+            assert!(
+                styles_of(row, cell)
+                    .iter()
+                    .all(|s| s.add_modifier.contains(Modifier::BOLD))
+            );
+        }
+        assert!(spans_all(&rows[0], |s| !has(s, Modifier::UNDERLINED)));
+        assert!(spans_all(&rows[1], |s| has(s, Modifier::UNDERLINED)
+            && s.style.underline_color == border));
+        assert!(spans_all(&rows[2], |s| !has(s, Modifier::UNDERLINED)));
+    }
+
+    #[test]
+    fn should_keep_narrow_columns_at_natural_width_and_shrink_the_widest_first() {
+        assert_eq!(fit_columns(&[4, 5, 5, 5], 40), [4, 5, 5, 5]);
+        assert_eq!(fit_columns(&[83, 5, 5, 5], 40), [16, 5, 5, 5]);
+        assert_eq!(fit_columns(&[30, 20, 2], 32), [12, 12, 2]);
+        assert_eq!(fit_columns(&[30, 21, 2], 33), [13, 12, 2]);
+        assert_eq!(fit_columns(&[9, 9, 9], 4), [1, 1, 1]);
+    }
+
+    #[test]
+    fn should_wrap_table_rows_again_when_one_cell_per_column_overflows() {
+        let rows = render("| aaaa | bbbb | cccc |\n|---|---|---|\n| x | y | z |", 4);
+
+        let texts: Vec<String> = rows.iter().map(text).collect();
+        assert!(rows.iter().all(|row| row_width(row) <= 4), "{texts:?}");
+        let cells: String = texts
+            .concat()
+            .chars()
+            .filter(|c| c.is_alphanumeric())
+            .collect();
+        assert_eq!(cells, "abcabcabcabcxyz");
+        assert_eq!(texts.concat().matches('│').count(), 2 * 5, "{texts:?}");
     }
 
     #[test]
@@ -1410,11 +1605,11 @@ mod tests {
         let light = Theme::light();
 
         let chip = render_block(&light, "`x`", 40, &[]);
-        assert!(
-            styles_of(&chip[0], "x")
-                .iter()
-                .all(|s| s.bg == Some(light.bg_highlight))
-        );
+        for s in styles_of(&chip[0], " x ") {
+            assert_eq!(s.bg, Some(light.bg_highlight));
+            assert_ne!(s.bg, Some(light.panel_bg));
+            assert!(s.fg.is_some() && s.fg != s.bg, "{s:?}");
+        }
 
         let rule = render_block(&light, "---", 40, &[]);
         assert!(
@@ -1513,18 +1708,16 @@ mod tests {
 
     #[test]
     fn should_pad_heading_in_heading_style_after_trailing_chip() {
-        let theme = Theme::dark();
         let row = single_row("# Use `foo`", 20);
 
         let pad = row.line.spans.last().expect("padding span");
         assert!(pad.content.trim().is_empty());
-        assert_ne!(pad.style.bg, Some(theme.bg_highlight));
+        assert_ne!(pad.style.bg, Some(GLOW_CHIP_BG));
         assert!(has(pad, Modifier::BOLD) && has(pad, Modifier::UNDERLINED));
     }
 
     #[test]
     fn should_move_chip_that_lands_on_wrap_boundary_to_next_row_with_its_pads() {
-        let theme = Theme::dark();
         let rows = render("see and `inline_code()` here", 16);
 
         let texts: Vec<String> = rows.iter().map(text).collect();
@@ -1534,12 +1727,12 @@ mod tests {
                 .line
                 .spans
                 .iter()
-                .all(|s| s.style.bg != Some(theme.bg_highlight))
+                .all(|s| s.style.bg != Some(GLOW_CHIP_BG))
         );
         assert!(
             styles_of(&rows[1], " inline_code() ")
                 .iter()
-                .all(|s| s.bg == Some(theme.bg_highlight))
+                .all(|s| s.bg == Some(GLOW_CHIP_BG))
         );
     }
 

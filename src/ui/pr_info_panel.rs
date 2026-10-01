@@ -987,7 +987,7 @@ mod tests {
             .iter()
             .find(|span| span.content.contains("code"))
             .expect("span holding code");
-        assert_eq!(chip.style.bg, Some(theme.bg_highlight));
+        assert_eq!(chip.style.bg, Some(markdown_render::GLOW_CHIP_BG));
     }
 
     fn rendered(body: &str) -> Vec<(String, Option<usize>)> {
