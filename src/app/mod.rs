@@ -1277,6 +1277,9 @@ pub struct App {
     pub search_highlight_enabled: bool,
     /// Render markdown in the PR description panel and comment boxes.
     pub render_markdown: bool,
+    /// `<details>` sections of the PR description shown opposite to their
+    /// default, by section number. Cleared when a new `pr_info` is installed.
+    pub(crate) pr_details_toggled: std::collections::BTreeSet<usize>,
     /// Rows last built by `pr_info_rows`, reused while its key still matches.
     pub(crate) pr_info_rows_cache:
         std::cell::RefCell<Option<crate::ui::pr_info_panel::PrInfoRowsCache>>,

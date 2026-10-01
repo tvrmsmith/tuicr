@@ -2716,7 +2716,13 @@ mode_bg = "#82aaff"
             load_local_theme_from_path(&path).expect("local theme should load successfully");
         theme.panel_bg = Color::Reset;
 
-        let rows = crate::syntax::markdown_render::render_block(&theme, "`x`", 20, &[]);
+        let rows = crate::syntax::markdown_render::render_block(
+            &theme,
+            "`x`",
+            20,
+            &[],
+            &std::collections::BTreeSet::new(),
+        );
         let chip = rows[0]
             .line
             .spans

@@ -1,6 +1,22 @@
 use super::*;
 
 impl App {
+    /// Installs a freshly fetched `pr_info`. Section numbers belong to one
+    /// description, so the toggled set resets with it.
+    pub(crate) fn install_pr_info(&mut self, info: crate::forge::traits::PullRequestInfo) {
+        self.pr_info = Some(info);
+        self.pr_details_toggled.clear();
+    }
+
+    /// Flips one `<details>` section of the PR description. Rows above its
+    /// summary row do not move, so the cursor stays put.
+    pub(crate) fn toggle_pr_details(&mut self, id: usize) {
+        if !self.pr_details_toggled.remove(&id) {
+            self.pr_details_toggled.insert(id);
+        }
+        self.rebuild_annotations();
+    }
+
     /// Re-enter PR mode after we've already opened a PR via the selector.
     /// Used by the selector → PR open path and by `:reload` in PR mode.
     ///
@@ -67,7 +83,7 @@ impl App {
         self.range_diff_files = None;
         self.saved_inline_selection = None;
         self.diff_state = DiffState::default();
-        self.pr_info = Some(pr_info);
+        self.install_pr_info(pr_info);
 
         // PR mode populates the inline selector with the PR's commits when
         // there are at least two. Single-commit PRs hide the selector to
@@ -651,7 +667,7 @@ impl App {
                 &opened.review_metadata,
             );
             self.diff_files = opened.diff_files;
-            self.pr_info = Some(opened.pr_info);
+            self.install_pr_info(opened.pr_info);
             self.clear_expanded_gaps();
             for file in &self.diff_files {
                 self.session.add_diff_file(file);
@@ -747,7 +763,7 @@ impl App {
                 &opened.review_metadata,
             );
             self.diff_files = opened.diff_files;
-            self.pr_info = Some(opened.pr_info);
+            self.install_pr_info(opened.pr_info);
             self.clear_expanded_gaps();
             for file in &self.diff_files {
                 self.session.add_diff_file(file);

@@ -1800,9 +1800,19 @@ pub fn handle_diff_action(app: &mut App, action: Action) {
         Action::MouseScrollDown(n) => app.scroll_view_down(n),
         Action::MouseScrollUp(n) => app.scroll_view_up(n),
         Action::SelectFile => {
-            if let Some(index) = crate::ui::pr_info_panel::pr_info_media_at_cursor(app) {
-                app.enter_media(index);
-            } else if let Some(hit) = app.get_gap_at_cursor() {
+            use crate::ui::pr_info_panel::{RowAction, pr_info_action_at_cursor};
+            let hit = match pr_info_action_at_cursor(app) {
+                Some(RowAction::Media(index)) => {
+                    app.enter_media(index);
+                    None
+                }
+                Some(RowAction::Details(id)) => {
+                    app.toggle_pr_details(id);
+                    None
+                }
+                None => app.get_gap_at_cursor(),
+            };
+            if let Some(hit) = hit {
                 match hit {
                     GapCursorHit::Expander(gap_id, dir) => {
                         let limit = if dir == ExpandDirection::Both {

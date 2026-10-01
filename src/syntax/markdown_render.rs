@@ -8,7 +8,7 @@
 //! into one logical line before word-wrapping it. Keeping the record per
 //! source byte is what lets each row report the source lines it came from.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::ops::Range;
 
 use pulldown_cmark::{
@@ -18,6 +18,8 @@ use pulldown_cmark::{
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use unicode_width::UnicodeWidthStr;
+
+mod details;
 
 use super::SyntaxHighlighter;
 use crate::theme::Theme;
@@ -34,15 +36,29 @@ pub(crate) struct BlockRow {
     /// 0-based source lines (the body split on '\n') of the row group this row
     /// belongs to. Every row of one reflowed group carries the group's range.
     pub source: Range<usize>,
+    /// The `<details>` section this row is the summary of, numbered by the
+    /// opening tag's order in the source from 0 (nested sections included).
+    /// `None` on every other row.
+    pub details: Option<usize>,
 }
 
 /// Render `src` as reflowed markdown rows no wider than `width` columns
 /// (a code row wider than `width` wraps with its continuation prefix, and a
 /// table wider than `width` wraps text inside its columns).
 ///
+/// A block-level `<details>` section with a matching `</details>` renders as
+/// one summary row, `▸ label` collapsed or `▾ label` expanded, in place of its
+/// header (the `<details>` line through its `</summary>` line). Its closing
+/// line renders nothing, and its body renders only while it is expanded.
+/// Sections start collapsed, or expanded when the tag carries `open`;
+/// `toggled` names the sections that render opposite to that default, and
+/// ids that name no section are ignored.
+///
 /// `keep_apart` lists merged, non-overlapping source-line ranges. Lines in a
-/// range never join lines outside it, and each range yields at least one row
-/// whose `source` is exactly that range.
+/// range never join lines outside it. Each range yields at least one row
+/// whose `source` is exactly that range, except a range wholly inside a
+/// collapsed section, which yields none. A range that overlaps a section's
+/// header without matching it gets its row right after the summary row.
 ///
 /// Pure: no I/O, no global state; same inputs give the same rows.
 pub(crate) fn render_block(
@@ -50,9 +66,11 @@ pub(crate) fn render_block(
     src: &str,
     width: usize,
     keep_apart: &[Range<usize>],
+    toggled: &BTreeSet<usize>,
 ) -> Vec<BlockRow> {
     let width = width.max(1);
-    let doc = Doc::build(theme, src);
+    let mut doc = Doc::build(theme, src);
+    doc.fold_details(toggled);
     let lines = doc.line_count();
     let keep_apart: Vec<Range<usize>> = keep_apart
         .iter()
@@ -68,16 +86,27 @@ pub(crate) fn render_block(
     // A range whose lines all render nothing (a fence, a dropped blank) still
     // owes the caller a row to anchor on.
     for range in keep_apart {
-        if !rows.iter().any(|row| row.source == range) {
-            let at = rows.partition_point(|row| row.source.start < range.start);
-            rows.insert(
-                at,
-                BlockRow {
-                    line: Line::default(),
-                    source: range,
-                },
-            );
+        if rows.iter().any(|row| row.source == range) {
+            continue;
         }
+        // The header holding the range shows as its summary row, so the
+        // anchor follows that row.
+        let summary = rows.iter().rposition(|row| {
+            row.details.is_some() && row.source.start < range.end && range.start < row.source.end
+        });
+        let at = match summary {
+            Some(last) => last + 1,
+            None if range.clone().all(|line| doc.folded[line]) => continue,
+            None => rows.partition_point(|row| row.source.start < range.start),
+        };
+        rows.insert(
+            at,
+            BlockRow {
+                line: Line::default(),
+                source: range,
+                details: None,
+            },
+        );
     }
     rows
 }
@@ -248,6 +277,21 @@ struct Doc<'a> {
     table_rows: HashMap<usize, TableRow>,
     /// Horizontal rule lines, drawn across the full width.
     rules: Vec<bool>,
+    /// Byte ranges of the HTML blocks, where `<details>` sections open.
+    html_blocks: Vec<Range<usize>>,
+    /// Summary rows keyed by the first line of the header they replace.
+    summaries: HashMap<usize, Summary>,
+    /// Body and closing lines of collapsed sections.
+    folded: Vec<bool>,
+}
+
+/// The row a `<details>` section's header lines render as.
+struct Summary {
+    id: usize,
+    /// The header's source lines.
+    lines: Range<usize>,
+    label: String,
+    expanded: bool,
 }
 
 impl<'a> Doc<'a> {
@@ -273,6 +317,9 @@ impl<'a> Doc<'a> {
             tables: Vec::new(),
             table_rows: HashMap::new(),
             rules: vec![false; lines],
+            html_blocks: Vec::new(),
+            summaries: HashMap::new(),
+            folded: vec![false; lines],
         };
         doc.walk(hl);
         doc
@@ -341,6 +388,7 @@ impl<'a> Doc<'a> {
                 Event::Start(Tag::BlockQuote(kind)) => self.quote(r, kind),
                 Event::Html(_) | Event::InlineHtml(_) => self.paint(r, self.look.dim),
                 Event::Start(Tag::HtmlBlock) => {
+                    self.html_blocks.push(r.clone());
                     for line in self.lines_of(&r) {
                         self.no_reflow[line] = true;
                     }
@@ -781,6 +829,75 @@ impl<'a> Doc<'a> {
         self.replace(content_end..line_end, vec![]);
     }
 
+    /// Replace each `<details>` section's header with a summary row and its
+    /// closing line with nothing, and hide the body of each collapsed one.
+    /// `toggled` names the sections that render opposite to their default:
+    /// collapsed, or expanded when the tag carries `open`.
+    fn fold_details(&mut self, toggled: &BTreeSet<usize>) {
+        let sections = details::sections(self.src, &self.html_blocks);
+        let by_id: HashMap<usize, (Option<usize>, bool)> = sections
+            .iter()
+            .map(|s| (s.id, (s.parent, s.open != toggled.contains(&s.id))))
+            .collect();
+        // A section inside a collapsed one shows no summary row.
+        let under_collapsed = |mut parent: Option<usize>| {
+            while let Some(&(up, expanded)) = parent.and_then(|id| by_id.get(&id)) {
+                if !expanded {
+                    return true;
+                }
+                parent = up;
+            }
+            false
+        };
+        for section in &sections {
+            let header = self.lines_of(&section.header);
+            let (first, last) = (*header.start(), *header.end());
+            let close = self.line_of(section.close).max(last);
+            let expanded = by_id[&section.id].1;
+            for line in (first..=last).chain([close]) {
+                self.skip[line] = true;
+            }
+            if !expanded {
+                for line in last + 1..=close {
+                    self.skip[line] = true;
+                    self.folded[line] = true;
+                }
+            }
+            if under_collapsed(section.parent) {
+                continue;
+            }
+            self.summaries.insert(
+                first,
+                Summary {
+                    id: section.id,
+                    lines: first..last + 1,
+                    label: section.label.clone(),
+                    expanded,
+                },
+            );
+        }
+    }
+
+    /// `▸ label` collapsed or `▾ label` expanded, wrapped under the label's start.
+    fn summary_rows(&self, summary: &Summary, width: usize) -> Vec<BlockRow> {
+        let runs = vec![
+            (
+                self.look.bullet,
+                if summary.expanded { "▾" } else { "▸" }.to_string(),
+            ),
+            (self.look.base, format!(" {}", summary.label)),
+        ];
+        let indent = [(self.look.base, "  ".to_string())];
+        wrap(&runs, width, &indent)
+            .into_iter()
+            .map(|row| BlockRow {
+                line: to_line(row),
+                source: summary.lines.clone(),
+                details: Some(summary.id),
+            })
+            .collect()
+    }
+
     fn line_count(&self) -> usize {
         self.line_starts.len()
     }
@@ -889,6 +1006,11 @@ impl<'a> Doc<'a> {
         let mut out = Vec::new();
         let mut line = 0;
         while line < self.line_count() {
+            if let Some(summary) = self.summaries.get(&line) {
+                out.extend(self.summary_rows(summary, width));
+                line = summary.lines.end;
+                continue;
+            }
             if self.skip[line] {
                 line += 1;
                 continue;
@@ -936,6 +1058,7 @@ impl<'a> Doc<'a> {
                 out.push(BlockRow {
                     line: to_line(row),
                     source: source.clone(),
+                    details: None,
                 });
             }
             line = last + 1;
@@ -1110,7 +1233,7 @@ mod tests {
     use ratatui::style::{Color, Modifier};
 
     fn render(src: &str, width: usize) -> Vec<BlockRow> {
-        render_block(&Theme::dark(), src, width, &[])
+        render_block(&Theme::dark(), src, width, &[], &BTreeSet::new())
     }
 
     fn text(row: &BlockRow) -> String {
@@ -1545,7 +1668,7 @@ mod tests {
 
     #[test]
     fn should_keep_raw_html_as_dimmed_text_line_for_line() {
-        let src = "<details>\n<summary>More</summary>\n</details>";
+        let src = "<div>\n<p>More</p>\n</div>";
         let rows = render(src, 40);
 
         assert_eq!(texts(&rows), src.split('\n').collect::<Vec<_>>());
@@ -1570,7 +1693,13 @@ mod tests {
         let src = "Before:\n![img](https://x.test/i.png)\nAfter:";
         let theme = Theme::dark();
 
-        let rows = render_block(&theme, src, 40, std::slice::from_ref(&(1..2)));
+        let rows = render_block(
+            &theme,
+            src,
+            40,
+            std::slice::from_ref(&(1..2)),
+            &BTreeSet::new(),
+        );
         assert_eq!(
             text_and_source(&rows),
             [
@@ -1580,7 +1709,7 @@ mod tests {
             ]
         );
 
-        let rows = render_block(&theme, src, 40, &[]);
+        let rows = render_block(&theme, src, 40, &[], &BTreeSet::new());
         assert_eq!(
             text_and_source(&rows),
             [("Before: ▣ img After:".to_string(), 0..3)]
@@ -1594,6 +1723,7 @@ mod tests {
             "```\ncode\n```",
             40,
             std::slice::from_ref(&(0..1)),
+            &BTreeSet::new(),
         );
 
         let sources: Vec<Range<usize>> = rows.iter().map(|r| r.source.clone()).collect();
@@ -1604,14 +1734,14 @@ mod tests {
     fn should_derive_chip_and_border_colours_from_a_light_theme() {
         let light = Theme::light();
 
-        let chip = render_block(&light, "`x`", 40, &[]);
+        let chip = render_block(&light, "`x`", 40, &[], &BTreeSet::new());
         for s in styles_of(&chip[0], " x ") {
             assert_eq!(s.bg, Some(light.bg_highlight));
             assert_ne!(s.bg, Some(light.panel_bg));
             assert!(s.fg.is_some() && s.fg != s.bg, "{s:?}");
         }
 
-        let rule = render_block(&light, "---", 40, &[]);
+        let rule = render_block(&light, "---", 40, &[], &BTreeSet::new());
         assert!(
             styles_of(&rule[0], "─")
                 .iter()
@@ -1668,7 +1798,7 @@ mod tests {
                     .chain(cjk)
                 {
                     for keep_apart in [&[][..], std::slice::from_ref(&(1..2))] {
-                        for row in render_block(&theme, src, width, keep_apart) {
+                        for row in render_block(&theme, src, width, keep_apart, &BTreeSet::new()) {
                             if prose {
                                 assert!(
                                     row_width(&row) <= width,
@@ -1818,5 +1948,320 @@ mod tests {
             ["│ foo", "│ ~ bar"]
         );
         assert_eq!(texts_trimmed(&render("````\nx\n```", 30)), ["│ x", "│ ```"]);
+    }
+
+    /// A table with a header and 40 rows, `| f00.rs | 0 |` to `| f39.rs | 39 |`.
+    fn table() -> String {
+        let mut lines = vec![
+            "| File | Lines |".to_string(),
+            "|------|-------|".to_string(),
+        ];
+        lines.extend((0..40).map(|i| format!("| f{i:02}.rs | {i} |")));
+        lines.join("\n")
+    }
+
+    /// The table inside a `<details>` section whose opening tag is `open_tag`,
+    /// with a summary of "Coverage report", between two paragraphs.
+    fn coverage_with(open_tag: &str) -> String {
+        [
+            "Intro",
+            "",
+            open_tag,
+            "<summary>Coverage report</summary>",
+            "",
+            &table(),
+            "",
+            "</details>",
+            "",
+            "Outro",
+        ]
+        .join("\n")
+    }
+
+    fn coverage() -> String {
+        coverage_with("<details>")
+    }
+
+    fn render_toggled(src: &str, width: usize, toggled: &[usize]) -> Vec<BlockRow> {
+        let toggled: BTreeSet<usize> = toggled.iter().copied().collect();
+        render_block(&Theme::dark(), src, width, &[], &toggled)
+    }
+
+    fn details_of(rows: &[BlockRow]) -> Vec<Option<usize>> {
+        rows.iter().map(|r| r.details).collect()
+    }
+
+    #[test]
+    fn should_collapse_a_details_section_to_its_summary_row_by_default() {
+        let rows = render_toggled(&coverage(), 40, &[]);
+
+        assert_eq!(
+            texts_trimmed(&rows),
+            ["Intro", "", "▸ Coverage report", "", "Outro"]
+        );
+        assert_eq!(details_of(&rows), [None, None, Some(0), None, None]);
+        assert_eq!(rows[2].source, 2..4);
+    }
+
+    /// Case 2's rows: `src` with the coverage section expanded.
+    fn assert_coverage_expanded(rows: &[BlockRow]) {
+        let table_rows = texts_trimmed(&render_toggled(&table(), 40, &[]));
+        assert!(table_rows.len() >= 41, "table rows: {table_rows:?}");
+        let mut expected: Vec<String> = ["Intro", "", "▾ Coverage report", ""]
+            .map(String::from)
+            .to_vec();
+        expected.extend(table_rows);
+        expected.extend(["", "Outro"].map(String::from));
+
+        assert_eq!(texts_trimmed(rows), expected);
+    }
+
+    #[test]
+    fn should_expand_a_toggled_section_to_render_its_body() {
+        let rows = render_toggled(&coverage(), 40, &[0]);
+
+        assert_coverage_expanded(&rows);
+    }
+
+    #[test]
+    fn should_start_an_open_section_expanded_and_collapse_it_when_toggled() {
+        let open = coverage_with("<details open>");
+
+        let rows = render_toggled(&open, 40, &[]);
+        assert_eq!(text(&rows[2]).trim_end(), "▾ Coverage report");
+        assert_eq!(
+            texts_trimmed(&rows),
+            texts_trimmed(&render_toggled(&coverage(), 40, &[0]))
+        );
+
+        assert_eq!(
+            texts_trimmed(&render_toggled(&open, 40, &[0])),
+            texts_trimmed(&render_toggled(&coverage(), 40, &[]))
+        );
+    }
+
+    #[test]
+    fn should_read_open_as_an_attribute_not_a_substring() {
+        let rows = render_toggled(&coverage_with(r#"<details class="opener">"#), 40, &[]);
+
+        assert_eq!(text(&rows[2]).trim_end(), "▸ Coverage report");
+    }
+
+    #[test]
+    fn should_toggle_nested_sections_independently_and_hide_the_inner_under_a_collapsed_outer() {
+        let src = [
+            "<details>",
+            "<summary>Outer</summary>",
+            "",
+            "Outer body",
+            "",
+            "<details>",
+            "<summary>Inner</summary>",
+            "",
+            "Inner body",
+            "",
+            "</details>",
+            "",
+            "</details>",
+        ]
+        .join("\n");
+
+        assert_eq!(texts_trimmed(&render_toggled(&src, 40, &[])), ["▸ Outer"]);
+
+        let rows = render_toggled(&src, 40, &[0]);
+        assert_eq!(
+            texts_trimmed(&rows),
+            ["▾ Outer", "", "Outer body", "", "▸ Inner"]
+        );
+        assert_eq!(rows[4].details, Some(1));
+
+        assert_eq!(
+            texts_trimmed(&render_toggled(&src, 40, &[0, 1])),
+            ["▾ Outer", "", "Outer body", "", "▾ Inner", "", "Inner body"]
+        );
+        assert_eq!(texts_trimmed(&render_toggled(&src, 40, &[1])), ["▸ Outer"]);
+    }
+
+    #[test]
+    fn should_label_a_section_without_a_summary_details() {
+        let rows = render_toggled("<details>\n\nBody\n\n</details>", 40, &[]);
+
+        assert_eq!(texts_trimmed(&rows), ["▸ Details"]);
+    }
+
+    #[test]
+    fn should_strip_tags_and_collapse_whitespace_in_the_summary_label() {
+        let src = "<details><summary><b>Logs</b>  for   run</summary>\n\nBody\n\n</details>";
+
+        assert_eq!(
+            texts_trimmed(&render_toggled(src, 40, &[])),
+            ["▸ Logs for run"]
+        );
+    }
+
+    #[test]
+    fn should_label_a_section_with_an_empty_summary_details() {
+        let src = "<details><summary> </summary>\n\nBody\n\n</details>";
+
+        assert_eq!(texts_trimmed(&render_toggled(src, 40, &[])), ["▸ Details"]);
+    }
+
+    #[test]
+    fn should_close_a_section_on_its_header_line_with_an_empty_body() {
+        let src = "<details><summary>X</summary>hidden</details>\n\nAfter";
+
+        assert_eq!(
+            texts_trimmed(&render_toggled(src, 40, &[])),
+            ["▸ X", "", "After"]
+        );
+        assert_eq!(
+            texts_trimmed(&render_toggled(src, 40, &[0])),
+            ["▾ X", "", "After"]
+        );
+    }
+
+    #[test]
+    fn should_show_the_next_sections_summary_on_a_line_it_shares_with_a_close() {
+        let src = "<details><summary>A</summary>\n\na body\n\n</details><details><summary>B</summary>\n\nb body\n\n</details>";
+
+        let rows = render_toggled(src, 40, &[]);
+        assert_eq!(texts_trimmed(&rows), ["▸ A", "▸ B"]);
+        assert_eq!(details_of(&rows), [Some(0), Some(1)]);
+
+        assert_eq!(
+            texts_trimmed(&render_toggled(src, 40, &[1])),
+            ["▸ A", "▾ B", "", "b body"]
+        );
+    }
+
+    #[test]
+    fn should_take_a_summary_block_separated_by_blank_lines_as_the_header() {
+        let src = "<details>\n\n<summary>X</summary>\n\nBody\n\n</details>";
+
+        assert_eq!(texts_trimmed(&render_toggled(src, 40, &[])), ["▸ X"]);
+        assert_eq!(
+            texts_trimmed(&render_toggled(src, 40, &[0])),
+            ["▾ X", "", "Body"]
+        );
+    }
+
+    #[test]
+    fn should_render_an_unclosed_section_as_source() {
+        let rows = render_toggled("<details>\n<summary>X</summary>\n\nBody", 40, &[]);
+
+        assert_eq!(
+            texts_trimmed(&rows),
+            ["<details>", "<summary>X</summary>", "", "Body"]
+        );
+        assert!(rows.iter().all(|r| r.details.is_none()));
+    }
+
+    #[test]
+    fn should_never_open_a_section_from_an_html_comment() {
+        let rows = render_toggled("<!-- wrap logs in <details> -->\n\nBody", 40, &[]);
+
+        assert!(rows.iter().all(|r| r.details.is_none()));
+        assert_eq!(rows.last().map(text).as_deref(), Some("Body"));
+    }
+
+    #[test]
+    fn should_never_open_a_section_inside_a_comment_or_pre_block() {
+        for src in [
+            "<!-- </details><details><summary>X</summary></details> -->\n\nBody",
+            "<pre>\n<details><summary>X</summary></details>\n</pre>\n\nBody",
+        ] {
+            let rows = render_toggled(src, 40, &[]);
+
+            assert!(rows.iter().all(|r| r.details.is_none()), "{src:?}");
+        }
+    }
+
+    #[test]
+    fn should_never_open_a_section_from_code() {
+        for src in [
+            "```\n<details>\n<summary>X</summary>\n```\n\nAfter",
+            "`<details>` inline\n\nAfter",
+        ] {
+            let rows = render_toggled(src, 40, &[]);
+
+            assert!(rows.iter().all(|r| r.details.is_none()), "{src:?}");
+            assert_eq!(rows.last().map(text).as_deref(), Some("After"), "{src:?}");
+        }
+    }
+
+    #[test]
+    fn should_wrap_a_long_summary_under_its_label_with_every_row_on_the_section() {
+        let src = "<details><summary>alpha beta gamma</summary>\n\nBody\n\n</details>";
+
+        let rows = render_toggled(src, 12, &[]);
+        assert_eq!(texts_trimmed(&rows), ["▸ alpha beta", "  gamma"]);
+        assert_eq!(details_of(&rows), [Some(0), Some(0)]);
+        assert_eq!(rows[0].source, rows[1].source);
+    }
+
+    #[test]
+    fn should_draw_the_marker_in_bullet_style_and_the_label_in_base_style() {
+        let theme = Theme::dark();
+        let look = Look::new(&theme);
+        let rows = render_block(&theme, &coverage(), 40, &[], &BTreeSet::new());
+
+        assert_eq!(styles_of(&rows[2], "▸"), [look.bullet]);
+        assert!(
+            styles_of(&rows[2], "Coverage report")
+                .iter()
+                .all(|style| *style == look.base)
+        );
+    }
+
+    #[test]
+    fn should_give_a_kept_apart_range_inside_a_collapsed_section_no_anchor_row() {
+        let theme = Theme::dark();
+        let src = "<details>\n<summary>S</summary>\n\n![a](https://x.test/a.png)\n\n</details>";
+        let keep_apart = std::slice::from_ref(&(3..4));
+
+        let rows = render_block(&theme, src, 40, keep_apart, &BTreeSet::new());
+        assert_eq!(texts_trimmed(&rows), ["▸ S"]);
+        assert!(rows.iter().all(|r| r.source != (3..4)));
+
+        let rows = render_block(&theme, src, 40, keep_apart, &BTreeSet::from([0]));
+        assert!(rows.iter().any(|r| r.source == (3..4)));
+    }
+
+    #[test]
+    fn should_anchor_a_kept_apart_range_overlapping_a_header_after_the_summary_row() {
+        let rows = render_block(
+            &Theme::dark(),
+            "<details>\n<summary>Shot</summary>\n\nBody\n\n</details>",
+            40,
+            std::slice::from_ref(&(0..1)),
+            &BTreeSet::new(),
+        );
+
+        assert_eq!(
+            text_and_source(&rows),
+            [("▸ Shot".to_string(), 0..2), (String::new(), 0..1)]
+        );
+    }
+
+    #[test]
+    fn should_fold_a_section_in_a_crlf_body() {
+        let src = "<details>\r\n<summary>X</summary>\r\n\r\nBody\r\n\r\n</details>";
+
+        assert_eq!(texts_trimmed(&render_toggled(src, 40, &[])), ["▸ X"]);
+        assert_eq!(
+            texts_trimmed(&render_toggled(src, 40, &[0])),
+            ["▾ X", "", "Body"]
+        );
+    }
+
+    #[test]
+    fn should_ignore_a_toggled_id_that_names_no_section() {
+        let rows = render_toggled(&coverage(), 40, &[7]);
+
+        assert_eq!(
+            texts_trimmed(&rows),
+            ["Intro", "", "▸ Coverage report", "", "Outro"]
+        );
+        assert_eq!(details_of(&rows), [None, None, Some(0), None, None]);
     }
 }

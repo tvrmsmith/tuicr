@@ -1,3 +1,5 @@
+use std::collections::BTreeSet;
+
 use ratatui::{
     Frame,
     layout::{Constraint, Flex, Layout, Rect},
@@ -468,6 +470,7 @@ pub(crate) fn markdown_body_line_groups(
             out.push(BlockRow {
                 line: Line::from(highlighted_window_spans(runs, text, seg_start, seg_end)),
                 source: idx..idx + 1,
+                details: None,
             });
             seg_start = seg_end;
         }
@@ -490,7 +493,7 @@ pub(crate) fn comment_body_rows(
     // one so the terminal cursor at end-of-segment stays clear of the border.
     let content_area = box_width.saturating_sub(BORDER_PREFIX_WIDTH + 2);
     if render_markdown {
-        markdown_render::render_block(theme, content, content_area, &[])
+        markdown_render::render_block(theme, content, content_area, &[], &BTreeSet::new())
     } else {
         markdown_body_line_groups(theme, content, content_area)
     }

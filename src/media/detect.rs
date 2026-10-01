@@ -33,7 +33,8 @@ fn is_media_only(rest: &str) -> bool {
         .all(|line| without_line_markers(line).is_empty())
 }
 
-fn without_html_tags(text: &str) -> String {
+/// `text` with its HTML tags cut out; a `<` that opens no tag stays.
+pub(crate) fn without_html_tags(text: &str) -> String {
     let mut kept = String::new();
     let mut at = 0;
     for tag in tag_spans(text, 0..text.len()) {
@@ -262,7 +263,7 @@ impl OpenVideo {
 
 /// The byte ranges of the tags inside `block`, each running `<` through the
 /// `>` that closes it outside any quoted attribute value.
-fn tag_spans(body: &str, block: Range<usize>) -> Vec<Range<usize>> {
+pub(crate) fn tag_spans(body: &str, block: Range<usize>) -> Vec<Range<usize>> {
     let bytes = body.as_bytes();
     let mut spans = Vec::new();
     let mut at = block.start;
@@ -289,16 +290,16 @@ fn tag_spans(body: &str, block: Range<usize>) -> Vec<Range<usize>> {
 }
 
 /// One HTML tag, lowercased name and attributes as written.
-struct HtmlTag<'a> {
-    name: String,
+pub(crate) struct HtmlTag<'a> {
+    pub(crate) name: String,
     /// A close tag such as `</video>`.
-    closing: bool,
+    pub(crate) closing: bool,
     attrs: Vec<(String, &'a str)>,
 }
 
 impl<'a> HtmlTag<'a> {
     /// Parses `text` when it is a single tag such as `<img src=x alt="y">`.
-    fn parse(text: &'a str) -> Option<Self> {
+    pub(crate) fn parse(text: &'a str) -> Option<Self> {
         let inner = text.trim().strip_prefix('<')?.strip_suffix('>')?;
         let inner = inner.strip_suffix('/').unwrap_or(inner);
         let (closing, inner) = match inner.strip_prefix('/') {
@@ -320,7 +321,7 @@ impl<'a> HtmlTag<'a> {
         })
     }
 
-    fn attr(&self, name: &str) -> Option<&'a str> {
+    pub(crate) fn attr(&self, name: &str) -> Option<&'a str> {
         self.attrs
             .iter()
             .find(|(key, _)| key == name)
