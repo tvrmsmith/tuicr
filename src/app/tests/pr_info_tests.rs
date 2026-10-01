@@ -677,6 +677,28 @@ fn press_enter_at(app: &mut App, line: usize) {
 }
 
 #[test]
+fn enter_on_the_summary_row_rebuilds_annotations_before_the_next_frame() {
+    let mut app = coverage_app(false);
+    let panel_annotations = |app: &App| {
+        app.line_annotations
+            .iter()
+            .filter(|line| matches!(line, crate::app::AnnotatedLine::PrInfoLine { .. }))
+            .count()
+    };
+    let collapsed = panel_annotations(&app);
+
+    app.diff_state.cursor_line = 3;
+    crate::handler::handle_diff_action(&mut app, crate::input::Action::SelectFile);
+
+    let expanded = panel_annotations(&app);
+    assert!(expanded > collapsed, "{collapsed} -> {expanded}");
+    assert_eq!(
+        expanded,
+        crate::ui::pr_info_panel::pr_info_render_height(&app)
+    );
+}
+
+#[test]
 fn details_section_is_collapsed_by_default() {
     let mut app = coverage_app(false);
 
