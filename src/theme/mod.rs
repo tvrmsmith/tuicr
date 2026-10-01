@@ -2013,6 +2013,14 @@ pub fn resolve_appearance_arg_with_config(
 fn is_dark_color(c: Color) -> bool {
     match c {
         Color::Rgb(r, g, b) => (u16::from(r) + u16::from(g) + u16::from(b)) / 3 < 128,
+        Color::White
+        | Color::Gray
+        | Color::LightRed
+        | Color::LightGreen
+        | Color::LightYellow
+        | Color::LightBlue
+        | Color::LightMagenta
+        | Color::LightCyan => false,
         _ => true,
     }
 }
@@ -2643,6 +2651,51 @@ mode_bg = "#82aaff"
             theme.panel_bg = Color::Reset;
             assert_eq!(theme.is_dark(), dark, "{name}");
         }
+    }
+
+    #[test]
+    fn should_classify_light_named_colors_as_light() {
+        let light = [
+            Color::White,
+            Color::Gray,
+            Color::LightRed,
+            Color::LightGreen,
+            Color::LightYellow,
+            Color::LightBlue,
+            Color::LightMagenta,
+            Color::LightCyan,
+        ];
+        let dark = [
+            Color::Reset,
+            Color::Black,
+            Color::DarkGray,
+            Color::Red,
+            Color::Blue,
+            Color::Indexed(255),
+        ];
+        assert!(light.iter().all(|&c| !is_dark_color(c)), "{light:?}");
+        assert!(dark.iter().all(|&c| is_dark_color(c)), "{dark:?}");
+    }
+
+    #[test]
+    fn should_derive_the_chip_for_a_local_theme_with_a_named_light_highlight() {
+        let dir = tempdir().expect("failed to create temp dir");
+        let body = sample_local_theme_body("")
+            .replace(r##"panel_bg = "#011627""##, r##"panel_bg = "#fafafa""##)
+            .replace(r##"bg_highlight = "#1d3b53""##, r#"bg_highlight = "white""#);
+        let path = write_local_theme(dir.path(), "local-paper", &body);
+        let (mut theme, _) =
+            load_local_theme_from_path(&path).expect("local theme should load successfully");
+        theme.panel_bg = Color::Reset;
+
+        let rows = crate::syntax::markdown_render::render_block(&theme, "`x`", 20, &[]);
+        let chip = rows[0]
+            .line
+            .spans
+            .iter()
+            .find(|span| span.content.contains('x'))
+            .expect("span holding the chip");
+        assert_eq!(chip.style.bg, Some(Color::White));
     }
 
     #[test]

@@ -103,6 +103,10 @@ struct Look {
     quote_text: Style,
 }
 
+/// glow's inline code chip on a dark theme, in 256-colour.
+pub(crate) const GLOW_CHIP_FG: Color = Color::Indexed(203);
+pub(crate) const GLOW_CHIP_BG: Color = Color::Indexed(236);
+
 impl Look {
     fn new(theme: &Theme) -> Self {
         let palette = &theme.syntax_highlighter().markdown_palette;
@@ -115,9 +119,7 @@ impl Look {
             // glow's chip. Its dark gray would blot a light panel, so light
             // themes derive theirs.
             chip: if theme.is_dark() {
-                Style::default()
-                    .fg(Color::Indexed(203))
-                    .bg(Color::Indexed(236))
+                Style::default().fg(GLOW_CHIP_FG).bg(GLOW_CHIP_BG)
             } else {
                 palette.code.bg(theme.bg_highlight)
             },
@@ -1302,12 +1304,10 @@ mod tests {
         assert!(
             styles_of(&row, "code")
                 .iter()
-                .all(|s| s.fg == Some(Color::Indexed(203)))
+                .all(|s| s.fg == Some(GLOW_CHIP_FG))
         );
-        assert_ne!(code_fg(&theme), Some(Color::Indexed(203)));
+        assert_ne!(code_fg(&theme), Some(GLOW_CHIP_FG));
     }
-
-    const GLOW_CHIP_BG: Color = Color::Indexed(236);
 
     fn row_width(row: &BlockRow) -> usize {
         row.line.width()
@@ -1456,6 +1456,21 @@ mod tests {
         assert_eq!(fit_columns(&[30, 20, 2], 32), [12, 12, 2]);
         assert_eq!(fit_columns(&[30, 21, 2], 33), [13, 12, 2]);
         assert_eq!(fit_columns(&[9, 9, 9], 4), [1, 1, 1]);
+    }
+
+    #[test]
+    fn should_wrap_table_rows_again_when_one_cell_per_column_overflows() {
+        let rows = render("| aaaa | bbbb | cccc |\n|---|---|---|\n| x | y | z |", 4);
+
+        let texts: Vec<String> = rows.iter().map(text).collect();
+        assert!(rows.iter().all(|row| row_width(row) <= 4), "{texts:?}");
+        let cells: String = texts
+            .concat()
+            .chars()
+            .filter(|c| c.is_alphanumeric())
+            .collect();
+        assert_eq!(cells, "abcabcabcabcxyz");
+        assert_eq!(texts.concat().matches('│').count(), 2 * 5, "{texts:?}");
     }
 
     #[test]

@@ -11,6 +11,7 @@ use crate::forge::traits::{
     PullRequestIssueComment, PullRequestReviewStatus,
 };
 use crate::model::{DiffFile, FileStatus, ReviewSession, SessionDiffSource};
+use crate::syntax::markdown_render::{GLOW_CHIP_BG, GLOW_CHIP_FG};
 use crate::theme::Theme;
 use crate::vcs::traits::VcsType;
 use crate::vcs::{PrNoopVcs, VcsInfo};
@@ -494,13 +495,13 @@ fn should_draw_inline_code_as_the_glow_chip_on_a_dark_theme() {
     let buffer = draw_body("run `make_check` before merging", true);
     let (left, chip, right) = chip_cells(&buffer, "make_check");
 
-    assert_eq!(chip.fg, Color::Indexed(203));
-    assert_eq!(chip.bg, Color::Indexed(236));
+    assert_eq!(chip.fg, GLOW_CHIP_FG);
+    assert_eq!(chip.bg, GLOW_CHIP_BG);
     for pad in [&left, &right] {
         assert_eq!(pad.symbol(), " ");
-        assert_eq!(pad.bg, Color::Indexed(236));
+        assert_eq!(pad.bg, GLOW_CHIP_BG);
     }
-    assert_ne!(plain.bg, Color::Indexed(236));
+    assert_ne!(plain.bg, GLOW_CHIP_BG);
 }
 
 #[test]
