@@ -394,7 +394,7 @@ struct MediaBlock {
 /// starting inside a block's covered lines (an `<img>` within a multi-line
 /// `<video>`) joins the block, and inline media on a media-only line joins it
 /// too; skipping either would stall every later entry.
-fn plan_media(media: &[MediaLine]) -> (Vec<MediaBlock>, Vec<(usize, usize)>) {
+fn plan_media(media: &[&MediaLine]) -> (Vec<MediaBlock>, Vec<(usize, usize)>) {
     let mut blocks = Vec::new();
     let mut inline = Vec::new();
     let mut idx = 0usize;
@@ -443,7 +443,22 @@ fn push_body_rows(
     render: BodyRender,
 ) {
     let media = pr_body_media(info);
-    let (blocks, inline) = plan_media(&media);
+    let collapsed = match render {
+        BodyRender::Markdown { toggled } => markdown_render::collapsed_details(body, toggled),
+        BodyRender::Source => Vec::new(),
+    };
+    // Each shown entry keeps its index into `pr_body_media`, the list the
+    // media viewer opens by.
+    let shown: Vec<(usize, &MediaLine)> = media
+        .iter()
+        .enumerate()
+        .filter(|(_, entry)| !collapsed.iter().any(|body| body.contains(&entry.start)))
+        .collect();
+    let placeholder = |pos: usize| {
+        let (idx, entry) = shown[pos];
+        placeholder_row(theme, idx, &entry.media, content_width)
+    };
+    let (blocks, inline) = plan_media(&shown.iter().map(|&(_, entry)| entry).collect::<Vec<_>>());
     let body_rows = if let BodyRender::Markdown { toggled } = render {
         let apart: Vec<Range<usize>> = blocks.iter().map(|block| block.lines.clone()).collect();
         markdown_render::render_block(theme, body, content_width, &apart, toggled)
@@ -452,44 +467,39 @@ fn push_body_rows(
     };
 
     let mut inline_after: Vec<Vec<usize>> = vec![Vec::new(); body_rows.len()];
-    for (line, media_idx) in inline {
-        let anchor = body_rows.iter().rposition(|row| row.source.contains(&line));
-        // Media after a summary row's header is section body, which shows
-        // as its own row only while the section is expanded.
-        let anchor = anchor.filter(|&at| {
-            body_rows[at]
-                .details
-                .is_none_or(|details| media[media_idx].start < details.header_end)
+    for (line, pos) in inline {
+        let start = shown[pos].1.start;
+        // A summary row stands only for its header, so media elsewhere on
+        // the header's lines follows the row of the body it sits in.
+        let anchor = body_rows.iter().rposition(|row| {
+            row.source.contains(&line)
+                && row
+                    .details
+                    .as_ref()
+                    .is_none_or(|details| details.header.contains(&start))
         });
         if let Some(anchor) = anchor {
-            inline_after[anchor].push(media_idx);
+            inline_after[anchor].push(pos);
         }
     }
 
     let mut pending = blocks.iter().peekable();
     let push_block = |rows: &mut Vec<PrInfoRow>, block: &MediaBlock| {
-        for idx in block.media.clone() {
-            rows.push(placeholder_row(
-                theme,
-                idx,
-                &media[idx].media,
-                content_width,
-            ));
-        }
+        rows.extend(block.media.clone().map(placeholder));
     };
     let details_ids: Vec<Option<usize>> = body_rows
         .iter()
-        .map(|row| row.details.map(|details| details.id))
+        .map(|row| row.details.as_ref().map(|details| details.id))
         .collect();
     let mut skip_until = 0usize;
-    for (pos, (row, after)) in body_rows.into_iter().zip(inline_after).enumerate() {
-        // A block no row started inside has nothing to replace: a collapsed
-        // `<details>` section hid its lines.
+    for (at, (row, after)) in body_rows.into_iter().zip(inline_after).enumerate() {
+        // A block no row started inside has nothing to replace, such as
+        // media after a collapsed section's `</details>` on its line.
         while pending
             .next_if(|block| block.lines.end <= row.source.start)
             .is_some()
         {}
-        let summary = details_ids[pos];
+        let summary = details_ids[at];
         if summary.is_none() {
             while let Some(block) = pending.next_if(|block| block.lines.start <= row.source.start) {
                 push_block(rows, block);
@@ -504,20 +514,13 @@ fn push_body_rows(
             action: summary.map(RowAction::Details),
         });
         // A media block covering a header lands after its last summary row.
-        if summary.is_some() && details_ids.get(pos + 1) != Some(&summary) {
+        if summary.is_some() && details_ids.get(at + 1) != Some(&summary) {
             while let Some(block) = pending.next_if(|block| block.lines.start <= row.source.start) {
                 push_block(rows, block);
                 skip_until = block.lines.end;
             }
         }
-        for idx in after {
-            rows.push(placeholder_row(
-                theme,
-                idx,
-                &media[idx].media,
-                content_width,
-            ));
-        }
+        rows.extend(after.into_iter().map(placeholder));
     }
 }
 
@@ -1158,6 +1161,70 @@ mod tests {
                 row("▾ Before", Some(RowAction::Details(0))),
                 row("<img src=\"https://x.test/x.png\" alt=\"x\">", None),
                 row("[image: x]", Some(RowAction::Media(0)))
+            ]
+        );
+    }
+
+    #[test]
+    fn media_after_a_collapsed_summary_stays_hidden_beside_a_sibling_on_its_line() {
+        let body = "<details><summary>A</summary><img src=\"https://x.test/a.png\" alt=\"a\"></details><details><summary>B</summary>\nb\n</details>";
+
+        assert_eq!(
+            rendered(body),
+            vec![
+                row("▸ A", Some(RowAction::Details(0))),
+                row("▸ B", Some(RowAction::Details(1)))
+            ]
+        );
+        assert_eq!(
+            rendered_toggled(body, &[1]),
+            vec![
+                row("▸ A", Some(RowAction::Details(0))),
+                row("▾ B", Some(RowAction::Details(1))),
+                row("b", None)
+            ]
+        );
+    }
+
+    #[test]
+    fn media_only_header_line_shows_its_placeholder_only_while_expanded() {
+        let img = "<img src=\"https://x.test/x.png\" alt=\"x\">";
+        for body in [
+            format!("<details>{img}</details>"),
+            format!("<details><summary></summary>{img}</details>"),
+            format!("<details>\n<summary></summary>{img}\n</details>"),
+        ] {
+            assert_eq!(
+                rendered(&body),
+                vec![row("▸ Details", Some(RowAction::Details(0)))],
+                "{body}"
+            );
+            assert_eq!(
+                rendered_toggled(&body, &[0]),
+                vec![
+                    row("▾ Details", Some(RowAction::Details(0))),
+                    row("[image: x]", Some(RowAction::Media(0)))
+                ],
+                "{body}"
+            );
+        }
+    }
+
+    #[test]
+    fn media_in_a_parent_tail_follows_the_tail_not_a_nested_summary() {
+        let body = "<details><summary>A</summary><img src=\"https://x.test/a.png\" alt=\"a\"><details><summary>B</summary>\nbody\n</details>\n</details>";
+
+        assert_eq!(
+            rendered(body),
+            vec![row("▸ A", Some(RowAction::Details(0)))]
+        );
+        assert_eq!(
+            rendered_toggled(body, &[0]),
+            vec![
+                row("▾ A", Some(RowAction::Details(0))),
+                row("<img src=\"https://x.test/a.png\" alt=\"a\">", None),
+                row("[image: a]", Some(RowAction::Media(0))),
+                row("▸ B", Some(RowAction::Details(1)))
             ]
         );
     }

@@ -1,5 +1,6 @@
 //! GitHub's collapsible `<details>` sections, found in a body's HTML blocks.
 
+use std::collections::BTreeSet;
 use std::ops::Range;
 
 use crate::media::detect::{HtmlTag, tag_spans, without_html_tags};
@@ -21,6 +22,14 @@ pub(super) struct Section {
     /// The id of the section this one sits inside. A parent missing from
     /// the result never closed, and neither did any section around it.
     pub parent: Option<usize>,
+}
+
+impl Section {
+    /// Whether the section renders expanded: open by default unless
+    /// `toggled` names it, or collapsed by default and named.
+    pub fn expanded(&self, toggled: &BTreeSet<usize>) -> bool {
+        self.open != toggled.contains(&self.id)
+    }
 }
 
 /// The sections opened by tags in `blocks`, the byte ranges of the source's

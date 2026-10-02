@@ -42,13 +42,13 @@ pub(crate) struct BlockRow {
 }
 
 /// The `<details>` section a summary row stands for.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Details {
     /// The opening tag's order in the source from 0 (nested sections included).
     pub id: usize,
-    /// Byte where the header ends. Markup after it on the header's last line
-    /// is section body, shown only while the section is expanded.
-    pub header_end: usize,
+    /// The header's bytes, the `<details>` tag through its `</summary>`.
+    /// Markup after it on the header's last line is section body.
+    pub header: Range<usize>,
 }
 
 /// Render `src` as reflowed markdown rows no wider than `width` columns
@@ -119,6 +119,23 @@ pub(crate) fn render_block(
         );
     }
     rows
+}
+
+/// The bodies of the `<details>` sections `render_block` collapses for
+/// `toggled`, in source bytes: each runs from its header's end to its
+/// `</details>` and covers any section nested inside. Markup starting in
+/// one renders no row, so a caller placing its own rows for that markup
+/// (media placeholders) drops it.
+pub(crate) fn collapsed_details(src: &str, toggled: &BTreeSet<usize>) -> Vec<Range<usize>> {
+    let html_blocks: Vec<Range<usize>> = Parser::new_ext(src, parse_options())
+        .into_offset_iter()
+        .filter_map(|(event, r)| matches!(event, Event::Start(Tag::HtmlBlock)).then_some(r))
+        .collect();
+    details::sections(src, &html_blocks)
+        .into_iter()
+        .filter(|section| !section.expanded(toggled))
+        .map(|section| section.header.end..section.close)
+        .collect()
 }
 
 struct Look {
@@ -304,8 +321,8 @@ struct Summary {
     lines: Range<usize>,
     label: String,
     expanded: bool,
-    /// Where the header ends in the source.
-    header_end: usize,
+    /// The header's bytes in the source.
+    header: Range<usize>,
     /// Body markup after the header on its last line, while expanded.
     tail: Option<Range<usize>>,
 }
@@ -342,12 +359,6 @@ impl<'a> Doc<'a> {
     }
 
     fn walk(&mut self, hl: &SyntaxHighlighter) {
-        let mut opts = Options::empty();
-        opts.insert(Options::ENABLE_STRIKETHROUGH);
-        opts.insert(Options::ENABLE_TABLES);
-        opts.insert(Options::ENABLE_TASKLISTS);
-        opts.insert(Options::ENABLE_GFM);
-
         let mut links: Vec<OpenLink> = Vec::new();
         // syntect state for the fenced block being walked, if its language is known.
         let mut code: Option<syntect::easy::HighlightLines> = None;
@@ -357,7 +368,7 @@ impl<'a> Doc<'a> {
         let mut text_end = 0;
         let mut table: Option<OpenTable> = None;
         let mut list_depth = 0usize;
-        let parser = Parser::new_ext(self.src, opts);
+        let parser = Parser::new_ext(self.src, parse_options());
         // Link reference definitions (`[d]: https://…`) emit no events; their
         // links already show the text, so the definition lines render nothing.
         let definitions: Vec<Range<usize>> = parser
@@ -853,7 +864,7 @@ impl<'a> Doc<'a> {
         let sections = details::sections(self.src, &self.html_blocks);
         let by_id: HashMap<usize, (Option<usize>, bool)> = sections
             .iter()
-            .map(|s| (s.id, (s.parent, s.open != toggled.contains(&s.id))))
+            .map(|s| (s.id, (s.parent, s.expanded(toggled))))
             .collect();
         // A section inside a collapsed one shows no summary row.
         let under_collapsed = |mut parent: Option<usize>| {
@@ -897,7 +908,7 @@ impl<'a> Doc<'a> {
                 lines: first..last + 1,
                 label: section.label.clone(),
                 expanded,
-                header_end: section.header.end,
+                header: section.header.clone(),
                 tail,
             };
             let key = match chain {
@@ -926,7 +937,7 @@ impl<'a> Doc<'a> {
                 source: summary.lines.clone(),
                 details: Some(Details {
                     id: summary.id,
-                    header_end: summary.header_end,
+                    header: summary.header.clone(),
                 }),
             })
             .collect()
@@ -1123,6 +1134,14 @@ impl<'a> Doc<'a> {
         }
         out
     }
+}
+
+/// The markdown extensions every pass over a body parses with.
+fn parse_options() -> Options {
+    Options::ENABLE_STRIKETHROUGH
+        | Options::ENABLE_TABLES
+        | Options::ENABLE_TASKLISTS
+        | Options::ENABLE_GFM
 }
 
 /// Drop leading and trailing blank rows and collapse runs of them to one.
@@ -2046,7 +2065,9 @@ mod tests {
     }
 
     fn details_of(rows: &[BlockRow]) -> Vec<Option<usize>> {
-        rows.iter().map(|r| r.details.map(|d| d.id)).collect()
+        rows.iter()
+            .map(|r| r.details.as_ref().map(|d| d.id))
+            .collect()
     }
 
     #[test]
@@ -2131,7 +2152,7 @@ mod tests {
             texts_trimmed(&rows),
             ["▾ Outer", "", "Outer body", "", "▸ Inner"]
         );
-        assert_eq!(rows[4].details.map(|d| d.id), Some(1));
+        assert_eq!(rows[4].details.as_ref().map(|d| d.id), Some(1));
 
         assert_eq!(
             texts_trimmed(&render_toggled(&src, 40, &[0, 1])),
