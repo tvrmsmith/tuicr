@@ -2327,12 +2327,23 @@ mod tests {
         for src in [
             "<!-- </details><details><summary>X</summary></details> -->\n\nBody",
             "<pre>\n<details><summary>X</summary></details>\n</pre>\n\nBody",
+            "<div>\n<!-- a -> <details><summary>X</summary></details> -->\n</div>\n\nBody",
         ] {
             let rows = render_toggled(src, 40, &[]);
 
             assert!(rows.iter().all(|r| r.details.is_none()), "{src:?}");
             assert_eq!(rows.last().map(text).as_deref(), Some("Body"), "{src:?}");
         }
+    }
+
+    #[test]
+    fn should_ignore_tags_in_a_comment_inside_a_section() {
+        let src = "<details>\n<summary>Log</summary>\n<!-- a -> <details> -->\n</details>\n\nBody";
+
+        let rows = render_toggled(src, 40, &[]);
+
+        assert_eq!(texts_trimmed(&rows), ["▸ Log", "", "Body"]);
+        assert_eq!(details_of(&rows), [Some(0), None, None]);
     }
 
     #[test]

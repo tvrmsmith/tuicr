@@ -39,7 +39,8 @@ pub(super) fn sections(src: &str, blocks: &[Range<usize>]) -> Vec<Section> {
     let tags: Vec<(Range<usize>, HtmlTag)> = blocks
         .iter()
         .filter(|block| !is_opaque(&src[(*block).clone()]))
-        .flat_map(|block| tag_spans(src, block.clone()))
+        .flat_map(|block| outside_comments(src, block.clone()))
+        .flat_map(|part| tag_spans(src, part))
         .filter_map(|span| HtmlTag::parse(&src[span.clone()]).map(|tag| (span, tag)))
         .collect();
     let mut found = Vec::new();
@@ -114,6 +115,24 @@ fn summary(
     let text = without_html_tags(&src[open.end..end.start]);
     let label = text.split_whitespace().collect::<Vec<_>>().join(" ");
     Some((close + 1, end.end, label))
+}
+
+/// The parts of `block` outside HTML comments, whose tags are text. Found
+/// before splitting tags because a `>` inside a comment would end it early.
+/// A comment with no `-->` runs to the block's end.
+fn outside_comments(src: &str, block: Range<usize>) -> Vec<Range<usize>> {
+    let mut parts = Vec::new();
+    let mut at = block.start;
+    while let Some(open) = src[at..block.end].find("<!--").map(|offset| at + offset) {
+        parts.push(at..open);
+        let text = open + "<!--".len();
+        let Some(close) = src[text..block.end].find("-->") else {
+            return parts;
+        };
+        at = text + close + "-->".len();
+    }
+    parts.push(at..block.end);
+    parts
 }
 
 /// Whether `block` is a comment or a `<pre>`, `<script>`, `<style>` or
