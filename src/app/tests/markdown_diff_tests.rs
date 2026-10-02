@@ -594,7 +594,7 @@ fn new_side_only(new: Vec<String>) -> Arc<FullText> {
     })
 }
 
-// 12b. A new side alone renders, with the old side rebuilt from the hunks.
+// A new side alone renders, with the old side rebuilt from the hunks.
 #[test]
 fn should_render_the_old_side_rebuilt_from_the_hunks_when_only_the_new_side_was_read() {
     let mut app = rendered_app(guide_files(Some(new_side_only(owned(&GUIDE_NEW)))));
@@ -608,7 +608,7 @@ fn should_render_the_old_side_rebuilt_from_the_hunks_when_only_the_new_side_was_
     assert_eq!(row_for_new(&buffer, 13).text, "Setup");
 }
 
-// 12c. A new side alone that disagrees with the hunks falls back to source.
+// A new side alone that disagrees with the hunks falls back to source.
 #[test]
 fn should_fall_back_to_source_when_a_lone_new_side_disagrees_with_the_hunks() {
     let mut new = owned(&GUIDE_NEW);
@@ -622,7 +622,7 @@ fn should_fall_back_to_source_when_a_lone_new_side_disagrees_with_the_hunks() {
     assert_eq!(row_for_new(&buffer, 13).text, "## Setup");
 }
 
-// 12d. A pure-deletion hunk (new count 0) rebuilds at the line it follows.
+// A pure-deletion hunk (new count 0) rebuilds at the line it follows.
 #[test]
 fn should_rebuild_the_old_side_around_a_hunk_that_deletes_without_adding() {
     let path = "docs/cut.md";
@@ -913,7 +913,7 @@ fn should_render_a_pr_markdown_file_on_the_first_draw_after_opening() {
     assert_eq!(requested, [(HEAD_SHA.to_string(), PathBuf::from(GUIDE))]);
 }
 
-// 14b. `--all-files` shows each file whole: an unchanged .md file renders.
+// `--all-files` shows each file whole: an unchanged .md file renders.
 fn pristine_notes_app(render: bool) -> (tempfile::TempDir, App) {
     let dir = tempfile::tempdir().expect("temp dir");
     let root = dir.path().canonicalize().expect("canonical temp dir");
@@ -1057,28 +1057,36 @@ fn preview_in_picker(app: &mut App, name: &str) {
 
 const OTHER_THEME: &str = "light";
 
+/// `theme`'s markdown heading colour, from its palette rather than the
+/// renderer under test.
+fn palette_heading_fg(theme: &Theme) -> ratatui::style::Color {
+    theme
+        .syntax_highlighter()
+        .markdown_heading_fg()
+        .expect("palette heading colour")
+}
+
+/// The colour the rendered setup heading (new line 13) is drawn in. An open
+/// theme picker covers the end of the row, so only its start is checked.
+fn drawn_heading_fg(app: &mut App) -> ratatui::style::Color {
+    let buffer = draw(app);
+    let heading = drawn_row_numbered(&buffer, 13);
+    assert_eq!(heading.text.split_whitespace().next(), Some("Setup"));
+    heading.cell_of(&buffer, "S").fg
+}
+
 #[test]
 fn should_keep_the_render_and_recolor_it_when_a_theme_is_confirmed() {
     let mut app = rendered_guide_app();
-    let dark_fg = {
-        let buffer = draw(&mut app);
-        let heading = drawn_row_numbered(&buffer, 13);
-        heading.cell_of(&buffer, "S").fg
-    };
+    let dark_fg = palette_heading_fg(&Theme::dark());
+    let light_fg = palette_heading_fg(&Theme::light());
+    assert_ne!(light_fg, dark_fg, "the themes must differ for this test");
+    assert_eq!(drawn_heading_fg(&mut app), dark_fg);
 
     preview_in_picker(&mut app, OTHER_THEME);
     app.confirm_theme_picker();
 
-    let buffer = draw(&mut app);
-    let heading = drawn_row_numbered(&buffer, 13);
-    assert_eq!(heading.text, "Setup");
-    let light_fg = crate::syntax::markdown_render::render_lines(&Theme::light(), "## Setup")[0]
-        .iter()
-        .find(|(_, text)| text.contains('S'))
-        .and_then(|(style, _)| style.fg)
-        .expect("light heading colour");
-    assert_ne!(light_fg, dark_fg);
-    assert_eq!(heading.cell_of(&buffer, "S").fg, light_fg);
+    assert_eq!(drawn_heading_fg(&mut app), light_fg);
 }
 
 #[test]
@@ -1097,19 +1105,19 @@ fn should_keep_the_current_markdown_file_rendered_when_a_theme_is_previewed() {
 #[test]
 fn should_keep_the_render_under_the_original_theme_when_the_picker_is_cancelled() {
     let mut app = rendered_guide_app();
-    let original_fg = {
-        let buffer = draw(&mut app);
-        let heading = drawn_row_numbered(&buffer, 13);
-        heading.cell_of(&buffer, "S").fg
-    };
+    let original_fg = palette_heading_fg(&Theme::dark());
+    let previewed_fg = palette_heading_fg(&Theme::light());
+    assert_ne!(
+        previewed_fg, original_fg,
+        "the themes must differ for this test"
+    );
+    assert_eq!(drawn_heading_fg(&mut app), original_fg);
 
     preview_in_picker(&mut app, OTHER_THEME);
+    assert_eq!(drawn_heading_fg(&mut app), previewed_fg);
     app.cancel_theme_picker();
 
-    let buffer = draw(&mut app);
-    let heading = drawn_row_numbered(&buffer, 13);
-    assert_eq!(heading.text, "Setup");
-    assert_eq!(heading.cell_of(&buffer, "S").fg, original_fg);
+    assert_eq!(drawn_heading_fg(&mut app), original_fg);
 }
 
 #[test]

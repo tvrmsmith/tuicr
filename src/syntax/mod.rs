@@ -146,6 +146,13 @@ impl SyntaxHighlighter {
         }
     }
 
+    /// The colour the markdown palette gives headings, for tests that check
+    /// rendered cells against the theme rather than the renderer.
+    #[cfg(test)]
+    pub(crate) fn markdown_heading_fg(&self) -> Option<Color> {
+        self.markdown_palette.heading.fg
+    }
+
     /// Highlight all lines in a file's content.
     ///
     /// Returns `None` when no syntax can be resolved for the file (by path or shebang).
