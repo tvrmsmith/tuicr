@@ -979,7 +979,13 @@ pub struct PrRangeReloadRequest {
 pub enum PrRangeReloadEvent {
     Done {
         request: PrRangeReloadRequest,
-        result: std::result::Result<Vec<crate::model::FilePatch>, String>,
+        result: std::result::Result<
+            (
+                Vec<crate::model::FilePatch>,
+                crate::forge::pr_open::UnreadableMarkdown,
+            ),
+            String,
+        >,
     },
 }
 

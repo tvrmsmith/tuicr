@@ -2202,6 +2202,7 @@ fn queue_pr_reload_result(app: &mut App, details: crate::forge::traits::PullRequ
             Vec::new(),
             PullRequestReviewMetadata::default(),
             crate::forge::traits::PullRequestInfo::from_details(details),
+            crate::forge::pr_open::UnreadableMarkdown::default(),
         )),
     })
     .unwrap();
@@ -2274,7 +2275,10 @@ fn should_drop_a_range_reload_that_lands_after_the_head_moved() {
     let (tx, rx) = std::sync::mpsc::channel();
     tx.send(PrRangeReloadEvent::Done {
         request: request.clone(),
-        result: Ok(structured_patch(&two_file_plus_added_patch())),
+        result: Ok((
+            structured_patch(&two_file_plus_added_patch()),
+            crate::forge::pr_open::UnreadableMarkdown::default(),
+        )),
     })
     .unwrap();
     app.pr_range_reload_state = Some(request);
@@ -2412,6 +2416,7 @@ fn should_hold_a_landed_head_move_reload_while_reviewer_starts_a_comment_mid_fet
             Vec::new(),
             PullRequestReviewMetadata::default(),
             crate::forge::traits::PullRequestInfo::from_details(details_b),
+            crate::forge::pr_open::UnreadableMarkdown::default(),
         )),
     })
     .unwrap();
@@ -2466,6 +2471,7 @@ fn should_hold_a_landed_head_move_reload_while_a_submit_is_in_flight() {
             Vec::new(),
             PullRequestReviewMetadata::default(),
             crate::forge::traits::PullRequestInfo::from_details(details_b),
+            crate::forge::pr_open::UnreadableMarkdown::default(),
         )),
     })
     .unwrap();
@@ -3358,6 +3364,7 @@ fn configured_comments_visibility_seeds_the_async_pr_open_path() {
             Vec::new(),
             crate::forge::traits::PullRequestReviewMetadata::default(),
             crate::forge::traits::PullRequestInfo::from_details(details.clone()),
+            crate::forge::pr_open::UnreadableMarkdown::default(),
         )),
     })
     .unwrap();
