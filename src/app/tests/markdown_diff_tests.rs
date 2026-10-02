@@ -368,7 +368,9 @@ fn drawn_row_numbered(buffer: &Buffer, n: u32) -> DrawnRow {
         .unwrap_or_else(|| panic!("no row numbered {n}"))
 }
 
-// With the full text attached: one row per line, a table header above the // hunk, a hunk inside a fence, headings and inline, diff colours, Added and // Deleted files, side-by-side.
+// With the full text attached: one row per line, a table header above the
+// hunk, a hunk inside a fence, headings and inline, diff colours, Added and
+// Deleted files, side-by-side.
 
 #[test]
 fn should_draw_one_row_per_hunk_line_when_markdown_diffs_render() {
