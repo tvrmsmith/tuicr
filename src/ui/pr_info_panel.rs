@@ -484,8 +484,18 @@ fn push_body_rows(
     }
 
     let mut pending = blocks.iter().peekable();
-    let push_block = |rows: &mut Vec<PrInfoRow>, block: &MediaBlock| {
-        rows.extend(block.media.clone().map(placeholder));
+    // Pushes the placeholders of the blocks starting at or before `line`
+    // and returns the end of the last one. A block that ended before `line`
+    // had no row started inside it, so nothing to replace: media after a
+    // collapsed section's `</details>` on its line.
+    let mut drain_blocks = |rows: &mut Vec<PrInfoRow>, line: usize| {
+        while pending.next_if(|block| block.lines.end <= line).is_some() {}
+        let mut end = None;
+        while let Some(block) = pending.next_if(|block| block.lines.start <= line) {
+            rows.extend(block.media.clone().map(&placeholder));
+            end = Some(block.lines.end);
+        }
+        end
     };
     let details_ids: Vec<Option<usize>> = body_rows
         .iter()
@@ -493,18 +503,9 @@ fn push_body_rows(
         .collect();
     let mut skip_until = 0usize;
     for (at, (row, after)) in body_rows.into_iter().zip(inline_after).enumerate() {
-        // A block no row started inside has nothing to replace, such as
-        // media after a collapsed section's `</details>` on its line.
-        while pending
-            .next_if(|block| block.lines.end <= row.source.start)
-            .is_some()
-        {}
         let summary = details_ids[at];
         if summary.is_none() {
-            while let Some(block) = pending.next_if(|block| block.lines.start <= row.source.start) {
-                push_block(rows, block);
-                skip_until = block.lines.end;
-            }
+            skip_until = drain_blocks(rows, row.source.start).unwrap_or(skip_until);
             if row.source.start < skip_until {
                 continue;
             }
@@ -515,12 +516,9 @@ fn push_body_rows(
         });
         // A media block covering a header lands after its last summary row.
         if summary.is_some() && details_ids.get(at + 1) != Some(&summary) {
-            while let Some(block) = pending.next_if(|block| block.lines.start <= row.source.start) {
-                push_block(rows, block);
-                skip_until = block.lines.end;
-            }
+            skip_until = drain_blocks(rows, row.source.start).unwrap_or(skip_until);
         }
-        rows.extend(after.into_iter().map(placeholder));
+        rows.extend(after.into_iter().map(&placeholder));
     }
 }
 

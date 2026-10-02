@@ -1801,20 +1801,11 @@ pub fn handle_diff_action(app: &mut App, action: Action) {
         Action::MouseScrollUp(n) => app.scroll_view_up(n),
         Action::SelectFile => {
             use crate::ui::pr_info_panel::{RowAction, pr_info_action_at_cursor};
-            let hit = match pr_info_action_at_cursor(app) {
-                Some(RowAction::Media(index)) => {
-                    app.enter_media(index);
-                    None
-                }
-                Some(RowAction::Details(id)) => {
-                    app.toggle_pr_details(id);
-                    None
-                }
-                None => app.get_gap_at_cursor(),
-            };
-            if let Some(hit) = hit {
-                match hit {
-                    GapCursorHit::Expander(gap_id, dir) => {
+            match pr_info_action_at_cursor(app) {
+                Some(RowAction::Media(index)) => app.enter_media(index),
+                Some(RowAction::Details(id)) => app.toggle_pr_details(id),
+                None => match app.get_gap_at_cursor() {
+                    Some(GapCursorHit::Expander(gap_id, dir)) => {
                         let limit = if dir == ExpandDirection::Both {
                             None
                         } else {
@@ -1824,15 +1815,14 @@ pub fn handle_diff_action(app: &mut App, action: Action) {
                             app.set_error(format!("Failed to expand: {e}"));
                         }
                     }
-                    GapCursorHit::HiddenLines(gap_id) => {
+                    Some(GapCursorHit::HiddenLines(gap_id)) => {
                         if let Err(e) = app.expand_gap(gap_id, ExpandDirection::Both, None) {
                             app.set_error(format!("Failed to expand: {e}"));
                         }
                     }
-                    GapCursorHit::ExpandedContent(gap_id) => {
-                        app.collapse_gap(gap_id);
-                    }
-                }
+                    Some(GapCursorHit::ExpandedContent(gap_id)) => app.collapse_gap(gap_id),
+                    None => {}
+                },
             }
         }
         Action::SelectFileFull => {
