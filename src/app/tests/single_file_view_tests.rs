@@ -309,6 +309,9 @@ impl crate::forge::traits::ForgeBackend for FakeForgeBackend {
     ) -> crate::error::Result<crate::forge::traits::GhCreateReviewResponse> {
         unimplemented!()
     }
+    fn can_read_file_content(&self) -> bool {
+        true
+    }
     fn fetch_file_content(
         &self,
         request: crate::forge::traits::ForgeFileLinesRequest,

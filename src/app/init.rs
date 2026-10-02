@@ -974,7 +974,7 @@ impl App {
             display_options.show_comments,
         );
         let highlighter = theme.syntax_highlighter();
-        let mut opened = open_pull_request(
+        let (mut opened, unreadable) = open_pull_request(
             backend.as_ref(),
             parsed,
             local_checkout_for_target.as_deref(),
@@ -1054,6 +1054,7 @@ impl App {
         } else if let Some(message) = since_last_review_message {
             app.set_message(message);
         }
+        app.warn_unreadable_markdown(&unreadable);
         // Spawn thread-fetch on startup; the main event loop will drain
         // the receiver via `poll_pr_threads_events` once it begins.
         app.spawn_pr_threads_fetch(&details_for_threads, local_checkout_for_target);

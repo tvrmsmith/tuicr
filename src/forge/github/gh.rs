@@ -498,6 +498,10 @@ where
         Ok(slice_context_lines(&content, start_line, end_line))
     }
 
+    fn can_read_file_content(&self) -> bool {
+        true
+    }
+
     /// Local blob when the checkout has the PR's SHA, REST otherwise. The PR's
     /// exact SHAs may or may not be present locally; we silently fall back.
     fn fetch_file_content(&self, request: ForgeFileLinesRequest) -> Result<String> {

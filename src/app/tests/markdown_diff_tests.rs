@@ -693,9 +693,12 @@ fn joined(lines: &[&str]) -> String {
 }
 
 /// A forge serving the guide PR: its patches, and the guide's content at the
-/// head sha. Records every `fetch_file_content` request.
+/// head sha unless `guide_unavailable`, when reading it fails with
+/// `content unavailable`. Records every `fetch_file_content` request.
+#[derive(Default)]
 struct GuideForge {
     content_requests: Arc<std::sync::Mutex<Vec<(String, PathBuf)>>>,
+    guide_unavailable: bool,
 }
 
 impl crate::forge::traits::ForgeBackend for GuideForge {
@@ -744,12 +747,20 @@ impl crate::forge::traits::ForgeBackend for GuideForge {
     ) -> Result<Vec<DiffLine>> {
         panic!("rendering fetched lines of {}", request.path.display())
     }
+    fn can_read_file_content(&self) -> bool {
+        true
+    }
     fn fetch_file_content(
         &self,
         request: crate::forge::traits::ForgeFileLinesRequest,
     ) -> Result<String> {
         let key = (request.sha().to_string(), request.path.clone());
         self.content_requests.lock().unwrap().push(key.clone());
+        if self.guide_unavailable {
+            return Err(crate::error::TuicrError::Forge(
+                "content unavailable".to_string(),
+            ));
+        }
         match (key.0.as_str(), key.1.to_str()) {
             (HEAD_SHA, Some(GUIDE)) => Ok(joined(&GUIDE_NEW)),
             _ => Err(crate::error::TuicrError::Forge(format!(
@@ -786,15 +797,13 @@ impl crate::forge::traits::ForgeBackend for GuideForge {
     }
 }
 
-// PR mode renders at load.
-#[test]
-fn should_render_a_pr_markdown_file_on_the_first_draw_after_opening() {
-    let _reviews = super::target_selector_tests::TestReviewsDir::new();
-    let mut app = build_app(Vec::new());
-    app.render_markdown_diffs = true;
-    let content_requests = Arc::default();
-    let summary = crate::forge::traits::PullRequestSummary {
-        repository: crate::forge::traits::ForgeRepository::github("github.com", "owner", "repo"),
+fn guide_repository() -> crate::forge::traits::ForgeRepository {
+    crate::forge::traits::ForgeRepository::github("github.com", "owner", "repo")
+}
+
+fn guide_summary() -> crate::forge::traits::PullRequestSummary {
+    crate::forge::traits::PullRequestSummary {
+        repository: guide_repository(),
         number: 42,
         title: "Guide".to_string(),
         author: None,
@@ -804,12 +813,92 @@ fn should_render_a_pr_markdown_file_on_the_first_draw_after_opening() {
         url: "https://github.com/owner/repo/pull/42".to_string(),
         state: "OPEN".to_string(),
         is_draft: false,
+    }
+}
+
+/// What the background PR fetch delivers for the guide PR when the guide's
+/// text cannot be read.
+fn unreadable_guide_fetch() -> std::result::Result<crate::forge::pr_open::PrFetchData, String> {
+    let forge = GuideForge {
+        guide_unavailable: true,
+        ..GuideForge::default()
     };
+    let target =
+        crate::forge::traits::PullRequestTarget::with_repository(guide_repository(), 42, "42");
+    crate::forge::pr_open::fetch_pr_data(&forge, target, true).map_err(|e| e.to_string())
+}
+
+fn status_warning(app: &App) -> Option<&str> {
+    app.message
+        .as_ref()
+        .filter(|message| matches!(message.message_type, MessageType::Warning))
+        .map(|message| message.content.as_str())
+}
+
+const UNREADABLE_GUIDE_WARNING: &str =
+    "docs/guide.md shows as source: could not read its text (content unavailable)";
+
+#[test]
+fn should_warn_when_an_opened_pr_markdown_file_cannot_be_read() {
+    let _reviews = super::target_selector_tests::TestReviewsDir::new();
+    let mut app = build_app(Vec::new());
+    app.render_markdown_diffs = true;
+    let request = PrOpenRequest {
+        repository: guide_repository(),
+        pr_number: 42,
+        started_at: std::time::Instant::now(),
+    };
+    app.pr_open_state = Some(request.clone());
+    let (tx, rx) = std::sync::mpsc::channel();
+    app.pr_open_rx = Some(rx);
+    tx.send(PrOpenEvent::Done {
+        request,
+        result: unreadable_guide_fetch(),
+    })
+    .unwrap();
+
+    app.poll_pr_open_events();
+
+    assert!(matches!(app.diff_source, DiffSource::PullRequest(_)));
+    assert_eq!(status_warning(&app), Some(UNREADABLE_GUIDE_WARNING));
+}
+
+#[test]
+fn should_warn_when_a_reloaded_pr_markdown_file_cannot_be_read() {
+    let _reviews = super::target_selector_tests::TestReviewsDir::new();
+    let mut app = build_app(Vec::new());
+    app.render_markdown_diffs = true;
+    app.open_pr_with_backend(&guide_summary(), Box::new(GuideForge::default()), None)
+        .expect("open PR");
+    assert_eq!(status_warning(&app), None);
+    app.spawn_pr_reload().expect("start reload");
+    let request = app.pr_reload_state.clone().expect("reload started");
+    let (tx, rx) = std::sync::mpsc::channel();
+    app.pr_reload_rx = Some(rx);
+    tx.send(PrReloadEvent::Done {
+        request,
+        result: unreadable_guide_fetch(),
+    })
+    .unwrap();
+
+    app.poll_pr_reload_events();
+
+    assert_eq!(status_warning(&app), Some(UNREADABLE_GUIDE_WARNING));
+}
+
+// PR mode renders at load.
+#[test]
+fn should_render_a_pr_markdown_file_on_the_first_draw_after_opening() {
+    let _reviews = super::target_selector_tests::TestReviewsDir::new();
+    let mut app = build_app(Vec::new());
+    app.render_markdown_diffs = true;
+    let content_requests = Arc::default();
 
     app.open_pr_with_backend(
-        &summary,
+        &guide_summary(),
         Box::new(GuideForge {
             content_requests: Arc::clone(&content_requests),
+            ..GuideForge::default()
         }),
         None,
     )
