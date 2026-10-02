@@ -817,7 +817,8 @@ rename to new_name.rs
     }
 
     #[test]
-    fn should_attach_the_head_text_to_every_markdown_file_read_in_parallel() {
+    fn should_attach_each_markdown_file_its_own_head_text() {
+        let page_head = |n: usize| format!("# Page {n}\n\n| a | new |\n");
         let paths: Vec<String> = (0..9).map(|n| format!("docs/page{n}.md")).collect();
         let backend = ServingBackend {
             patches: paths
@@ -826,28 +827,38 @@ rename to new_name.rs
                 .collect(),
             content: paths
                 .iter()
-                .map(|path| {
-                    (
-                        (details().head_sha, PathBuf::from(path)),
-                        GUIDE_HEAD.to_string(),
-                    )
-                })
+                .enumerate()
+                .map(|(n, path)| ((details().head_sha, PathBuf::from(path)), page_head(n)))
                 .collect(),
             ..ServingBackend::new()
         };
 
         let (opened, _) = open_serving(&backend, true);
 
-        for path in &paths {
-            assert_eq!(
-                file_at(&opened.diff_files, path).full_text.as_deref(),
-                Some(&crate::model::FullText {
-                    old: None,
-                    new: lines(GUIDE_HEAD),
-                }),
-                "{path}"
-            );
-        }
+        let attached: Vec<(String, Option<crate::model::FullText>)> = opened
+            .diff_files
+            .iter()
+            .map(|file| {
+                (
+                    file.display_path().display().to_string(),
+                    file.full_text.as_deref().cloned(),
+                )
+            })
+            .collect();
+        let expected: Vec<(String, Option<crate::model::FullText>)> = paths
+            .iter()
+            .enumerate()
+            .map(|(n, path)| {
+                (
+                    path.clone(),
+                    Some(crate::model::FullText {
+                        old: None,
+                        new: lines(&page_head(n)),
+                    }),
+                )
+            })
+            .collect();
+        assert_eq!(attached, expected);
     }
 
     #[test]
