@@ -80,7 +80,7 @@ pub fn open_pull_request(
 
 /// Network-only half of the PR open path: fetch PR metadata, structured file
 /// patches, and the commit list, and with `markdown_full_text` each markdown
-/// file's base and head text (`attach_markdown_full_texts`). Safe to run on a
+/// file's head text (`attach_markdown_full_texts`). Safe to run on a
 /// background thread because it does no syntax parsing and holds nothing that
 /// isn't `Send`.
 ///
@@ -115,7 +115,7 @@ pub fn fetch_pr_data(
 
 /// Network-only half of a PR commit-range reload: the patches between
 /// `start_sha` and `end_sha`, and with `markdown_full_text` each markdown
-/// file's text at those two commits.
+/// file's text at `end_sha`.
 pub fn fetch_pr_range_patches(
     backend: &dyn ForgeBackend,
     details: &PullRequestDetails,
@@ -136,10 +136,13 @@ pub fn fetch_pr_range_patches(
     Ok(patches)
 }
 
-/// Reads each Modified or Renamed markdown patch's text at `base_sha` and
-/// `head_sha` into `FilePatch::full_text`. Added and Deleted files need none:
-/// their hunk is the whole file. A file whose read fails on either side
-/// (Gerrit cannot read content at all) keeps `None` and shows as source.
+/// Reads each Modified or Renamed markdown patch's text at `head_sha` into
+/// `FilePatch::full_text`, leaving the old side `None` for the App to rebuild
+/// from the hunks. The forge's base sha is the base branch tip, not the merge
+/// base the diff was cut from, so reading it would show source for any PR
+/// whose base moved. Added and Deleted files need none: their hunk is the
+/// whole file. A file whose read fails (Gerrit cannot read content at all)
+/// keeps `None` and shows as source.
 fn attach_markdown_full_texts(
     backend: &dyn ForgeBackend,
     repository: &ForgeRepository,
@@ -151,32 +154,26 @@ fn attach_markdown_full_texts(
         .iter_mut()
         .filter(|patch| wants_markdown_full_text(patch))
     {
-        let read = |side: ForgeFileSide| {
-            let path = ForgeFileLinesRequest::path_for_side(
-                side,
-                patch.old_path.as_ref(),
-                patch.new_path.as_ref(),
-            )?;
-            backend
-                .fetch_file_content(ForgeFileLinesRequest {
-                    repository: repository.clone(),
-                    base_sha: base_sha.to_string(),
-                    head_sha: head_sha.to_string(),
-                    path,
-                    status: patch.status,
-                    side,
-                    start_line: 1,
-                    end_line: u32::MAX,
-                })
-                .ok()
-        };
-        let Some(old) = read(ForgeFileSide::Base) else {
+        let Some(path) = ForgeFileLinesRequest::path_for_side(
+            ForgeFileSide::Head,
+            patch.old_path.as_ref(),
+            patch.new_path.as_ref(),
+        ) else {
             continue;
         };
-        let Some(new) = read(ForgeFileSide::Head) else {
+        let Ok(new) = backend.fetch_file_content(ForgeFileLinesRequest {
+            repository: repository.clone(),
+            base_sha: base_sha.to_string(),
+            head_sha: head_sha.to_string(),
+            path,
+            status: patch.status,
+            side: ForgeFileSide::Head,
+            start_line: 1,
+            end_line: u32::MAX,
+        }) else {
             continue;
         };
-        patch.full_text = crate::vcs::full_text(Some(&old), Some(&new)).map(Arc::new);
+        patch.full_text = crate::vcs::full_text(None, Some(&new)).map(Arc::new);
     }
 }
 
@@ -502,13 +499,12 @@ rename to new_name.rs
         );
     }
 
-    const GUIDE_BASE: &str = "# Guide\n\n| a | old |\n";
     const GUIDE_HEAD: &str = "# Guide\n\n| a | new |\n";
     const GUIDE_PATCH: &str = "@@ -1,3 +1,3 @@\n # Guide\n \n-| a | old |\n+| a | new |\n";
     const LIB_PATCH: &str = "@@ -1,1 +1,1 @@\n-fn a() {}\n+fn b() {}\n";
 
-    /// Serves a modified markdown file and a modified Rust file, and each
-    /// file's content per sha, recording every `fetch_file_content` request.
+    /// Serves a modified markdown file and a modified Rust file, and the
+    /// markdown file's head content per sha, recording every `fetch_file_content` request.
     struct ServingBackend {
         content: std::collections::HashMap<(String, PathBuf), String>,
         fail_content: bool,
@@ -519,16 +515,8 @@ rename to new_name.rs
         fn new() -> Self {
             let guide = PathBuf::from("docs/guide.md");
             let content = [
-                ((details().base_sha, guide.clone()), GUIDE_BASE.to_string()),
-                ((details().head_sha, guide), GUIDE_HEAD.to_string()),
-                (
-                    ("start5".to_string(), PathBuf::from("docs/guide.md")),
-                    GUIDE_BASE.to_string(),
-                ),
-                (
-                    ("end9".to_string(), PathBuf::from("docs/guide.md")),
-                    GUIDE_HEAD.to_string(),
-                ),
+                ((details().head_sha, guide.clone()), GUIDE_HEAD.to_string()),
+                (("end9".to_string(), guide), GUIDE_HEAD.to_string()),
             ]
             .into_iter()
             .collect();
@@ -637,7 +625,7 @@ rename to new_name.rs
     }
 
     #[test]
-    fn should_attach_base_and_head_text_to_a_modified_markdown_file_on_open() {
+    fn should_attach_only_the_head_text_to_a_modified_markdown_file_on_open() {
         let backend = ServingBackend::new();
 
         let opened = open_serving(&backend, true);
@@ -647,17 +635,17 @@ rename to new_name.rs
                 .full_text
                 .as_deref(),
             Some(&crate::model::FullText {
-                old: lines(GUIDE_BASE),
+                old: None,
                 new: lines(GUIDE_HEAD),
             })
         );
         assert_eq!(file_at(&opened.diff_files, "src/lib.rs").full_text, None);
-        assert!(
-            backend
-                .content_requests
-                .borrow()
-                .iter()
-                .all(|(_, path)| path == Path::new("docs/guide.md"))
+        assert_eq!(
+            *backend.content_requests.borrow(),
+            [(
+                "abcdef0123456789".to_string(),
+                std::path::PathBuf::from("docs/guide.md")
+            )]
         );
     }
 
@@ -684,15 +672,13 @@ rename to new_name.rs
     }
 
     #[test]
-    fn should_read_markdown_text_at_the_range_ends_for_a_range_diff() {
+    fn should_read_markdown_text_at_the_range_end_for_a_range_diff() {
         let backend = ServingBackend::new();
 
         let patches = fetch_pr_range_patches(&backend, &details(), "start5", "end9", true)
             .expect("range patches");
 
-        let mut shas = backend.requested_shas();
-        shas.sort();
-        assert_eq!(shas, ["end9", "start5"]);
+        assert_eq!(backend.requested_shas(), ["end9"]);
         let guide = patches
             .iter()
             .find(|patch| patch.display_path() == Some(Path::new("docs/guide.md")))
@@ -700,7 +686,7 @@ rename to new_name.rs
         assert_eq!(
             guide.full_text.as_deref(),
             Some(&crate::model::FullText {
-                old: lines(GUIDE_BASE),
+                old: None,
                 new: lines(GUIDE_HEAD),
             })
         );

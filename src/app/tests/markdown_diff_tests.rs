@@ -587,6 +587,65 @@ fn should_fall_back_to_source_when_the_full_text_disagrees_with_the_hunks() {
     assert_eq!(row_for_new(&buffer, 13).text, "## Setup");
 }
 
+/// The guide's text as a PR loader leaves it: the head side only.
+fn new_side_only(new: Vec<String>) -> Arc<FullText> {
+    Arc::new(FullText {
+        old: None,
+        new: Some(new),
+    })
+}
+
+// 12b. A new side alone renders, with the old side rebuilt from the hunks.
+#[test]
+fn should_render_the_old_side_rebuilt_from_the_hunks_when_only_the_new_side_was_read() {
+    let mut app = rendered_app(guide_files(Some(new_side_only(owned(&GUIDE_NEW)))));
+
+    let buffer = draw(&mut app);
+
+    assert_eq!(row_for_old(&buffer, 6).text, "b    \u{2502} old");
+    assert_eq!(row_for_new(&buffer, 6).text, "b    \u{2502} second");
+    assert_eq!(row_for_old(&buffer, 10).text, "\u{2502} y = 2");
+    assert_eq!(row_for_new(&buffer, 10).text, "\u{2502} y = 3");
+    assert_eq!(row_for_new(&buffer, 13).text, "Setup");
+}
+
+// 12c. A new side alone that disagrees with the hunks falls back to source.
+#[test]
+fn should_fall_back_to_source_when_a_lone_new_side_disagrees_with_the_hunks() {
+    let mut new = owned(&GUIDE_NEW);
+    new[5] = "| b | other |".to_string();
+    let mut app = rendered_app(guide_files(Some(new_side_only(new))));
+
+    let buffer = draw(&mut app);
+
+    assert_eq!(row_for_old(&buffer, 6).text, "| b | old |");
+    assert_eq!(row_for_new(&buffer, 6).text, "| b | second |");
+    assert_eq!(row_for_new(&buffer, 13).text, "## Setup");
+}
+
+// 12d. A pure-deletion hunk (new count 0) rebuilds at the line it follows.
+#[test]
+fn should_rebuild_the_old_side_around_a_hunk_that_deletes_without_adding() {
+    let path = "docs/cut.md";
+    let new = owned(&["# Cut", "", "End."]);
+    let mut files = parse(vec![file_patch(
+        path,
+        FileStatus::Modified,
+        "@@ -3,2 +2,0 @@\n-## Gone\n-\n",
+    )]);
+    files[0].full_text = Some(new_side_only(new));
+    let mut app = rendered_app(files);
+
+    let buffer = draw(&mut app);
+
+    let rows = numbered_rows(&buffer, path);
+    let old_3 = rows
+        .iter()
+        .find(|row| row.number == Some(3))
+        .expect("old 3 drawn");
+    assert_eq!(old_3.text, "Gone");
+}
+
 // 13. New text for the same hunks re-renders.
 #[test]
 fn should_re_render_when_a_reload_brings_new_full_text_for_the_same_hunks() {
@@ -620,7 +679,7 @@ fn joined(lines: &[&str]) -> String {
 }
 
 /// A forge serving the guide PR: its patches, and the guide's content at the
-/// base and head shas. Records every `fetch_file_content` request.
+/// head sha. Records every `fetch_file_content` request.
 struct GuideForge {
     content_requests: Arc<std::sync::Mutex<Vec<(String, PathBuf)>>>,
 }
@@ -678,7 +737,6 @@ impl crate::forge::traits::ForgeBackend for GuideForge {
         let key = (request.sha().to_string(), request.path.clone());
         self.content_requests.lock().unwrap().push(key.clone());
         match (key.0.as_str(), key.1.to_str()) {
-            (BASE_SHA, Some(GUIDE)) => Ok(joined(&GUIDE_OLD)),
             (HEAD_SHA, Some(GUIDE)) => Ok(joined(&GUIDE_NEW)),
             _ => Err(crate::error::TuicrError::Forge(format!(
                 "no content for {key:?}"
@@ -747,14 +805,46 @@ fn should_render_a_pr_markdown_file_on_the_first_draw_after_opening() {
 
     assert!(matches!(app.diff_source, DiffSource::PullRequest(_)));
     assert_eq!(drawn_row_numbered(&buffer, 13).text, "Setup");
+    assert_eq!(row_for_old(&buffer, 6).text, "b    \u{2502} old");
     let requested: Vec<(String, PathBuf)> = content_requests.lock().unwrap().clone();
-    assert_eq!(
-        requested,
-        [
-            (BASE_SHA.to_string(), PathBuf::from(GUIDE)),
-            (HEAD_SHA.to_string(), PathBuf::from(GUIDE)),
-        ]
-    );
+    assert_eq!(requested, [(HEAD_SHA.to_string(), PathBuf::from(GUIDE))]);
+}
+
+// 14b. `--all-files` shows each file whole: an unchanged .md file renders.
+fn pristine_notes_app(render: bool) -> (tempfile::TempDir, App) {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let root = dir.path().canonicalize().expect("canonical temp dir");
+    let notes = root.join("notes.md");
+    std::fs::write(&notes, "## Notes\n\nPlain text.\n").expect("write notes.md");
+    let files = crate::vcs::file::FileBackend::new_pristine(vec![notes], root)
+        .expect("pristine backend")
+        .with_markdown_full_text(render)
+        .get_working_tree_diff(Theme::dark().syntax_highlighter())
+        .expect("pristine diff");
+    let mut app = build_app(files);
+    app.diff_view_mode = DiffViewMode::Unified;
+    if render {
+        render_markdown_diffs(&mut app);
+    }
+    (dir, app)
+}
+
+#[test]
+fn should_render_an_unchanged_markdown_file_in_all_files_mode() {
+    let (_dir, mut app) = pristine_notes_app(true);
+
+    let buffer = draw(&mut app);
+
+    assert_eq!(drawn_row_numbered(&buffer, 1).text, "Notes");
+}
+
+#[test]
+fn should_keep_an_unchanged_markdown_file_as_source_in_all_files_mode_when_off() {
+    let (_dir, mut app) = pristine_notes_app(false);
+
+    let buffer = draw(&mut app);
+
+    assert_eq!(drawn_row_numbered(&buffer, 1).text, "## Notes");
 }
 
 // 15. Contract C's scenarios hold: wrap height, theme change, search.
