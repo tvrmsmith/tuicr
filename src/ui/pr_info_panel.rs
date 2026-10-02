@@ -174,21 +174,20 @@ pub fn append_issue_comments_section(
         label: app.comment_type_label(&note_type),
         color: app.comment_type_color(&note_type),
     };
+    // `content_width` excludes the indicator column; comment boxes take the
+    // column width that includes it.
+    let width = content_width.saturating_add(1);
     for comment in &info.issue_comments {
-        // Derive the row count from the width the box is actually formatted at
-        // — `content_width` is the viewport minus the indicator column, which is
-        // exactly the offset `comment_display_lines` expects.
-        let rows = app.comment_display_lines(&comment.body, content_width.saturating_add(1));
+        let rows = app.comment_display_lines(&comment.body, width);
         if !crate::ui::diff_view::comment_box_visible(*line_idx, rows, visible) {
             crate::ui::diff_view::skip_comment_box(lines, line_idx, rows);
             continue;
         }
-        for mut comment_line in comment_panel::format_comment_lines(
-            &app.theme,
+        for mut comment_line in app.comment_boxes().lines(
             presentation.clone(),
-            &app.comment_body_rows(&comment.body, content_width),
+            &comment.body,
             None,
-            content_width,
+            width,
             comment.author.as_deref(),
         ) {
             let indicator = cursor_indicator(*line_idx, current_line_idx);

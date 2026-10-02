@@ -504,12 +504,11 @@ pub(super) fn render_side_by_side_diff(frame: &mut Frame, app: &mut App, area: R
                 skip_comment_box(&mut lines, &mut line_idx, rows);
                 continue;
             }
-            let comment_lines = comment_panel::format_comment_lines(
-                &app.theme,
+            let comment_lines = app.comment_boxes().lines(
                 comment_type_presentation(app, &comment.comment_type),
-                &app.comment_body_rows(&comment.content, ctx.panel_width.saturating_sub(1)),
+                &comment.content,
                 None,
-                ctx.panel_width.saturating_sub(1),
+                ctx.panel_width,
                 (comment.author != app.username).then_some(comment.author.as_str()),
             );
             for mut comment_line in comment_lines {
@@ -697,12 +696,11 @@ pub(super) fn render_side_by_side_diff(frame: &mut Frame, app: &mut App, area: R
                         skip_comment_box(&mut lines, &mut line_idx, rows);
                         continue;
                     }
-                    let comment_lines = comment_panel::format_comment_lines(
-                        &app.theme,
+                    let comment_lines = app.comment_boxes().lines(
                         comment_type_presentation(app, &comment.comment_type),
-                        &app.comment_body_rows(&comment.content, ctx.panel_width.saturating_sub(1)),
+                        &comment.content,
                         None,
-                        ctx.panel_width.saturating_sub(1),
+                        ctx.panel_width,
                         (comment.author != app.username).then_some(comment.author.as_str()),
                     );
                     for mut comment_line in comment_lines {
@@ -2118,15 +2116,11 @@ fn add_comments_to_line(
                     if !ctx.box_visible(line_idx, rows) {
                         skip_comment_box(lines, &mut line_idx, rows);
                     } else {
-                        let comment_lines = comment_panel::format_comment_lines(
-                            ctx.theme,
+                        let comment_lines = ctx.app.comment_boxes().lines(
                             comment_type_presentation(ctx.app, &comment.comment_type),
-                            &ctx.app.comment_body_rows(
-                                &comment.content,
-                                ctx.panel_width.saturating_sub(1),
-                            ),
+                            &comment.content,
                             line_range,
-                            ctx.panel_width.saturating_sub(1),
+                            ctx.panel_width,
                             (comment.author != ctx.app.username).then_some(comment.author.as_str()),
                         );
                         for mut comment_line in comment_lines {

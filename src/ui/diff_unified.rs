@@ -172,12 +172,11 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
                 skip_comment_box(&mut lines, &mut line_idx, rows);
                 continue;
             }
-            let comment_lines = comment_panel::format_comment_lines(
-                &app.theme,
+            let comment_lines = app.comment_boxes().lines(
                 comment_type_presentation(app, &comment.comment_type),
-                &app.comment_body_rows(&comment.content, comment_width),
+                &comment.content,
                 None,
-                comment_width,
+                inner.width as usize,
                 (comment.author != app.username).then_some(comment.author.as_str()),
             );
             for mut comment_line in comment_lines {
@@ -374,12 +373,11 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
                         skip_comment_box(&mut lines, &mut line_idx, rows);
                         continue;
                     }
-                    let comment_lines = comment_panel::format_comment_lines(
-                        &app.theme,
+                    let comment_lines = app.comment_boxes().lines(
                         comment_type_presentation(app, &comment.comment_type),
-                        &app.comment_body_rows(&comment.content, comment_width),
+                        &comment.content,
                         None,
-                        comment_width,
+                        inner.width as usize,
                         (comment.author != app.username).then_some(comment.author.as_str()),
                     );
                     for mut comment_line in comment_lines {
@@ -784,18 +782,14 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
                                         ) {
                                             skip_comment_box(&mut lines, &mut line_idx, rows);
                                         } else {
-                                            let comment_lines = comment_panel::format_comment_lines(
-                                                &app.theme,
+                                            let comment_lines = app.comment_boxes().lines(
                                                 comment_type_presentation(
                                                     app,
                                                     &comment.comment_type,
                                                 ),
-                                                &app.comment_body_rows(
-                                                    &comment.content,
-                                                    comment_width,
-                                                ),
+                                                &comment.content,
                                                 line_range,
-                                                comment_width,
+                                                inner.width as usize,
                                                 (comment.author != app.username)
                                                     .then_some(comment.author.as_str()),
                                             );
@@ -975,18 +969,14 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
                                         ) {
                                             skip_comment_box(&mut lines, &mut line_idx, rows);
                                         } else {
-                                            let comment_lines = comment_panel::format_comment_lines(
-                                                &app.theme,
+                                            let comment_lines = app.comment_boxes().lines(
                                                 comment_type_presentation(
                                                     app,
                                                     &comment.comment_type,
                                                 ),
-                                                &app.comment_body_rows(
-                                                    &comment.content,
-                                                    comment_width,
-                                                ),
+                                                &comment.content,
                                                 line_range,
-                                                comment_width,
+                                                inner.width as usize,
                                                 (comment.author != app.username)
                                                     .then_some(comment.author.as_str()),
                                             );

@@ -4,13 +4,15 @@
 
 use std::path::PathBuf;
 
-use ratatui::style::{Color, Modifier};
+use ratatui::Terminal;
+use ratatui::backend::TestBackend;
+use ratatui::buffer::Buffer;
+use ratatui::style::Modifier;
 
 use super::grouping_tests::{build_app_over, empty_session, stub_vcs_info};
 use super::pr_info_tests::{build_pr_app, draw_app, find_text, rows_of};
 use crate::app::*;
 use crate::model::{Comment, CommentType, DiffFile, DiffHunk, DiffLine, LineOrigin, LineRange};
-use crate::ui::comment_panel::{self, CommentTypePresentation};
 
 const PATH: &str = "src/notes.rs";
 /// Content of new-side line 2, the diff row drawn right after a comment
@@ -198,53 +200,59 @@ fn rendering_off_draws_a_comment_as_source() {
     assert!(any_row(&rows, "## Note"), "{rows:#?}");
 }
 
-/// The renderer replaces off-screen comment boxes with exactly
+/// Drawing replaces off-screen comment boxes with exactly
 /// `App::comment_display_lines` blank rows, and the annotation builder sizes
-/// every comment the same way. If that count ever drifted from what
-/// `format_comment_lines` actually emits, the document would desync — the
-/// cursor would land on the wrong row and culled boxes would leave the wrong
-/// number of gaps. Pin the two together.
+/// every comment the same way. If that count drifted from the rows a box
+/// draws, the cursor would land on the wrong row and culled boxes would leave
+/// the wrong gap. Pins the annotation count to the drawn box in both layouts
+/// at several terminal widths.
 #[test]
 fn comment_display_lines_matches_rendered_box_height() {
-    let app = app_with_line_comment("");
-    assert!(app.render_markdown);
     let bodies = [
-        "",
         "single line",
         "first\nsecond\nthird",
-        "trailing newline\n",
-        "\n\nleading blanks",
-        &"x".repeat(300),
-        &"日本語のテキストです ".repeat(20),
-        "`code` **bold** and a very long tail that will need to wrap at least once or twice",
-        "# Title\n\npara",
-        "| a | b |\n| - | - |\n| 1 | 2 |",
-        "```rust\nfn x() {}\n```",
-        "- one\n  - two",
-        "a\n\n\n\nb",
+        "\n\nleading blanks\n\n\n\ntrailing gap\n",
+        "# Title\n\nA paragraph long enough that it has to wrap inside a narrow box at least once.",
+        "- one\n  - nested two\n- three",
+        "```rust\nfn sum(a: i32, b: i32) -> i32 { a + b }\n```",
+        "| Name | Qty |\n| --- | ---: |\n| apple | 3 |\n| kiwi | 12 |",
+        "> quoted advice\n\n`code` **bold** and _emphasis_ with a long tail that wraps",
+        "See ![diagram](https://example.com/diagram.png) here.",
+        &"日本語のテキストです ".repeat(12),
     ];
-    // Viewport widths, including degenerate ones narrower than the box chrome.
-    for viewport_width in [9usize, 12, 40, 80, 120] {
-        for body in bodies {
-            // What every call site passes: the viewport minus the
-            // cursor-indicator column.
-            let box_width = viewport_width.saturating_sub(1);
-            let rendered = comment_panel::format_comment_lines(
-                &app.theme,
-                CommentTypePresentation {
-                    label: "NOTE".to_string(),
-                    color: Color::Blue,
-                },
-                &comment_panel::comment_body_rows(&app.theme, body, box_width, true),
-                None,
-                box_width,
-                None,
-            );
-            assert_eq!(
-                app.comment_display_lines(body, viewport_width),
-                rendered.len(),
-                "width={viewport_width} body={body:?}"
-            );
+    for mode in [DiffViewMode::Unified, DiffViewMode::SideBySide] {
+        for width in [80u16, 120, 160] {
+            for body in bodies {
+                let mut app = app_with_line_comment(body);
+                app.diff_view_mode = mode;
+                let rows = draw_at(&mut app, width);
+
+                let anchor = row_with(&rows, "fn first() {}");
+                let next = row_with(&rows, LINE_TWO_MARKER);
+                let context = format!("{mode:?} width={width} body={body:?}: {rows:#?}");
+                assert!(rows[anchor + 1].contains('├'), "{context}");
+                assert!(rows[next - 1].contains('╰'), "{context}");
+                let annotated = annotations_matching(&app, |line| {
+                    matches!(line, AnnotatedLine::LineComment { .. })
+                });
+                assert_eq!(annotated, next - anchor - 1, "{context}");
+            }
         }
     }
+}
+
+/// The rows of `app` drawn on a `width`-column terminal, after the first
+/// frame records the panel width the annotations are built at.
+fn draw_at(app: &mut App, width: u16) -> Vec<String> {
+    draw_frame(app, width);
+    app.rebuild_annotations();
+    rows_of(&draw_frame(app, width))
+}
+
+fn draw_frame(app: &mut App, width: u16) -> Buffer {
+    let mut terminal = Terminal::new(TestBackend::new(width, 100)).expect("test terminal");
+    terminal
+        .draw(|frame| crate::ui::render(frame, app))
+        .expect("draw frame");
+    terminal.backend().buffer().clone()
 }

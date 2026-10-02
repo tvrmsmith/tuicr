@@ -215,6 +215,7 @@ fn comment_current_line_cursor_targets_the_cursor_line() {
 #[test]
 fn comment_current_line_cursor_targets_the_rendered_row_group() {
     let mut app = build_app();
+    app.render_markdown = true;
     app.comment_buffer = "alpha\n\nbravo\ncharlie".to_string();
     app.diff_state.viewport_width = 200; // wide => no wrapping
     let block_start = 10;

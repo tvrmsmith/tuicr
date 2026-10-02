@@ -1188,6 +1188,16 @@ pub(crate) struct CommentRowsCache {
     rows: HashMap<String, Rc<Vec<BlockRow>>>,
 }
 
+/// Sizes and draws comment boxes from only the `App` fields a box depends on,
+/// so code holding a `&mut` borrow of another field can still size one. Every
+/// method takes the column `width` a box's rows span, cursor-indicator column
+/// included; the box itself draws one column narrower.
+pub(crate) struct CommentBoxes<'a> {
+    theme: &'a Theme,
+    render_markdown: bool,
+    cache: &'a std::cell::RefCell<Option<CommentRowsCache>>,
+}
+
 pub struct App {
     pub theme: Theme,
     pub vcs: Box<dyn VcsBackend>,
@@ -1270,7 +1280,7 @@ pub struct App {
     /// Rows last built by `pr_info_rows`, reused while its key still matches.
     pub(crate) pr_info_rows_cache:
         std::cell::RefCell<Option<crate::ui::pr_info_panel::PrInfoRowsCache>>,
-    /// Rows built by `comment_body_rows`.
+    /// Rows built by `CommentBoxes::body_rows`.
     pub(crate) comment_rows_cache: std::cell::RefCell<Option<CommentRowsCache>>,
     pub(crate) search_return_mode: InputMode,
     pub(crate) overlay_return_mode: InputMode,

@@ -290,14 +290,16 @@ impl App {
                         continue;
                     }
 
-                    // Diff lines - handle differently based on view mode. The
-                    // builders size comment boxes through `self`, so the
-                    // annotations they append to are moved out for the call.
-                    let mut annotations = std::mem::take(&mut self.line_annotations);
+                    // Diff lines - handle differently based on view mode
+                    let boxes = CommentBoxes {
+                        theme: &self.theme,
+                        render_markdown: self.render_markdown,
+                        cache: &self.comment_rows_cache,
+                    };
                     match self.diff_view_mode {
                         DiffViewMode::Unified => {
                             Self::build_unified_diff_annotations(
-                                &mut annotations,
+                                &mut self.line_annotations,
                                 file_idx,
                                 hunk_idx,
                                 &hunk.lines,
@@ -305,13 +307,14 @@ impl App {
                                 path,
                                 &self.forge_review_threads,
                                 &remote_index,
-                                self,
+                                &boxes,
+                                self.diff_state.viewport_width,
                                 commit_set.as_ref(),
                             );
                         }
                         DiffViewMode::SideBySide => {
                             Self::build_side_by_side_annotations(
-                                &mut annotations,
+                                &mut self.line_annotations,
                                 file_idx,
                                 hunk_idx,
                                 &hunk.lines,
@@ -319,12 +322,12 @@ impl App {
                                 path,
                                 &self.forge_review_threads,
                                 &remote_index,
-                                self,
+                                &boxes,
+                                self.diff_state.viewport_width,
                                 commit_set.as_ref(),
                             );
                         }
                     }
-                    self.line_annotations = annotations;
                 }
 
                 // End-of-file gap (after all hunks, not for deleted files)
@@ -389,13 +392,15 @@ impl App {
         self.refresh_search_matches();
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn push_comments(
         annotations: &mut Vec<AnnotatedLine>,
         file_idx: usize,
         line_no: Option<u32>,
         line_comments: &std::collections::HashMap<u32, Vec<crate::model::Comment>>,
         side: LineSide,
-        app: &App,
+        boxes: &CommentBoxes<'_>,
+        viewport_width: usize,
         commit_set: Option<&std::collections::HashSet<String>>,
     ) {
         let Some(ln) = line_no else {
@@ -420,8 +425,7 @@ impl App {
                 continue;
             }
 
-            let comment_lines =
-                app.comment_display_lines(&comment.content, app.diff_state.viewport_width);
+            let comment_lines = boxes.display_lines(&comment.content, viewport_width);
             for _ in 0..comment_lines {
                 annotations.push(AnnotatedLine::LineComment {
                     file_idx,
@@ -511,7 +515,8 @@ impl App {
         path: &std::path::Path,
         remote_threads: &[crate::forge::remote_comments::RemoteReviewThread],
         remote_index: &RemoteThreadIndex,
-        app: &App,
+        boxes: &CommentBoxes<'_>,
+        viewport_width: usize,
         commit_set: Option<&std::collections::HashSet<String>>,
     ) {
         for (line_idx, diff_line) in lines.iter().enumerate() {
@@ -531,7 +536,8 @@ impl App {
                     Some(old_ln),
                     line_comments,
                     LineSide::Old,
-                    app,
+                    boxes,
+                    viewport_width,
                     commit_set,
                 );
                 Self::push_remote_threads(
@@ -552,7 +558,8 @@ impl App {
                     Some(new_ln),
                     line_comments,
                     LineSide::New,
-                    app,
+                    boxes,
+                    viewport_width,
                     commit_set,
                 );
                 Self::push_remote_threads(
@@ -578,7 +585,8 @@ impl App {
         path: &std::path::Path,
         remote_threads: &[crate::forge::remote_comments::RemoteReviewThread],
         remote_index: &RemoteThreadIndex,
-        app: &App,
+        boxes: &CommentBoxes<'_>,
+        viewport_width: usize,
         commit_set: Option<&std::collections::HashSet<String>>,
     ) {
         let mut i = 0;
@@ -602,7 +610,8 @@ impl App {
                         diff_line.new_lineno,
                         line_comments,
                         LineSide::New,
-                        app,
+                        boxes,
+                        viewport_width,
                         commit_set,
                     );
                     if let Some(new_ln) = diff_line.new_lineno {
@@ -668,7 +677,8 @@ impl App {
                             old_lineno,
                             line_comments,
                             LineSide::Old,
-                            app,
+                            boxes,
+                            viewport_width,
                             commit_set,
                         );
                         if let Some(old_ln) = old_lineno {
@@ -687,7 +697,8 @@ impl App {
                             new_lineno,
                             line_comments,
                             LineSide::New,
-                            app,
+                            boxes,
+                            viewport_width,
                             commit_set,
                         );
                         if let Some(new_ln) = new_lineno {
@@ -720,7 +731,8 @@ impl App {
                         diff_line.new_lineno,
                         line_comments,
                         LineSide::New,
-                        app,
+                        boxes,
+                        viewport_width,
                         commit_set,
                     );
                     if let Some(new_ln) = diff_line.new_lineno {

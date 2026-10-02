@@ -845,8 +845,9 @@ impl App {
         cursor_at_end: bool,
     ) -> usize {
         let content = &self.comment_buffer;
-        let rows =
-            self.comment_body_rows(content, self.diff_state.viewport_width.saturating_sub(1));
+        let rows = self
+            .comment_boxes()
+            .body_rows(content, self.diff_state.viewport_width);
         // Body row under the cursor (skip the top border at row 0).
         let visual_target = self
             .diff_state
