@@ -434,6 +434,12 @@ fn plan_media(media: &[&MediaLine]) -> (Vec<MediaBlock>, Vec<(usize, usize)>) {
 /// row per media entry and following each inline media line's last row with
 /// its placeholders. Both render paths produce [`BlockRow`]s, so one walk
 /// keyed on source position serves them.
+///
+/// `<details>` sections change three things. Media starting in a collapsed
+/// section's body gets no placeholder. A summary row anchors only the inline
+/// media inside its own header, so media after `</summary>` follows the body
+/// row it renders in. A media block covering a header lands after the
+/// header's last summary row instead of replacing it.
 fn push_body_rows(
     rows: &mut Vec<PrInfoRow>,
     info: &PullRequestInfo,

@@ -94,7 +94,8 @@ pub(crate) fn render_block(
     }
     let mut rows = trim_blank_rows(doc.rows(width, &apart));
     // A range whose lines all render nothing (a fence, a dropped blank) still
-    // owes the caller a row to anchor on.
+    // owes the caller a row to anchor on, unless a collapsed section hides
+    // every line of it.
     for range in keep_apart {
         if rows.iter().any(|row| row.source == range) {
             continue;
@@ -895,6 +896,9 @@ impl<'a> Doc<'a> {
             if under_collapsed(section.parent) {
                 continue;
             }
+            // The tail stops at a `</details>` or a nested `<details>` on the
+            // same line: the close renders nothing, and the nested header
+            // renders as its own summary row, so neither shows twice.
             let mut tail_end = self.line_range(last).end.min(section.close);
             if let Some(next) = sections.get(at + 1) {
                 tail_end = tail_end.min(next.header.start);
