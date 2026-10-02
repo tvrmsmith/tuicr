@@ -186,6 +186,7 @@ impl FileBackend {
                 is_too_large: true,
                 is_commit_message: false,
                 content_hash,
+                full_text: None,
             });
         }
 
@@ -277,6 +278,7 @@ impl FileBackend {
             is_too_large: false,
             is_commit_message: false,
             content_hash,
+            full_text: None,
         })
     }
 }

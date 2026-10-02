@@ -45,6 +45,9 @@ fn parse_description(desc: &str) -> (String, Option<String>) {
 pub struct JjBackend {
     info: VcsInfo,
     whitespace_mode: DiffWhitespaceMode,
+    /// Whether diff loads read each markdown file's full text
+    /// (`render_markdown_diffs`).
+    markdown_full_text: bool,
 }
 
 impl JjBackend {
@@ -125,7 +128,15 @@ impl JjBackend {
         Ok(Self {
             info,
             whitespace_mode,
+            markdown_full_text: false,
         })
+    }
+
+    /// Makes diff loads read each markdown file's full text into
+    /// `DiffFile::full_text` (`render_markdown_diffs`).
+    pub(crate) fn with_markdown_full_text(mut self, on: bool) -> Self {
+        self.markdown_full_text = on;
+        self
     }
 
     fn diff_args<'a>(comparison: WhitespaceComparison, args: &'a [&'a str]) -> Cow<'a, [&'a str]> {
@@ -237,6 +248,7 @@ impl VcsBackend for JjBackend {
             None,
             &mut files,
             highlighter,
+            self.markdown_full_text,
             jj_show_batch,
         )?;
         Ok(files)
@@ -407,6 +419,7 @@ impl VcsBackend for JjBackend {
             Some(newest),
             &mut files,
             highlighter,
+            self.markdown_full_text,
             jj_show_batch,
         )?;
         Ok(files)
@@ -485,6 +498,7 @@ impl VcsBackend for JjBackend {
             None,
             &mut files,
             highlighter,
+            self.markdown_full_text,
             jj_show_batch,
         )?;
         Ok(files)

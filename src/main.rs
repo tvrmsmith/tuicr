@@ -275,6 +275,11 @@ fn main() -> anyhow::Result<()> {
                 commit_selection,
                 pr_target: cli_args.pr_target.as_deref(),
                 repo_url_override,
+                render_markdown_diffs: config_outcome
+                    .config
+                    .as_ref()
+                    .and_then(|cfg| cfg.render_markdown_diffs)
+                    .unwrap_or(false),
             },
         )
     }) {
@@ -482,9 +487,6 @@ fn main() -> anyhow::Result<()> {
         }
         if cfg.render_markdown == Some(false) {
             app.render_markdown = false;
-        }
-        if cfg.render_markdown_diffs == Some(true) {
-            app.set_render_markdown_diffs(true);
         }
         if let Some(scroll_offset) = cfg.scroll_offset {
             app.scroll_offset = scroll_offset;

@@ -104,6 +104,7 @@ pub(crate) fn build_pr_app() -> App {
             is_too_large: false,
             is_commit_message: false,
             content_hash: 0,
+            full_text: None,
         }],
         session,
         DiffSource::PullRequest(Box::new(pr)),
@@ -910,7 +911,7 @@ fn queue_pr_reload(app: &mut App, details: PullRequestDetails, started_at_head: 
         details.number.to_string(),
     );
     let backend = FakeForgeBackend::open_pr_details(details, two_file_patch("new changed"));
-    let fetched = crate::forge::pr_open::fetch_pr_data(&backend, target).unwrap();
+    let fetched = crate::forge::pr_open::fetch_pr_data(&backend, target, false).unwrap();
     let (tx, rx) = std::sync::mpsc::channel();
     tx.send(crate::app::PrReloadEvent::Done {
         request: request.clone(),

@@ -650,6 +650,7 @@ mod tests {
             is_too_large: false,
             is_commit_message: false,
             content_hash: 0,
+            full_text: None,
         }
     }
 

@@ -14,9 +14,10 @@ pub fn get_working_tree_diff(
     repo: &Repository,
     whitespace_mode: &DiffWhitespaceMode,
     highlighter: &SyntaxHighlighter,
+    markdown_full_text: bool,
 ) -> Result<Vec<DiffFile>> {
     materialize_diff(whitespace_mode, |comparison| {
-        get_working_tree_diff_once(repo, comparison, highlighter)
+        get_working_tree_diff_once(repo, comparison, highlighter, markdown_full_text)
     })
 }
 
@@ -24,6 +25,7 @@ fn get_working_tree_diff_once(
     repo: &Repository,
     comparison: WhitespaceComparison,
     highlighter: &SyntaxHighlighter,
+    markdown_full_text: bool,
 ) -> Result<Vec<DiffFile>> {
     // Unborn HEAD (fresh `git init` / `git clone` of an empty remote) has no
     // tree to compare against; diff against an empty baseline so freshly
@@ -40,6 +42,7 @@ fn get_working_tree_diff_once(
     enhance_with_full_file_highlight(
         &mut files,
         highlighter,
+        markdown_full_text,
         |path| {
             head.as_ref()
                 .and_then(|tree| read_path_from_tree(repo, tree, path))
@@ -55,9 +58,10 @@ pub fn get_staged_diff(
     repo: &Repository,
     whitespace_mode: &DiffWhitespaceMode,
     highlighter: &SyntaxHighlighter,
+    markdown_full_text: bool,
 ) -> Result<Vec<DiffFile>> {
     materialize_diff(whitespace_mode, |comparison| {
-        get_staged_diff_once(repo, comparison, highlighter)
+        get_staged_diff_once(repo, comparison, highlighter, markdown_full_text)
     })
 }
 
@@ -65,6 +69,7 @@ fn get_staged_diff_once(
     repo: &Repository,
     comparison: WhitespaceComparison,
     highlighter: &SyntaxHighlighter,
+    markdown_full_text: bool,
 ) -> Result<Vec<DiffFile>> {
     let head = repo.head().ok().and_then(|h| h.peel_to_tree().ok());
     let index = repo.index()?;
@@ -75,6 +80,7 @@ fn get_staged_diff_once(
     enhance_with_full_file_highlight(
         &mut files,
         highlighter,
+        markdown_full_text,
         |path| {
             head.as_ref()
                 .and_then(|tree| read_path_from_tree(repo, tree, path))
@@ -128,9 +134,10 @@ pub fn get_unstaged_diff(
     repo: &Repository,
     whitespace_mode: &DiffWhitespaceMode,
     highlighter: &SyntaxHighlighter,
+    markdown_full_text: bool,
 ) -> Result<Vec<DiffFile>> {
     materialize_diff(whitespace_mode, |comparison| {
-        get_unstaged_diff_once(repo, comparison, highlighter)
+        get_unstaged_diff_once(repo, comparison, highlighter, markdown_full_text)
     })
 }
 
@@ -138,6 +145,7 @@ fn get_unstaged_diff_once(
     repo: &Repository,
     comparison: WhitespaceComparison,
     highlighter: &SyntaxHighlighter,
+    markdown_full_text: bool,
 ) -> Result<Vec<DiffFile>> {
     let index = repo.index()?;
     let mut opts = diff_options(comparison);
@@ -150,6 +158,7 @@ fn get_unstaged_diff_once(
     enhance_with_full_file_highlight(
         &mut files,
         highlighter,
+        markdown_full_text,
         |path| read_path_from_index(repo, &index, path),
         |path| read_path_from_workdir(repo, path),
     );
@@ -164,9 +173,16 @@ pub fn get_commit_range_diff(
     revision_range: &ResolvedRevisionRange<'_>,
     whitespace_mode: &DiffWhitespaceMode,
     highlighter: &SyntaxHighlighter,
+    markdown_full_text: bool,
 ) -> Result<Vec<DiffFile>> {
     materialize_diff(whitespace_mode, |comparison| {
-        get_commit_range_diff_once(repo, revision_range, comparison, highlighter)
+        get_commit_range_diff_once(
+            repo,
+            revision_range,
+            comparison,
+            highlighter,
+            markdown_full_text,
+        )
     })
 }
 
@@ -175,6 +191,7 @@ fn get_commit_range_diff_once(
     revision_range: &ResolvedRevisionRange<'_>,
     comparison: WhitespaceComparison,
     highlighter: &SyntaxHighlighter,
+    markdown_full_text: bool,
 ) -> Result<Vec<DiffFile>> {
     let (old_tree, new_tree) = match &revision_range.diff_target {
         RevisionDiffTarget::CommitList => {
@@ -190,7 +207,14 @@ fn get_commit_range_diff_once(
         }
     };
 
-    diff_commit_trees(repo, old_tree, new_tree, comparison, highlighter)
+    diff_commit_trees(
+        repo,
+        old_tree,
+        new_tree,
+        comparison,
+        highlighter,
+        markdown_full_text,
+    )
 }
 
 fn commit_list_range_trees<'repo>(
@@ -229,6 +253,7 @@ fn diff_commit_trees(
     new_tree: git2::Tree<'_>,
     comparison: WhitespaceComparison,
     highlighter: &SyntaxHighlighter,
+    markdown_full_text: bool,
 ) -> Result<Vec<DiffFile>> {
     let mut opts = diff_options(comparison);
 
@@ -237,6 +262,7 @@ fn diff_commit_trees(
     enhance_with_full_file_highlight(
         &mut files,
         highlighter,
+        markdown_full_text,
         |path| {
             old_tree
                 .as_ref()
@@ -254,9 +280,16 @@ pub fn get_working_tree_with_commits_diff(
     commit_ids: &[String],
     whitespace_mode: &DiffWhitespaceMode,
     highlighter: &SyntaxHighlighter,
+    markdown_full_text: bool,
 ) -> Result<Vec<DiffFile>> {
     materialize_diff(whitespace_mode, |comparison| {
-        get_working_tree_with_commits_diff_once(repo, commit_ids, comparison, highlighter)
+        get_working_tree_with_commits_diff_once(
+            repo,
+            commit_ids,
+            comparison,
+            highlighter,
+            markdown_full_text,
+        )
     })
 }
 
@@ -265,6 +298,7 @@ fn get_working_tree_with_commits_diff_once(
     commit_ids: &[String],
     comparison: WhitespaceComparison,
     highlighter: &SyntaxHighlighter,
+    markdown_full_text: bool,
 ) -> Result<Vec<DiffFile>> {
     if commit_ids.is_empty() {
         return Err(TuicrError::NoChanges);
@@ -289,6 +323,7 @@ fn get_working_tree_with_commits_diff_once(
     enhance_with_full_file_highlight(
         &mut files,
         highlighter,
+        markdown_full_text,
         |path| {
             old_tree
                 .as_ref()
@@ -361,6 +396,7 @@ fn parse_diff(diff: &Diff, highlighter: &SyntaxHighlighter) -> Result<Vec<DiffFi
             is_too_large,
             is_commit_message: false,
             content_hash,
+            full_text: None,
         });
     }
 
@@ -526,6 +562,7 @@ mod tests {
             &repo,
             &DiffWhitespaceMode::Normal,
             &SyntaxHighlighter::default(),
+            false,
         )
         .expect("failed to get diff");
 
@@ -554,6 +591,7 @@ mod tests {
             &repo,
             &DiffWhitespaceMode::Normal,
             &SyntaxHighlighter::default(),
+            false,
         )
         .expect("failed to get diff");
         assert_eq!(files.len(), 1);
@@ -590,11 +628,11 @@ mod tests {
 
         let highlighter = SyntaxHighlighter::default();
 
-        let unstaged = get_unstaged_diff(&repo, &DiffWhitespaceMode::Normal, &highlighter)
+        let unstaged = get_unstaged_diff(&repo, &DiffWhitespaceMode::Normal, &highlighter, false)
             .expect("unstaged diff failed");
         assert_eq!(unstaged.len(), 1);
         assert!(matches!(
-            get_staged_diff(&repo, &DiffWhitespaceMode::Normal, &highlighter),
+            get_staged_diff(&repo, &DiffWhitespaceMode::Normal, &highlighter, false),
             Err(TuicrError::NoChanges)
         ));
 
@@ -604,11 +642,11 @@ mod tests {
             .expect("failed to add file to index");
         index.write().expect("failed to write index");
 
-        let staged = get_staged_diff(&repo, &DiffWhitespaceMode::Normal, &highlighter)
+        let staged = get_staged_diff(&repo, &DiffWhitespaceMode::Normal, &highlighter, false)
             .expect("staged diff failed");
         assert_eq!(staged.len(), 1);
         assert!(matches!(
-            get_unstaged_diff(&repo, &DiffWhitespaceMode::Normal, &highlighter),
+            get_unstaged_diff(&repo, &DiffWhitespaceMode::Normal, &highlighter, false),
             Err(TuicrError::NoChanges)
         ));
     }
@@ -629,6 +667,7 @@ mod tests {
             &repo,
             &DiffWhitespaceMode::Normal,
             &SyntaxHighlighter::default(),
+            false,
         )
         .expect("unborn HEAD should produce a diff against an empty tree");
 
@@ -652,6 +691,7 @@ mod tests {
             &repo,
             &DiffWhitespaceMode::IgnoreAll,
             &SyntaxHighlighter::default(),
+            false,
         )
         .expect("whitespace-only edit may surface as a no-op diff file");
         assert_eq!(files.len(), 1);
@@ -664,6 +704,7 @@ mod tests {
             &repo,
             &DiffWhitespaceMode::IgnoreAll,
             &SyntaxHighlighter::default(),
+            false,
         )
         .expect("non-whitespace edit should still produce a diff");
         assert_eq!(files.len(), 1);
@@ -689,6 +730,7 @@ mod tests {
             &repo,
             &DiffWhitespaceMode::IgnoreAll,
             &SyntaxHighlighter::default(),
+            false,
         )
         .expect("mode-only edit should still produce a diff");
         assert_eq!(files.len(), 1);
@@ -1083,12 +1125,13 @@ mod tests {
         index.add_path(Path::new("app.py")).unwrap();
         index.write().unwrap();
 
-        let files = get_working_tree_diff(&repo, &auto_mode(), &SyntaxHighlighter::default())
-            .expect("unborn HEAD auto diff");
+        let files =
+            get_working_tree_diff(&repo, &auto_mode(), &SyntaxHighlighter::default(), false)
+                .expect("unborn HEAD auto diff");
         assert_visible(&files, "data.json", "unborn");
         assert_visible(&files, "app.py", "unborn");
 
-        let staged = get_staged_diff(&repo, &auto_mode(), &SyntaxHighlighter::default())
+        let staged = get_staged_diff(&repo, &auto_mode(), &SyntaxHighlighter::default(), false)
             .expect("unborn staged auto diff");
         assert_visible(&staged, "data.json", "unborn staged");
 

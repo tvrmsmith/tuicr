@@ -377,6 +377,7 @@ impl App {
         let base_sha = current.base_sha.clone();
         let show_pr_checks = self.show_pr_checks;
         let show_pr_comments = self.show_pr_comments;
+        let render_markdown_diffs = self.render_markdown_diffs;
         std::thread::spawn(move || {
             let backend = create_forge_backend(
                 &repository,
@@ -402,9 +403,14 @@ impl App {
                 merged_at: None,
                 diff_start_sha: None,
             };
-            let outcome = backend
-                .get_pull_request_commit_range_diff(&details, &start_sha, &end_sha)
-                .map_err(|e| e.to_string());
+            let outcome = crate::forge::pr_open::fetch_pr_range_patches(
+                backend.as_ref(),
+                &details,
+                &start_sha,
+                &end_sha,
+                render_markdown_diffs,
+            )
+            .map_err(|e| e.to_string());
             let _ = tx.send(PrRangeReloadEvent::Done {
                 request,
                 result: outcome,
@@ -544,6 +550,7 @@ impl App {
         let pr_number = current.key.number;
         let show_pr_checks = self.show_pr_checks;
         let show_pr_comments = self.show_pr_comments;
+        let render_markdown_diffs = self.render_markdown_diffs;
         std::thread::spawn(move || {
             let backend = create_forge_backend(
                 &repository,
@@ -553,7 +560,8 @@ impl App {
             );
             let target =
                 PullRequestTarget::with_repository(repository, pr_number, pr_number.to_string());
-            let outcome = fetch_pr_data(backend.as_ref(), target).map_err(|e| e.to_string());
+            let outcome = fetch_pr_data(backend.as_ref(), target, render_markdown_diffs)
+                .map_err(|e| e.to_string());
             let _ = tx.send(PrReloadEvent::Done {
                 request,
                 result: outcome,
@@ -631,7 +639,6 @@ impl App {
     ) -> Result<()> {
         use crate::forge::pr_open::prepare_open_pr;
 
-        self.markdown_diff_cache.forget_failures();
         let local_checkout = self
             .forge_backend
             .as_deref()
@@ -762,6 +769,7 @@ impl App {
             target,
             local_checkout.as_deref(),
             highlighter,
+            self.render_markdown_diffs,
         )?;
 
         let head_changed = opened.details.head_sha != current.key.head_sha;
@@ -1020,6 +1028,7 @@ impl App {
         let local_checkout = self.local_checkout_for(repository);
         let show_pr_checks = self.show_pr_checks;
         let show_pr_comments = self.show_pr_comments;
+        let render_markdown_diffs = self.render_markdown_diffs;
         std::thread::spawn(move || {
             let backend = create_forge_backend(
                 &summary_repo,
@@ -1029,7 +1038,8 @@ impl App {
             );
             let target =
                 PullRequestTarget::with_repository(summary_repo, pr_number, pr_number.to_string());
-            let outcome = fetch_pr_data(backend.as_ref(), target).map_err(|e| e.to_string());
+            let outcome = fetch_pr_data(backend.as_ref(), target, render_markdown_diffs)
+                .map_err(|e| e.to_string());
             let _ = tx.send(PrOpenEvent::Done {
                 request,
                 result: outcome,
@@ -1362,6 +1372,7 @@ impl App {
             target,
             local_checkout.as_deref(),
             highlighter,
+            self.render_markdown_diffs,
         )?;
         self.seed_configured_visibility(&mut opened.session);
         let opened = Self::opened_pr_with_persisted_session(opened)?;

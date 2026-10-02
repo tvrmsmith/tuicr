@@ -2300,6 +2300,7 @@ mod remote_comments_side_by_side_snapshot_tests {
             is_too_large: false,
             is_commit_message: false,
             content_hash,
+            full_text: None,
         }
     }
 
@@ -2430,6 +2431,7 @@ mod remote_comments_side_by_side_snapshot_tests {
             is_too_large: false,
             is_commit_message: false,
             content_hash,
+            full_text: None,
         };
 
         let mut app = make_pr_app_with(vec![file]);
@@ -2530,6 +2532,7 @@ mod remote_comments_side_by_side_snapshot_tests {
             is_too_large: false,
             is_commit_message: false,
             content_hash,
+            full_text: None,
         }
     }
 
@@ -2559,6 +2562,7 @@ mod remote_comments_side_by_side_snapshot_tests {
             is_too_large: false,
             is_commit_message: false,
             content_hash,
+            full_text: None,
         }
     }
 
@@ -2782,6 +2786,7 @@ mod remote_comments_side_by_side_snapshot_tests {
             is_too_large: false,
             is_commit_message: true,
             content_hash,
+            full_text: None,
         }
     }
 

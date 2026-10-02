@@ -41,6 +41,9 @@ fn parse_hg_description(desc: &str) -> (String, Option<String>) {
 pub struct HgBackend {
     info: VcsInfo,
     whitespace_mode: DiffWhitespaceMode,
+    /// Whether diff loads read each markdown file's full text
+    /// (`render_markdown_diffs`).
+    markdown_full_text: bool,
 }
 
 impl HgBackend {
@@ -86,7 +89,15 @@ impl HgBackend {
         Ok(Self {
             info,
             whitespace_mode,
+            markdown_full_text: false,
         })
+    }
+
+    /// Makes diff loads read each markdown file's full text into
+    /// `DiffFile::full_text` (`render_markdown_diffs`).
+    pub(crate) fn with_markdown_full_text(mut self, on: bool) -> Self {
+        self.markdown_full_text = on;
+        self
     }
 
     fn diff_args<'a>(comparison: WhitespaceComparison, args: &'a [&'a str]) -> Cow<'a, [&'a str]> {
@@ -277,6 +288,7 @@ impl VcsBackend for HgBackend {
             None,
             &mut files,
             highlighter,
+            self.markdown_full_text,
             hg_cat_batch,
         )?;
         Ok(files)
@@ -466,6 +478,7 @@ impl VcsBackend for HgBackend {
             Some(newest_short),
             &mut files,
             highlighter,
+            self.markdown_full_text,
             hg_cat_batch,
         )?;
         Ok(files)
@@ -574,6 +587,7 @@ impl VcsBackend for HgBackend {
             None,
             &mut files,
             highlighter,
+            self.markdown_full_text,
             hg_cat_batch,
         )?;
         Ok(files)
