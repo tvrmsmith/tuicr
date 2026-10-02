@@ -36,7 +36,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use crate::error::{Result, TuicrError};
-use crate::model::{DiffFile, DiffLine, FullText, LineOrigin, LineSide};
+use crate::model::{DiffFile, DiffLine, FileStatus, FullText, LineOrigin, LineSide};
 use crate::syntax::{
     HighlightedLines, HighlightedSpans, SyntaxHighlighter, is_markdown_path,
     needs_full_file_highlight,
@@ -75,9 +75,12 @@ fn needs_container_highlight(file: &DiffFile) -> bool {
     syntax_path(file).is_some_and(needs_full_file_highlight)
 }
 
-/// Whether the full-file pass attaches `file`'s `full_text`.
+/// Whether the full-file pass attaches `file`'s `full_text`. Added and
+/// Deleted files render from their hunks, which are the whole file.
 fn needs_full_text(file: &DiffFile, markdown_full_text: bool) -> bool {
-    markdown_full_text && syntax_path(file).is_some_and(is_markdown_path)
+    markdown_full_text
+        && !matches!(file.status, FileStatus::Added | FileStatus::Deleted)
+        && syntax_path(file).is_some_and(is_markdown_path)
 }
 
 /// Whether the full-file pass reads `file` at all. Binary, too-large, and

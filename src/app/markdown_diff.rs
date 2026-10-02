@@ -8,7 +8,7 @@ use crate::syntax::SyntaxHighlighter;
 use crate::syntax::is_markdown_path;
 use crate::syntax::markdown_render::render_lines;
 use ratatui::style::Style;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 type Row = Vec<(Style, String)>;
@@ -17,6 +17,14 @@ type Row = Vec<(Style, String)>;
 #[derive(Default)]
 pub(crate) struct MarkdownDiffCache {
     files: HashMap<PathBuf, CachedFile>,
+}
+
+#[cfg(test)]
+impl MarkdownDiffCache {
+    /// The display paths holding cached rows.
+    pub(crate) fn paths(&self) -> Vec<&PathBuf> {
+        self.files.keys().collect()
+    }
 }
 
 struct CachedFile {
@@ -57,21 +65,24 @@ impl Source {
         }
     }
 
-    fn same_as(&self, other: &Source) -> bool {
-        match (self, other) {
-            // The old side is rebuilt from the same text, so it matches too.
-            (Self::Full { text: a, .. }, Self::Full { text: b, .. }) => Arc::ptr_eq(a, b),
-            (
-                Self::Hunks {
-                    old: a_old,
-                    new: a_new,
-                },
-                Self::Hunks {
-                    old: b_old,
-                    new: b_new,
-                },
-            ) => a_old == b_old && a_new == b_new,
-            _ => false,
+    /// Whether `file` would render from this same source. A held `full_text`
+    /// matches by identity: the loader that built it cut the hunks too, and
+    /// they passed the checks when this entry was rendered.
+    fn matches(&self, file: &DiffFile) -> bool {
+        match self {
+            Self::Full { text, .. } => file
+                .full_text
+                .as_ref()
+                .is_some_and(|current| Arc::ptr_eq(current, text)),
+            Self::Hunks { old, new } => match file.status {
+                FileStatus::Added => {
+                    old.is_empty() && new.iter().map(Some).eq(hunk_side(file, |l| l.new_lineno))
+                }
+                FileStatus::Deleted => {
+                    new.is_empty() && old.iter().map(Some).eq(hunk_side(file, |l| l.old_lineno))
+                }
+                _ => false,
+            },
         }
     }
 }
@@ -109,10 +120,10 @@ fn render_source(file: &DiffFile) -> Option<Source> {
     match file.status {
         FileStatus::Added => Some(Source::Hunks {
             old: Vec::new(),
-            new: hunk_side(file, |line| line.new_lineno)?,
+            new: owned_hunk_side(file, |line| line.new_lineno)?,
         }),
         FileStatus::Deleted => Some(Source::Hunks {
-            old: hunk_side(file, |line| line.old_lineno)?,
+            old: owned_hunk_side(file, |line| line.old_lineno)?,
             new: Vec::new(),
         }),
         _ => {
@@ -136,14 +147,25 @@ fn render_source(file: &DiffFile) -> Option<Source> {
 }
 
 /// The hunk lines of a file whose hunks are the whole of one side, in order.
-/// `None` unless `lineno` numbers them 1, 2, 3, and so on.
-fn hunk_side(file: &DiffFile, lineno: impl Fn(&DiffLine) -> Option<u32>) -> Option<Vec<String>> {
+/// A line yields `None` unless `lineno` numbers it at its place: 1, 2, 3, and
+/// so on.
+fn hunk_side(
+    file: &DiffFile,
+    lineno: impl Fn(&DiffLine) -> Option<u32>,
+) -> impl Iterator<Item = Option<&String>> {
     file.hunks
         .iter()
         .flat_map(|hunk| &hunk.lines)
         .enumerate()
-        .map(|(idx, line)| (lineno(line) == Some(idx as u32 + 1)).then(|| line.content.clone()))
-        .collect()
+        .map(move |(idx, line)| (lineno(line) == Some(idx as u32 + 1)).then_some(&line.content))
+}
+
+/// `hunk_side` collected, or `None` when any line is out of place.
+fn owned_hunk_side(
+    file: &DiffFile,
+    lineno: impl Fn(&DiffLine) -> Option<u32>,
+) -> Option<Vec<String>> {
+    hunk_side(file, lineno).map(|line| line.cloned()).collect()
 }
 
 /// Index of the line before a hunk's range on one side. A zero-count range
@@ -251,9 +273,13 @@ fn spans_for_hunks(file: &DiffFile, sides: &RenderedSides) -> Option<Vec<Vec<Row
 impl App {
     /// With `render_markdown_diffs` on, replaces each markdown diff line's
     /// `highlighted_spans` with its rendered row. A file that cannot render
-    /// keeps its syntect spans.
+    /// keeps its syntect spans. Drops cached rows of files no longer shown.
     pub(crate) fn apply_markdown_diff_renders(&mut self) {
         self.apply_markdown_diff_renders_to(|_| true);
+        let shown: HashSet<&PathBuf> = self.diff_files.iter().map(DiffFile::display_path).collect();
+        self.markdown_diff_cache
+            .files
+            .retain(|path, _| shown.contains(path));
     }
 
     /// Like `apply_markdown_diff_renders`, for the files `include` accepts by
@@ -288,16 +314,16 @@ impl App {
         cache: &mut MarkdownDiffCache,
         file: &DiffFile,
     ) -> Option<Vec<Vec<Row>>> {
-        let source = render_source(file)?;
         let highlighter = self.theme.syntax_highlighter_arc();
         let path = file.display_path();
         if let Some(cached) = cache.files.get(path)
             && Arc::ptr_eq(&cached.highlighter, &highlighter)
-            && cached.source.same_as(&source)
+            && cached.source.matches(file)
         {
             return spans_for_hunks(file, &cached.rows);
         }
 
+        let source = render_source(file)?;
         let rows = RenderedSides::render(&self.theme, &source);
         let spans = spans_for_hunks(file, &rows)?;
         cache.files.insert(

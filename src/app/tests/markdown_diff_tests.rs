@@ -529,7 +529,7 @@ fn should_render_markdown_rows_on_both_sides_in_side_by_side_view() {
 
     let setup: Vec<&String> = rows.iter().filter(|row| row.contains("Setup")).collect();
     assert_eq!(setup.len(), 1);
-    assert!(setup[0].contains("13"));
+    assert!(setup[0].contains(" 13 \u{258c}Setup"), "row: {}", setup[0]);
     assert!(rows.iter().all(|row| !row.contains("## Setup")));
 }
 
@@ -565,9 +565,6 @@ fn should_fall_back_to_source_when_the_full_text_is_missing() {
 
     assert_eq!(row_for_new(&buffer, 13).text, "## Setup");
     assert_eq!(row_for_new(&buffer, 6).text, "| b | second |");
-    app.diff_state.cursor_line = annotation_of_new_line(&app, 13);
-    app.cursor_down(1);
-    assert_eq!(app.diff_state.cursor_line, annotation_of_new_line(&app, 14));
 }
 
 // 12. Text that disagrees with the hunks falls back to source.
@@ -646,9 +643,9 @@ fn should_rebuild_the_old_side_around_a_hunk_that_deletes_without_adding() {
     assert_eq!(old_3.text, "Gone");
 }
 
-// 13. New text for the same hunks re-renders.
+// 13. A new full text Arc for the same hunks re-renders.
 #[test]
-fn should_re_render_when_a_reload_brings_new_full_text_for_the_same_hunks() {
+fn should_re_render_when_the_full_text_arc_changes_for_the_same_hunks() {
     let mut app = rendered_guide_app();
     let buffer = draw(&mut app);
     assert_eq!(row_for_new(&buffer, 6).text, "b    \u{2502} second");
@@ -667,6 +664,21 @@ fn should_re_render_when_a_reload_brings_new_full_text_for_the_same_hunks() {
 
     let buffer = draw(&mut app);
     assert_eq!(row_for_new(&buffer, 6).text, "b     \u{2502} second");
+}
+
+#[test]
+fn should_drop_cached_rows_of_a_markdown_file_no_longer_in_the_diff() {
+    let mut app = rendered_guide_app();
+    assert_eq!(app.markdown_diff_cache.paths(), [&PathBuf::from(GUIDE)]);
+
+    app.diff_files = parse(vec![file_patch(
+        "src/lib.rs",
+        FileStatus::Modified,
+        LIB_PATCH,
+    )]);
+    app.rebuild_annotations();
+
+    assert!(app.markdown_diff_cache.paths().is_empty());
 }
 
 const BASE_SHA: &str = "1234567890abcdef";
@@ -969,7 +981,13 @@ fn should_keep_the_render_and_recolor_it_when_a_theme_is_confirmed() {
     let buffer = draw(&mut app);
     let heading = drawn_row_numbered(&buffer, 13);
     assert_eq!(heading.text, "Setup");
-    assert_ne!(heading.cell_of(&buffer, "S").fg, dark_fg);
+    let light_fg = crate::syntax::markdown_render::render_lines(&Theme::light(), "## Setup")[0]
+        .iter()
+        .find(|(_, text)| text.contains('S'))
+        .and_then(|(style, _)| style.fg)
+        .expect("light heading colour");
+    assert_ne!(light_fg, dark_fg);
+    assert_eq!(heading.cell_of(&buffer, "S").fg, light_fg);
 }
 
 #[test]

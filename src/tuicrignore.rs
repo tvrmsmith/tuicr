@@ -1,3 +1,4 @@
+use std::borrow::Borrow;
 use std::path::Path;
 
 use ignore::gitignore::GitignoreBuilder;
@@ -24,7 +25,7 @@ pub fn filter_diff_files(repo_root: &Path, diff_files: Vec<DiffFile>) -> Vec<Dif
 /// before hunks are parsed and highlighted, so an ignored file never pays
 /// the syntax-highlighting cost (a large minified bundle otherwise stalls
 /// PR open even though it is excluded from the review).
-pub fn filter_file_patches(repo_root: &Path, patches: Vec<FilePatch>) -> Vec<FilePatch> {
+pub fn filter_file_patches<P: Borrow<FilePatch>>(repo_root: &Path, patches: Vec<P>) -> Vec<P> {
     let Some(matcher) = load_matcher(repo_root) else {
         return patches;
     };
@@ -33,6 +34,7 @@ pub fn filter_file_patches(repo_root: &Path, patches: Vec<FilePatch>) -> Vec<Fil
         .into_iter()
         .filter(|patch| {
             patch
+                .borrow()
                 .display_path()
                 .is_none_or(|path| !matcher.matched_path_or_any_parents(path, false).is_ignore())
         })
