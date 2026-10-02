@@ -59,7 +59,7 @@ pub type PrFetchData = (
 /// root are applied. When absent (PR opened via URL outside a checkout, or
 /// for a different repo), no filtering happens.
 pub fn open_pull_request(
-    backend: &dyn ForgeBackend,
+    backend: &(dyn ForgeBackend + Sync),
     target: PullRequestTarget,
     local_checkout: Option<&Path>,
     highlighter: &SyntaxHighlighter,
@@ -88,7 +88,7 @@ pub fn open_pull_request(
 /// only, we still return the diff so PR review proceeds without the
 /// inline selector. The first two calls remain required.
 pub fn fetch_pr_data(
-    backend: &dyn ForgeBackend,
+    backend: &(dyn ForgeBackend + Sync),
     target: PullRequestTarget,
     markdown_full_text: bool,
 ) -> Result<PrFetchData> {
@@ -117,7 +117,7 @@ pub fn fetch_pr_data(
 /// `start_sha` and `end_sha`, and with `markdown_full_text` each markdown
 /// file's text at `end_sha`.
 pub fn fetch_pr_range_patches(
-    backend: &dyn ForgeBackend,
+    backend: &(dyn ForgeBackend + Sync),
     details: &PullRequestDetails,
     start_sha: &str,
     end_sha: &str,
@@ -136,51 +136,78 @@ pub fn fetch_pr_range_patches(
     Ok(patches)
 }
 
-/// Reads each Modified or Renamed markdown patch's text at `head_sha` into
-/// `FilePatch::full_text`, leaving the old side `None` for the App to rebuild
-/// from the hunks. The forge's base sha is the base branch tip, not the merge
-/// base the diff was cut from, so reading it would show source for any PR
-/// whose base moved. Added and Deleted files need none: their hunk is the
-/// whole file. A file whose read fails (Gerrit cannot read content at all)
-/// keeps `None` and shows as source.
+/// How many markdown head texts `attach_markdown_full_texts` reads at once.
+const MARKDOWN_FETCH_WORKERS: usize = 4;
+
+/// Reads each changed Modified, Renamed, or Copied markdown patch's text at
+/// `head_sha` into `FilePatch::full_text`, leaving the old side `None` for
+/// the App to rebuild from the hunks. The forge's base sha is the base branch
+/// tip, not the merge base the diff was cut from, so reading it would show
+/// source for any PR whose base moved. Added and Deleted files need none:
+/// their hunk is the whole file. Patches the backend's checkout ignores are
+/// skipped, as `prepare_open_pr` drops them. The reads run on up to
+/// `MARKDOWN_FETCH_WORKERS` threads. A file whose read fails (Gerrit cannot
+/// read content at all) keeps `None` and shows as source.
 fn attach_markdown_full_texts(
-    backend: &dyn ForgeBackend,
+    backend: &(dyn ForgeBackend + Sync),
     repository: &ForgeRepository,
     base_sha: &str,
     head_sha: &str,
     patches: &mut [FilePatch],
 ) {
-    for patch in patches
+    let mut wanted: Vec<&mut FilePatch> = patches
         .iter_mut()
         .filter(|patch| wants_markdown_full_text(patch))
-    {
-        let Some(path) = ForgeFileLinesRequest::path_for_side(
-            ForgeFileSide::Head,
-            patch.old_path.as_ref(),
-            patch.new_path.as_ref(),
-        ) else {
-            continue;
-        };
-        let Ok(new) = backend.fetch_file_content(ForgeFileLinesRequest {
-            repository: repository.clone(),
-            base_sha: base_sha.to_string(),
-            head_sha: head_sha.to_string(),
-            path,
-            status: patch.status,
-            side: ForgeFileSide::Head,
-            start_line: 1,
-            end_line: u32::MAX,
-        }) else {
-            continue;
-        };
-        patch.full_text = crate::vcs::full_text(None, Some(&new)).map(Arc::new);
+        .collect();
+    if let Some(root) = backend.local_checkout_path() {
+        wanted = tuicrignore::filter_file_patches(&root, wanted);
     }
+    let per_worker = wanted.len().div_ceil(MARKDOWN_FETCH_WORKERS).max(1);
+    std::thread::scope(|scope| {
+        for group in wanted.chunks_mut(per_worker) {
+            scope.spawn(move || {
+                for patch in group {
+                    attach_markdown_full_text(backend, repository, base_sha, head_sha, patch);
+                }
+            });
+        }
+    });
+}
+
+fn attach_markdown_full_text(
+    backend: &(dyn ForgeBackend + Sync),
+    repository: &ForgeRepository,
+    base_sha: &str,
+    head_sha: &str,
+    patch: &mut FilePatch,
+) {
+    let Some(path) = ForgeFileLinesRequest::path_for_side(
+        ForgeFileSide::Head,
+        patch.old_path.as_ref(),
+        patch.new_path.as_ref(),
+    ) else {
+        return;
+    };
+    let Ok(new) = backend.fetch_file_content(ForgeFileLinesRequest {
+        repository: repository.clone(),
+        base_sha: base_sha.to_string(),
+        head_sha: head_sha.to_string(),
+        path,
+        status: patch.status,
+        side: ForgeFileSide::Head,
+        start_line: 1,
+        end_line: u32::MAX,
+    }) else {
+        return;
+    };
+    patch.full_text = crate::vcs::full_text(None, Some(&new)).map(Arc::new);
 }
 
 fn wants_markdown_full_text(patch: &FilePatch) -> bool {
-    matches!(patch.status, FileStatus::Modified | FileStatus::Renamed)
+    !matches!(patch.status, FileStatus::Added | FileStatus::Deleted)
         && !patch.is_binary
         && !patch.is_too_large
+        && patch.patch.lines().any(|line| line.starts_with("@@ "))
         && patch
             .display_path()
             .is_some_and(crate::syntax::is_markdown_path)
@@ -282,7 +309,7 @@ mod tests {
     };
     use crate::model::DiffLine;
     use chrono::Utc;
-    use std::cell::RefCell;
+    use std::sync::Mutex;
 
     fn repo() -> ForgeRepository {
         ForgeRepository::github("github.com", "agavra", "tuicr")
@@ -312,7 +339,7 @@ mod tests {
     struct StaticBackend {
         details: PullRequestDetails,
         patch: String,
-        calls: RefCell<Vec<&'static str>>,
+        calls: Mutex<Vec<&'static str>>,
     }
 
     impl ForgeBackend for StaticBackend {
@@ -320,11 +347,11 @@ mod tests {
             unimplemented!()
         }
         fn get_pull_request(&self, _target: PullRequestTarget) -> Result<PullRequestDetails> {
-            self.calls.borrow_mut().push("get_pull_request");
+            self.calls.lock().unwrap().push("get_pull_request");
             Ok(self.details.clone())
         }
         fn get_pull_request_diff(&self, _pr: &PullRequestDetails) -> Result<Vec<FilePatch>> {
-            self.calls.borrow_mut().push("get_pull_request_diff");
+            self.calls.lock().unwrap().push("get_pull_request_diff");
             Ok(crate::vcs::diff_parser::git_fixture_file_patches(
                 &self.patch,
             ))
@@ -380,7 +407,7 @@ index 1111111..2222222 100644
         let backend = StaticBackend {
             details: details(),
             patch: SIMPLE_PATCH.to_string(),
-            calls: RefCell::new(Vec::new()),
+            calls: Mutex::new(Vec::new()),
         };
         let target = PullRequestTarget::with_repository(repo(), 125, "125");
         let highlighter = SyntaxHighlighter::default();
@@ -401,7 +428,7 @@ index 1111111..2222222 100644
         );
         // and — both forge calls were made, in order
         assert_eq!(
-            backend.calls.borrow().as_slice(),
+            backend.calls.lock().unwrap().as_slice(),
             &["get_pull_request", "get_pull_request_diff"],
         );
     }
@@ -446,7 +473,7 @@ rename to new_name.rs
         let backend = StaticBackend {
             details: details(),
             patch: MULTI_STATUS_PATCH.to_string(),
-            calls: RefCell::new(Vec::new()),
+            calls: Mutex::new(Vec::new()),
         };
         let target = PullRequestTarget::with_repository(repo(), 125, "125");
         let highlighter = SyntaxHighlighter::default();
@@ -485,7 +512,7 @@ rename to new_name.rs
         let backend = StaticBackend {
             details: details(),
             patch: String::new(),
-            calls: RefCell::new(Vec::new()),
+            calls: Mutex::new(Vec::new()),
         };
         let target = PullRequestTarget::with_repository(repo(), 125, "125");
         let highlighter = SyntaxHighlighter::default();
@@ -506,9 +533,11 @@ rename to new_name.rs
     /// Serves a modified markdown file and a modified Rust file, and the
     /// markdown file's head content per sha, recording every `fetch_file_content` request.
     struct ServingBackend {
+        patches: Vec<FilePatch>,
         content: std::collections::HashMap<(String, PathBuf), String>,
         fail_content: bool,
-        content_requests: RefCell<Vec<(String, PathBuf)>>,
+        local_checkout: Option<PathBuf>,
+        content_requests: Mutex<Vec<(String, PathBuf)>>,
     }
 
     impl ServingBackend {
@@ -521,15 +550,21 @@ rename to new_name.rs
             .into_iter()
             .collect();
             Self {
+                patches: vec![
+                    modified("docs/guide.md", GUIDE_PATCH),
+                    modified("src/lib.rs", LIB_PATCH),
+                ],
                 content,
                 fail_content: false,
-                content_requests: RefCell::new(Vec::new()),
+                local_checkout: None,
+                content_requests: Mutex::new(Vec::new()),
             }
         }
 
         fn requested_shas(&self) -> Vec<String> {
             self.content_requests
-                .borrow()
+                .lock()
+                .unwrap()
                 .iter()
                 .map(|(sha, _)| sha.clone())
                 .collect()
@@ -553,17 +588,17 @@ rename to new_name.rs
             Ok(details())
         }
         fn get_pull_request_diff(&self, _pr: &PullRequestDetails) -> Result<Vec<FilePatch>> {
-            Ok(vec![
-                modified("docs/guide.md", GUIDE_PATCH),
-                modified("src/lib.rs", LIB_PATCH),
-            ])
+            Ok(self.patches.clone())
         }
         fn fetch_file_lines(&self, _req: ForgeFileLinesRequest) -> Result<Vec<DiffLine>> {
             unimplemented!()
         }
+        fn local_checkout_path(&self) -> Option<PathBuf> {
+            self.local_checkout.clone()
+        }
         fn fetch_file_content(&self, request: ForgeFileLinesRequest) -> Result<String> {
             let key = (request.sha().to_string(), request.path.clone());
-            self.content_requests.borrow_mut().push(key.clone());
+            self.content_requests.lock().unwrap().push(key.clone());
             if self.fail_content {
                 return Err(TuicrError::Forge("content unavailable".to_string()));
             }
@@ -641,7 +676,7 @@ rename to new_name.rs
         );
         assert_eq!(file_at(&opened.diff_files, "src/lib.rs").full_text, None);
         assert_eq!(
-            *backend.content_requests.borrow(),
+            *backend.content_requests.lock().unwrap(),
             [(
                 "abcdef0123456789".to_string(),
                 std::path::PathBuf::from("docs/guide.md")
@@ -650,12 +685,46 @@ rename to new_name.rs
     }
 
     #[test]
+    fn should_attach_the_head_text_to_every_markdown_file_read_in_parallel() {
+        let paths: Vec<String> = (0..9).map(|n| format!("docs/page{n}.md")).collect();
+        let backend = ServingBackend {
+            patches: paths
+                .iter()
+                .map(|path| modified(path, GUIDE_PATCH))
+                .collect(),
+            content: paths
+                .iter()
+                .map(|path| {
+                    (
+                        (details().head_sha, PathBuf::from(path)),
+                        GUIDE_HEAD.to_string(),
+                    )
+                })
+                .collect(),
+            ..ServingBackend::new()
+        };
+
+        let opened = open_serving(&backend, true);
+
+        for path in &paths {
+            assert_eq!(
+                file_at(&opened.diff_files, path).full_text.as_deref(),
+                Some(&crate::model::FullText {
+                    old: None,
+                    new: lines(GUIDE_HEAD),
+                }),
+                "{path}"
+            );
+        }
+    }
+
+    #[test]
     fn should_not_fetch_file_content_when_markdown_full_text_is_off() {
         let backend = ServingBackend::new();
 
         let opened = open_serving(&backend, false);
 
-        assert_eq!(backend.content_requests.borrow().len(), 0);
+        assert_eq!(backend.content_requests.lock().unwrap().len(), 0);
         assert_eq!(file_at(&opened.diff_files, "docs/guide.md").full_text, None);
     }
 
@@ -668,7 +737,39 @@ rename to new_name.rs
 
         let opened = open_serving(&backend, true);
 
+        assert_eq!(backend.requested_shas(), [details().head_sha]);
         assert_eq!(file_at(&opened.diff_files, "docs/guide.md").full_text, None);
+    }
+
+    #[test]
+    fn should_fetch_markdown_text_only_for_kept_patches_with_hunks() {
+        let checkout = tempfile::tempdir().expect("temp dir");
+        std::fs::write(checkout.path().join(".tuicrignore"), "drafts/\n")
+            .expect("write .tuicrignore");
+        let renamed = FilePatch::new(
+            Some(PathBuf::from("docs/before.md")),
+            Some(PathBuf::from("docs/after.md")),
+            crate::model::FileStatus::Renamed,
+            "",
+        );
+        let backend = ServingBackend {
+            patches: vec![
+                modified("docs/guide.md", GUIDE_PATCH),
+                modified("drafts/notes.md", GUIDE_PATCH),
+                renamed,
+                modified("docs/mode-only.md", ""),
+            ],
+            local_checkout: Some(checkout.path().to_path_buf()),
+            ..ServingBackend::new()
+        };
+
+        let target = PullRequestTarget::with_repository(repo(), 125, "125");
+        fetch_pr_data(&backend, target, true).expect("PR data");
+
+        assert_eq!(
+            *backend.content_requests.lock().unwrap(),
+            [(details().head_sha, PathBuf::from("docs/guide.md"))]
+        );
     }
 
     #[test]

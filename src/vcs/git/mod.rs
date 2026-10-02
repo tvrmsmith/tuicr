@@ -862,10 +862,38 @@ mod tests {
                 .get_staged_diff(&SyntaxHighlighter::default())
                 .unwrap();
 
-            let text = file_at(&files, "docs/guide.md").full_text.clone();
             assert_eq!(
-                text.map(|t| t.new.clone()),
-                Some(lines(staged)),
+                file_at(&files, "docs/guide.md").full_text.as_deref(),
+                Some(&crate::model::FullText {
+                    old: lines(GUIDE_HEAD),
+                    new: lines(staged),
+                }),
+                "{preference:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn should_not_read_full_text_for_added_or_deleted_markdown_files() {
+        for preference in [GitBackendPreference::Libgit2, GitBackendPreference::Cli] {
+            let dir = markdown_repo();
+            fs::write(dir.path().join("docs/new.md"), "# New\n").unwrap();
+            run_git_command(dir.path(), &["add", "docs/new.md"]).unwrap();
+            run_git_command(dir.path(), &["rm", "-q", "docs/guide.md"]).unwrap();
+            let backend = markdown_backend(dir.path(), preference, true);
+
+            let files = backend
+                .get_staged_diff(&SyntaxHighlighter::default())
+                .unwrap();
+
+            assert_eq!(
+                file_at(&files, "docs/new.md").full_text,
+                None,
+                "{preference:?}"
+            );
+            assert_eq!(
+                file_at(&files, "docs/guide.md").full_text,
+                None,
                 "{preference:?}"
             );
         }
