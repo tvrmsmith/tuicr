@@ -1535,7 +1535,7 @@ impl CommentBoxes<'_> {
             comment_type,
             &self.body_rows(content, width),
             line_range,
-            Self::box_width(width),
+            crate::ui::comment_panel::box_width(width),
             author,
         )
     }
@@ -1544,7 +1544,7 @@ impl CommentBoxes<'_> {
     /// content and reused until the width, the theme, or `render_markdown`
     /// changes.
     pub(crate) fn body_rows(&self, content: &str, width: usize) -> Rc<Vec<BlockRow>> {
-        let box_width = Self::box_width(width);
+        let box_width = crate::ui::comment_panel::box_width(width);
         let highlighter = self.theme.syntax_highlighter_arc();
         let mut cache = self.cache.borrow_mut();
         if !cache.as_ref().is_some_and(|hit| {
@@ -1571,10 +1571,5 @@ impl CommentBoxes<'_> {
         ));
         cache.rows.insert(content.to_string(), Rc::clone(&rows));
         rows
-    }
-
-    /// Boxes draw at the column width minus the cursor-indicator column.
-    fn box_width(width: usize) -> usize {
-        width.saturating_sub(1)
     }
 }

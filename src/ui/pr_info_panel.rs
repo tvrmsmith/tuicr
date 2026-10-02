@@ -140,13 +140,14 @@ pub fn append_pr_info_section(
 /// this frame; boxes outside it are replaced with blank placeholder rows. These
 /// comments sit at the very top of the document, so for most of a review they
 /// are scrolled past — and formatting them costs the same markdown pass as any
-/// other comment box.
+/// other comment box. `width` is the column width, cursor-indicator column
+/// included, as every comment box takes.
 pub fn append_issue_comments_section(
     app: &App,
     lines: &mut Vec<Line<'static>>,
     line_idx: &mut usize,
     current_line_idx: usize,
-    content_width: usize,
+    width: usize,
     visible: (usize, usize),
 ) {
     let Some(info) = app.pr_info.as_ref() else {
@@ -174,9 +175,6 @@ pub fn append_issue_comments_section(
         label: app.comment_type_label(&note_type),
         color: app.comment_type_color(&note_type),
     };
-    // `content_width` excludes the indicator column; comment boxes take the
-    // column width that includes it.
-    let width = content_width.saturating_add(1);
     for comment in &info.issue_comments {
         let rows = app.comment_display_lines(&comment.body, width);
         if !crate::ui::diff_view::comment_box_visible(*line_idx, rows, visible) {

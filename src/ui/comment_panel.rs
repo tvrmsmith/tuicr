@@ -87,6 +87,12 @@ fn highlighted_window_spans(
     out
 }
 
+/// The width a comment box draws at inside a column `column_width` wide: the
+/// cursor-indicator column comes off.
+pub(crate) fn box_width(column_width: usize) -> usize {
+    column_width.saturating_sub(1)
+}
+
 /// Information about where the cursor should be positioned within comment input
 #[derive(Debug, Clone)]
 pub struct CommentCursorInfo {
@@ -110,6 +116,9 @@ pub struct CommentTypePresentation {
 ///
 /// Returns a tuple of (lines, cursor_info) where cursor_info contains the position
 /// of the cursor within the formatted output for IME positioning.
+///
+/// `column_width` is the column width, cursor-indicator column included, as
+/// every comment box takes.
 #[allow(clippy::too_many_arguments)]
 pub fn format_comment_input_lines(
     theme: &Theme,
@@ -118,10 +127,11 @@ pub fn format_comment_input_lines(
     cursor_pos: usize,
     line_range: Option<LineRange>,
     is_editing: bool,
-    width: usize,
+    column_width: usize,
     vim_mode: Option<(&str, bool)>,
     supports_keyboard_enhancement: bool,
 ) -> (Vec<Line<'static>>, CommentCursorInfo) {
+    let width = box_width(column_width);
     let type_style = styles::comment_type_style(theme, comment_type.color);
     let border_style = styles::comment_border_style(theme, comment_type.color);
     let cursor_style = Style::default()

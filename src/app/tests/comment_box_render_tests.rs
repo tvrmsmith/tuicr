@@ -10,7 +10,7 @@ use ratatui::buffer::Buffer;
 use ratatui::style::Modifier;
 
 use super::grouping_tests::{build_app_over, empty_session, stub_vcs_info};
-use super::pr_info_tests::{build_pr_app, draw_app, find_text, rows_of};
+use super::pr_info_tests::{build_pr_app, draw_app, find_text, rows_of, sample_pr_info};
 use crate::app::*;
 use crate::model::{Comment, CommentType, DiffFile, DiffHunk, DiffLine, LineOrigin, LineRange};
 
@@ -117,7 +117,8 @@ fn review_comment_box_fits_its_rendered_rows() {
     assert!(rows[tail + 1].contains('╰'), "{rows:#?}");
     assert!(rows[tail + 2].contains(LINE_TWO_MARKER), "{rows:#?}");
 
-    let top = row_with(&rows, "├");
+    let top = row_with(&rows, "fn first() {}") + 1;
+    assert!(rows[top].contains('├'), "{rows:#?}");
     let drawn = tail + 1 - top + 1;
     let annotated = annotations_matching(&app, |line| {
         matches!(line, AnnotatedLine::LineComment { .. })
@@ -204,8 +205,8 @@ fn rendering_off_draws_a_comment_as_source() {
 /// `App::comment_display_lines` blank rows, and the annotation builder sizes
 /// every comment the same way. If that count drifted from the rows a box
 /// draws, the cursor would land on the wrong row and culled boxes would leave
-/// the wrong gap. Pins the annotation count to the drawn box in both layouts
-/// at several terminal widths.
+/// the wrong gap. Pins each comment kind's annotation count to its drawn box
+/// in both layouts at several terminal widths.
 #[test]
 fn comment_display_lines_matches_rendered_box_height() {
     let bodies = [
@@ -219,26 +220,80 @@ fn comment_display_lines_matches_rendered_box_height() {
         "> quoted advice\n\n`code` **bold** and _emphasis_ with a long tail that wraps",
         "See ![diagram](https://example.com/diagram.png) here.",
         &"日本語のテキストです ".repeat(12),
+        &"x".repeat(300),
+        &format!("https://example.com/{}end", "segment/".repeat(30)),
     ];
     for mode in [DiffViewMode::Unified, DiffViewMode::SideBySide] {
         for width in [80u16, 120, 160] {
             for body in bodies {
-                let mut app = app_with_line_comment(body);
+                let mut app = app_with_every_comment_kind(body);
                 app.diff_view_mode = mode;
                 let rows = draw_at(&mut app, width);
+                let context = format!("{mode:?} width={width} body={body:?}: {rows:#?}");
 
+                let review = row_with(&rows, "═══ Review Comments");
+                let issue = row_with(&rows, "═══ PR #42 Comments");
+                let file = row_with(&rows, "═══ src/notes.rs [M]");
+                let hunk = row_with(&rows, "@@ -1,3 +1,3 @@");
                 let anchor = row_with(&rows, "fn first() {}");
                 let next = row_with(&rows, LINE_TWO_MARKER);
-                let context = format!("{mode:?} width={width} body={body:?}: {rows:#?}");
-                assert!(rows[anchor + 1].contains('├'), "{context}");
-                assert!(rows[next - 1].contains('╰'), "{context}");
-                let annotated = annotations_matching(&app, |line| {
-                    matches!(line, AnnotatedLine::LineComment { .. })
-                });
-                assert_eq!(annotated, next - anchor - 1, "{context}");
+                // The file header's rule can wrap onto a second row.
+                let file_top = (file + 1..hunk)
+                    .find(|&y| rows[y].contains('╭'))
+                    .unwrap_or_else(|| panic!("file comment top border: {context}"));
+                let boxes: [(&str, usize, usize, IsKind); 4] = [
+                    ("review-level", review + 1, issue - 1, |line| {
+                        matches!(line, AnnotatedLine::ReviewComment { .. })
+                    }),
+                    ("PR conversation", issue + 1, file - 1, |line| {
+                        matches!(line, AnnotatedLine::IssueComment { .. })
+                    }),
+                    ("file", file_top, hunk - 1, |line| {
+                        matches!(line, AnnotatedLine::FileComment { .. })
+                    }),
+                    ("line", anchor + 1, next - 1, |line| {
+                        matches!(line, AnnotatedLine::LineComment { .. })
+                    }),
+                ];
+                for (kind, top, bottom, is_kind) in boxes {
+                    assert!(
+                        rows[top].contains('╭') || rows[top].contains('├'),
+                        "{kind} top border at row {top}: {context}"
+                    );
+                    assert!(
+                        rows[bottom].contains('╰'),
+                        "{kind} bottom border at row {bottom}: {context}"
+                    );
+                    assert_eq!(
+                        annotations_matching(&app, is_kind),
+                        bottom - top + 1,
+                        "{kind}: {context}"
+                    );
+                }
             }
         }
     }
+}
+
+type IsKind = fn(&AnnotatedLine) -> bool;
+
+/// `app_with_line_comment(content)` plus a review-level comment, a file
+/// comment, and a PR conversation comment, each holding `content`.
+fn app_with_every_comment_kind(content: &str) -> App {
+    let mut app = app_with_line_comment(content);
+    let note = CommentType::from_id("note");
+    app.session
+        .review_comments
+        .push(Comment::new(content.to_string(), note.clone(), None));
+    app.session
+        .get_file_mut(&PathBuf::from(PATH))
+        .expect("file review")
+        .add_file_comment(Comment::new(content.to_string(), note, None));
+    let mut info = sample_pr_info();
+    info.issue_comments[0].body = content.to_string();
+    app.pr_info = Some(info);
+    app.rebuild_annotations();
+    app
 }
 
 /// The rows of `app` drawn on a `width`-column terminal, after the first
@@ -250,7 +305,7 @@ fn draw_at(app: &mut App, width: u16) -> Vec<String> {
 }
 
 fn draw_frame(app: &mut App, width: u16) -> Buffer {
-    let mut terminal = Terminal::new(TestBackend::new(width, 100)).expect("test terminal");
+    let mut terminal = Terminal::new(TestBackend::new(width, 200)).expect("test terminal");
     terminal
         .draw(|frame| crate::ui::render(frame, app))
         .expect("draw frame");

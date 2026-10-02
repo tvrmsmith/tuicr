@@ -42,7 +42,6 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
     }
 
     let inner = block.inner(area);
-    let comment_width = inner.width.saturating_sub(1) as usize;
     frame.render_widget(block, area);
 
     // Update viewport height for scroll calculations
@@ -142,7 +141,7 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
                 app.comment_cursor,
                 None,
                 true,
-                comment_width,
+                inner.width as usize,
                 app.comment_vim_mode_label()
                     .as_ref()
                     .map(|(t, w)| (t.as_str(), *w)),
@@ -231,7 +230,7 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
             app.comment_cursor,
             None,
             false,
-            comment_width,
+            inner.width as usize,
             app.comment_vim_mode_label()
                 .as_ref()
                 .map(|(t, w)| (t.as_str(), *w)),
@@ -258,7 +257,7 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
         &mut lines,
         &mut line_idx,
         current_line_idx,
-        comment_width,
+        inner.width as usize,
         (visible_start, visible_end),
     );
 
@@ -338,7 +337,7 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
                         app.comment_cursor,
                         None,
                         true,
-                        comment_width,
+                        inner.width as usize,
                         app.comment_vim_mode_label()
                             .as_ref()
                             .map(|(t, w)| (t.as_str(), *w)),
@@ -405,7 +404,7 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
                 app.comment_cursor,
                 None,
                 false,
-                comment_width,
+                inner.width as usize,
                 app.comment_vim_mode_label()
                     .as_ref()
                     .map(|(t, w)| (t.as_str(), *w)),
@@ -719,7 +718,7 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
                                                 app.comment_cursor,
                                                 line_range,
                                                 true,
-                                                comment_width,
+                                                inner.width as usize,
                                                 app.comment_vim_mode_label()
                                                     .as_ref()
                                                     .map(|(t, w)| (t.as_str(), *w)),
@@ -846,7 +845,7 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
                                     app.comment_cursor,
                                     line_range,
                                     false,
-                                    comment_width,
+                                    inner.width as usize,
                                     app.comment_vim_mode_label()
                                         .as_ref()
                                         .map(|(t, w)| (t.as_str(), *w)),
@@ -906,7 +905,7 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
                                                 app.comment_cursor,
                                                 line_range,
                                                 true,
-                                                comment_width,
+                                                inner.width as usize,
                                                 app.comment_vim_mode_label()
                                                     .as_ref()
                                                     .map(|(t, w)| (t.as_str(), *w)),
@@ -1032,7 +1031,7 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
                                     app.comment_cursor,
                                     line_range,
                                     false,
-                                    comment_width,
+                                    inner.width as usize,
                                     app.comment_vim_mode_label()
                                         .as_ref()
                                         .map(|(t, w)| (t.as_str(), *w)),
