@@ -834,46 +834,38 @@ impl App {
     }
 
     /// Byte offset in the loaded `comment_buffer` for the start
-    /// (`cursor_at_end == false`) or end of the comment line the diff cursor is
-    /// on. The comment's block begins at annotation row `block_start` (row 0 =
-    /// top border, then one row per wrapped segment, then the bottom border).
+    /// (`cursor_at_end == false`) or end of the source lines behind the box row
+    /// the diff cursor is on. The comment's block begins at annotation row
+    /// `block_start` (row 0 = top border, then one row per body row, then the
+    /// bottom border). A rendered row can join several source lines: start is
+    /// the first line's start, end is the last line's end.
     pub(in crate::app) fn comment_current_line_cursor(
         &self,
         block_start: usize,
         cursor_at_end: bool,
     ) -> usize {
         let content = &self.comment_buffer;
-        let content_area = self.diff_state.viewport_width.saturating_sub(10);
-        // Visual content row under the cursor (skip the top border at row 0).
+        let rows = self
+            .comment_boxes()
+            .body_rows(content, self.diff_state.viewport_width);
+        // Body row under the cursor (skip the top border at row 0).
         let visual_target = self
             .diff_state
             .cursor_line
             .saturating_sub(block_start)
             .saturating_sub(1);
-
-        let mut visual = 0usize;
-        let mut byte = 0usize;
-        let mut line_start = 0usize;
-        let mut line_len = 0usize;
-        for line in content.split('\n') {
-            line_start = byte;
-            line_len = line.len();
-            let segs = crate::ui::comment_panel::wrap_segments(line, content_area)
-                .len()
-                .max(1);
-            if visual_target < visual + segs {
-                return if cursor_at_end {
-                    line_start + line_len
-                } else {
-                    line_start
-                };
-            }
-            visual += segs;
-            byte += line.len() + 1;
-        }
-        // Cursor on the bottom border or past the content: use the last line.
+        // Cursor on the bottom border or past the content: use the last row.
+        let Some(row) = rows.get(visual_target).or(rows.last()) else {
+            return 0;
+        };
+        let line = if cursor_at_end {
+            row.source.end.saturating_sub(1)
+        } else {
+            row.source.start
+        };
+        let line_start: usize = content.split('\n').take(line).map(|l| l.len() + 1).sum();
         if cursor_at_end {
-            line_start + line_len
+            line_start + content.split('\n').nth(line).map_or(0, str::len)
         } else {
             line_start
         }

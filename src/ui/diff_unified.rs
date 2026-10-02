@@ -42,7 +42,6 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
     }
 
     let inner = block.inner(area);
-    let comment_width = inner.width.saturating_sub(1) as usize;
     frame.render_widget(block, area);
 
     // Update viewport height for scroll calculations
@@ -142,7 +141,7 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
                 app.comment_cursor,
                 None,
                 true,
-                comment_width,
+                inner.width as usize,
                 app.comment_vim_mode_label()
                     .as_ref()
                     .map(|(t, w)| (t.as_str(), *w)),
@@ -152,7 +151,8 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
             comment_cursor_column = 1 + cursor_info.column;
             comment_input_box_range =
                 Some((line_idx, line_idx + input_lines.len().saturating_sub(1)));
-            let annotations_replaced = App::comment_display_lines(comment, inner.width as usize);
+            let annotations_replaced =
+                app.comment_display_lines(&comment.content, inner.width as usize);
             app.comment_input_annotation_offset =
                 Some((line_idx, input_lines.len(), annotations_replaced));
 
@@ -166,17 +166,16 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
                 line_idx += 1;
             }
         } else {
-            let rows = App::comment_display_lines(comment, inner.width as usize);
+            let rows = app.comment_display_lines(&comment.content, inner.width as usize);
             if !comment_box_visible(line_idx, rows, (visible_start, visible_end)) {
                 skip_comment_box(&mut lines, &mut line_idx, rows);
                 continue;
             }
-            let comment_lines = comment_panel::format_comment_lines(
-                &app.theme,
+            let comment_lines = app.comment_boxes().lines(
                 comment_type_presentation(app, &comment.comment_type),
                 &comment.content,
                 None,
-                comment_width,
+                inner.width as usize,
                 (comment.author != app.username).then_some(comment.author.as_str()),
             );
             for mut comment_line in comment_lines {
@@ -231,7 +230,7 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
             app.comment_cursor,
             None,
             false,
-            comment_width,
+            inner.width as usize,
             app.comment_vim_mode_label()
                 .as_ref()
                 .map(|(t, w)| (t.as_str(), *w)),
@@ -258,7 +257,7 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
         &mut lines,
         &mut line_idx,
         current_line_idx,
-        comment_width,
+        inner.width as usize,
         (visible_start, visible_end),
     );
 
@@ -338,7 +337,7 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
                         app.comment_cursor,
                         None,
                         true,
-                        comment_width,
+                        inner.width as usize,
                         app.comment_vim_mode_label()
                             .as_ref()
                             .map(|(t, w)| (t.as_str(), *w)),
@@ -351,7 +350,7 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
                     comment_input_box_range =
                         Some((line_idx, line_idx + input_lines.len().saturating_sub(1)));
                     let annotations_replaced =
-                        App::comment_display_lines(comment, inner.width as usize);
+                        app.comment_display_lines(&comment.content, inner.width as usize);
                     app.comment_input_annotation_offset =
                         Some((line_idx, input_lines.len(), annotations_replaced));
 
@@ -368,17 +367,16 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
                         line_idx += 1;
                     }
                 } else {
-                    let rows = App::comment_display_lines(comment, inner.width as usize);
+                    let rows = app.comment_display_lines(&comment.content, inner.width as usize);
                     if !comment_box_visible(line_idx, rows, (visible_start, visible_end)) {
                         skip_comment_box(&mut lines, &mut line_idx, rows);
                         continue;
                     }
-                    let comment_lines = comment_panel::format_comment_lines(
-                        &app.theme,
+                    let comment_lines = app.comment_boxes().lines(
                         comment_type_presentation(app, &comment.comment_type),
                         &comment.content,
                         None,
-                        comment_width,
+                        inner.width as usize,
                         (comment.author != app.username).then_some(comment.author.as_str()),
                     );
                     for mut comment_line in comment_lines {
@@ -406,7 +404,7 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
                 app.comment_cursor,
                 None,
                 false,
-                comment_width,
+                inner.width as usize,
                 app.comment_vim_mode_label()
                     .as_ref()
                     .map(|(t, w)| (t.as_str(), *w)),
@@ -720,7 +718,7 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
                                                 app.comment_cursor,
                                                 line_range,
                                                 true,
-                                                comment_width,
+                                                inner.width as usize,
                                                 app.comment_vim_mode_label()
                                                     .as_ref()
                                                     .map(|(t, w)| (t.as_str(), *w)),
@@ -734,8 +732,8 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
                                             line_idx,
                                             line_idx + input_lines.len().saturating_sub(1),
                                         ));
-                                        let annotations_replaced = App::comment_display_lines(
-                                            comment,
+                                        let annotations_replaced = app.comment_display_lines(
+                                            &comment.content,
                                             inner.width as usize,
                                         );
                                         app.comment_input_annotation_offset = Some((
@@ -769,8 +767,8 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
                                             .line_range
                                             .or_else(|| Some(LineRange::single(old_ln)));
                                         let box_top_row = line_idx;
-                                        let rows = App::comment_display_lines(
-                                            comment,
+                                        let rows = app.comment_display_lines(
+                                            &comment.content,
                                             inner.width as usize,
                                         );
                                         // The bar is recorded either way: it is
@@ -783,15 +781,14 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
                                         ) {
                                             skip_comment_box(&mut lines, &mut line_idx, rows);
                                         } else {
-                                            let comment_lines = comment_panel::format_comment_lines(
-                                                &app.theme,
+                                            let comment_lines = app.comment_boxes().lines(
                                                 comment_type_presentation(
                                                     app,
                                                     &comment.comment_type,
                                                 ),
                                                 &comment.content,
                                                 line_range,
-                                                comment_width,
+                                                inner.width as usize,
                                                 (comment.author != app.username)
                                                     .then_some(comment.author.as_str()),
                                             );
@@ -848,7 +845,7 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
                                     app.comment_cursor,
                                     line_range,
                                     false,
-                                    comment_width,
+                                    inner.width as usize,
                                     app.comment_vim_mode_label()
                                         .as_ref()
                                         .map(|(t, w)| (t.as_str(), *w)),
@@ -908,7 +905,7 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
                                                 app.comment_cursor,
                                                 line_range,
                                                 true,
-                                                comment_width,
+                                                inner.width as usize,
                                                 app.comment_vim_mode_label()
                                                     .as_ref()
                                                     .map(|(t, w)| (t.as_str(), *w)),
@@ -922,8 +919,8 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
                                             line_idx,
                                             line_idx + input_lines.len().saturating_sub(1),
                                         ));
-                                        let annotations_replaced = App::comment_display_lines(
-                                            comment,
+                                        let annotations_replaced = app.comment_display_lines(
+                                            &comment.content,
                                             inner.width as usize,
                                         );
                                         app.comment_input_annotation_offset = Some((
@@ -957,8 +954,8 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
                                             .line_range
                                             .or_else(|| Some(LineRange::single(new_ln)));
                                         let box_top_row = line_idx;
-                                        let rows = App::comment_display_lines(
-                                            comment,
+                                        let rows = app.comment_display_lines(
+                                            &comment.content,
                                             inner.width as usize,
                                         );
                                         // The bar is recorded either way: it is
@@ -971,15 +968,14 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
                                         ) {
                                             skip_comment_box(&mut lines, &mut line_idx, rows);
                                         } else {
-                                            let comment_lines = comment_panel::format_comment_lines(
-                                                &app.theme,
+                                            let comment_lines = app.comment_boxes().lines(
                                                 comment_type_presentation(
                                                     app,
                                                     &comment.comment_type,
                                                 ),
                                                 &comment.content,
                                                 line_range,
-                                                comment_width,
+                                                inner.width as usize,
                                                 (comment.author != app.username)
                                                     .then_some(comment.author.as_str()),
                                             );
@@ -1035,7 +1031,7 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
                                     app.comment_cursor,
                                     line_range,
                                     false,
-                                    comment_width,
+                                    inner.width as usize,
                                     app.comment_vim_mode_label()
                                         .as_ref()
                                         .map(|(t, w)| (t.as_str(), *w)),

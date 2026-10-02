@@ -475,7 +475,7 @@ pub(super) fn render_side_by_side_diff(frame: &mut Frame, app: &mut App, area: R
                 app.comment_cursor,
                 None,
                 true,
-                ctx.panel_width.saturating_sub(1),
+                ctx.panel_width,
                 app.comment_vim_mode_label()
                     .as_ref()
                     .map(|(t, w)| (t.as_str(), *w)),
@@ -485,7 +485,8 @@ pub(super) fn render_side_by_side_diff(frame: &mut Frame, app: &mut App, area: R
             comment_cursor_column = 1 + cursor_info.column;
             comment_input_box_range =
                 Some((line_idx, line_idx + input_lines.len().saturating_sub(1)));
-            let annotations_replaced = App::comment_display_lines(comment, inner.width as usize);
+            let annotations_replaced =
+                app.comment_display_lines(&comment.content, inner.width as usize);
             annotation_offset = Some((line_idx, input_lines.len(), annotations_replaced));
 
             for mut input_line in input_lines {
@@ -498,17 +499,16 @@ pub(super) fn render_side_by_side_diff(frame: &mut Frame, app: &mut App, area: R
                 line_idx += 1;
             }
         } else {
-            let rows = App::comment_display_lines(comment, ctx.panel_width);
+            let rows = app.comment_display_lines(&comment.content, ctx.panel_width);
             if !ctx.box_visible(line_idx, rows) {
                 skip_comment_box(&mut lines, &mut line_idx, rows);
                 continue;
             }
-            let comment_lines = comment_panel::format_comment_lines(
-                &app.theme,
+            let comment_lines = app.comment_boxes().lines(
                 comment_type_presentation(app, &comment.comment_type),
                 &comment.content,
                 None,
-                ctx.panel_width.saturating_sub(1),
+                ctx.panel_width,
                 (comment.author != app.username).then_some(comment.author.as_str()),
             );
             for mut comment_line in comment_lines {
@@ -563,7 +563,7 @@ pub(super) fn render_side_by_side_diff(frame: &mut Frame, app: &mut App, area: R
             app.comment_cursor,
             None,
             false,
-            ctx.panel_width.saturating_sub(1),
+            ctx.panel_width,
             app.comment_vim_mode_label()
                 .as_ref()
                 .map(|(t, w)| (t.as_str(), *w)),
@@ -590,7 +590,7 @@ pub(super) fn render_side_by_side_diff(frame: &mut Frame, app: &mut App, area: R
         &mut lines,
         &mut line_idx,
         ctx.current_line_idx,
-        ctx.panel_width.saturating_sub(1),
+        ctx.panel_width,
         (ctx.visible_start, ctx.visible_end),
     );
 
@@ -664,7 +664,7 @@ pub(super) fn render_side_by_side_diff(frame: &mut Frame, app: &mut App, area: R
                         app.comment_cursor,
                         None,
                         true,
-                        ctx.panel_width.saturating_sub(1),
+                        ctx.panel_width,
                         app.comment_vim_mode_label()
                             .as_ref()
                             .map(|(t, w)| (t.as_str(), *w)),
@@ -675,7 +675,7 @@ pub(super) fn render_side_by_side_diff(frame: &mut Frame, app: &mut App, area: R
                     comment_input_box_range =
                         Some((line_idx, line_idx + input_lines.len().saturating_sub(1)));
                     let annotations_replaced =
-                        App::comment_display_lines(comment, inner.width as usize);
+                        app.comment_display_lines(&comment.content, inner.width as usize);
                     annotation_offset = Some((line_idx, input_lines.len(), annotations_replaced));
 
                     for mut input_line in input_lines {
@@ -691,17 +691,16 @@ pub(super) fn render_side_by_side_diff(frame: &mut Frame, app: &mut App, area: R
                         line_idx += 1;
                     }
                 } else {
-                    let rows = App::comment_display_lines(comment, ctx.panel_width);
+                    let rows = app.comment_display_lines(&comment.content, ctx.panel_width);
                     if !ctx.box_visible(line_idx, rows) {
                         skip_comment_box(&mut lines, &mut line_idx, rows);
                         continue;
                     }
-                    let comment_lines = comment_panel::format_comment_lines(
-                        &app.theme,
+                    let comment_lines = app.comment_boxes().lines(
                         comment_type_presentation(app, &comment.comment_type),
                         &comment.content,
                         None,
-                        ctx.panel_width.saturating_sub(1),
+                        ctx.panel_width,
                         (comment.author != app.username).then_some(comment.author.as_str()),
                     );
                     for mut comment_line in comment_lines {
@@ -729,7 +728,7 @@ pub(super) fn render_side_by_side_diff(frame: &mut Frame, app: &mut App, area: R
                 app.comment_cursor,
                 None,
                 false,
-                ctx.panel_width.saturating_sub(1),
+                ctx.panel_width,
                 app.comment_vim_mode_label()
                     .as_ref()
                     .map(|(t, w)| (t.as_str(), *w)),
@@ -2067,7 +2066,7 @@ fn add_comments_to_line(
                         ctx.comment_cursor,
                         line_range,
                         true,
-                        ctx.panel_width.saturating_sub(1),
+                        ctx.panel_width,
                         ctx.app
                             .comment_vim_mode_label()
                             .as_ref()
@@ -2076,7 +2075,9 @@ fn add_comments_to_line(
                     );
                     let box_top_row = line_idx;
                     let box_end = line_idx + input_lines.len().saturating_sub(1);
-                    let annotations_replaced = App::comment_display_lines(comment, ctx.panel_width);
+                    let annotations_replaced = ctx
+                        .app
+                        .comment_display_lines(&comment.content, ctx.panel_width);
                     cursor_info_out = Some((
                         line_idx + cursor_info.line_offset,
                         1 + cursor_info.column,
@@ -2107,18 +2108,19 @@ fn add_comments_to_line(
                         .line_range
                         .or_else(|| Some(LineRange::single(line_num)));
                     let box_top_row = line_idx;
-                    let rows = App::comment_display_lines(comment, ctx.panel_width);
+                    let rows = ctx
+                        .app
+                        .comment_display_lines(&comment.content, ctx.panel_width);
                     // The bar is recorded either way: it is painted above the
                     // box, so it can be on screen while the box itself is not.
                     if !ctx.box_visible(line_idx, rows) {
                         skip_comment_box(lines, &mut line_idx, rows);
                     } else {
-                        let comment_lines = comment_panel::format_comment_lines(
-                            ctx.theme,
+                        let comment_lines = ctx.app.comment_boxes().lines(
                             comment_type_presentation(ctx.app, &comment.comment_type),
                             &comment.content,
                             line_range,
-                            ctx.panel_width.saturating_sub(1),
+                            ctx.panel_width,
                             (comment.author != ctx.app.username).then_some(comment.author.as_str()),
                         );
                         for mut comment_line in comment_lines {
@@ -2156,7 +2158,7 @@ fn add_comments_to_line(
             ctx.comment_cursor,
             line_range,
             false,
-            ctx.panel_width.saturating_sub(1),
+            ctx.panel_width,
             ctx.app
                 .comment_vim_mode_label()
                 .as_ref()

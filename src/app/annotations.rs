@@ -97,7 +97,7 @@ impl App {
         }
         for (comment_idx, comment) in self.session.review_comments.iter().enumerate() {
             let comment_lines =
-                Self::comment_display_lines(comment, self.diff_state.viewport_width);
+                self.comment_display_lines(&comment.content, self.diff_state.viewport_width);
             for _ in 0..comment_lines {
                 self.line_annotations
                     .push(AnnotatedLine::ReviewComment { comment_idx });
@@ -133,10 +133,8 @@ impl App {
                     .push(AnnotatedLine::IssueCommentsHeader);
             }
             for (comment_idx, comment) in info.issue_comments.iter().enumerate() {
-                let comment_lines = crate::ui::pr_info_panel::issue_comment_display_lines(
-                    comment,
-                    self.diff_state.viewport_width,
-                );
+                let comment_lines =
+                    self.comment_display_lines(&comment.body, self.diff_state.viewport_width);
                 for _ in 0..comment_lines {
                     self.line_annotations
                         .push(AnnotatedLine::IssueComment { comment_idx });
@@ -182,8 +180,8 @@ impl App {
                     if !Self::comment_visible_with(comment, commit_set.as_ref()) {
                         continue;
                     }
-                    let comment_lines =
-                        Self::comment_display_lines(comment, self.diff_state.viewport_width);
+                    let comment_lines = self
+                        .comment_display_lines(&comment.content, self.diff_state.viewport_width);
                     for _ in 0..comment_lines {
                         self.line_annotations.push(AnnotatedLine::FileComment {
                             file_idx,
@@ -293,6 +291,11 @@ impl App {
                     }
 
                     // Diff lines - handle differently based on view mode
+                    let boxes = CommentBoxes {
+                        theme: &self.theme,
+                        render_markdown: self.render_markdown,
+                        cache: &self.comment_rows_cache,
+                    };
                     match self.diff_view_mode {
                         DiffViewMode::Unified => {
                             Self::build_unified_diff_annotations(
@@ -304,6 +307,7 @@ impl App {
                                 path,
                                 &self.forge_review_threads,
                                 &remote_index,
+                                &boxes,
                                 self.diff_state.viewport_width,
                                 commit_set.as_ref(),
                             );
@@ -318,6 +322,7 @@ impl App {
                                 path,
                                 &self.forge_review_threads,
                                 &remote_index,
+                                &boxes,
                                 self.diff_state.viewport_width,
                                 commit_set.as_ref(),
                             );
@@ -387,12 +392,14 @@ impl App {
         self.refresh_search_matches();
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn push_comments(
         annotations: &mut Vec<AnnotatedLine>,
         file_idx: usize,
         line_no: Option<u32>,
         line_comments: &std::collections::HashMap<u32, Vec<crate::model::Comment>>,
         side: LineSide,
+        boxes: &CommentBoxes<'_>,
         viewport_width: usize,
         commit_set: Option<&std::collections::HashSet<String>>,
     ) {
@@ -418,7 +425,7 @@ impl App {
                 continue;
             }
 
-            let comment_lines = Self::comment_display_lines(comment, viewport_width);
+            let comment_lines = boxes.display_lines(&comment.content, viewport_width);
             for _ in 0..comment_lines {
                 annotations.push(AnnotatedLine::LineComment {
                     file_idx,
@@ -508,6 +515,7 @@ impl App {
         path: &std::path::Path,
         remote_threads: &[crate::forge::remote_comments::RemoteReviewThread],
         remote_index: &RemoteThreadIndex,
+        boxes: &CommentBoxes<'_>,
         viewport_width: usize,
         commit_set: Option<&std::collections::HashSet<String>>,
     ) {
@@ -528,6 +536,7 @@ impl App {
                     Some(old_ln),
                     line_comments,
                     LineSide::Old,
+                    boxes,
                     viewport_width,
                     commit_set,
                 );
@@ -549,6 +558,7 @@ impl App {
                     Some(new_ln),
                     line_comments,
                     LineSide::New,
+                    boxes,
                     viewport_width,
                     commit_set,
                 );
@@ -575,6 +585,7 @@ impl App {
         path: &std::path::Path,
         remote_threads: &[crate::forge::remote_comments::RemoteReviewThread],
         remote_index: &RemoteThreadIndex,
+        boxes: &CommentBoxes<'_>,
         viewport_width: usize,
         commit_set: Option<&std::collections::HashSet<String>>,
     ) {
@@ -599,6 +610,7 @@ impl App {
                         diff_line.new_lineno,
                         line_comments,
                         LineSide::New,
+                        boxes,
                         viewport_width,
                         commit_set,
                     );
@@ -665,6 +677,7 @@ impl App {
                             old_lineno,
                             line_comments,
                             LineSide::Old,
+                            boxes,
                             viewport_width,
                             commit_set,
                         );
@@ -684,6 +697,7 @@ impl App {
                             new_lineno,
                             line_comments,
                             LineSide::New,
+                            boxes,
                             viewport_width,
                             commit_set,
                         );
@@ -717,6 +731,7 @@ impl App {
                         diff_line.new_lineno,
                         line_comments,
                         LineSide::New,
+                        boxes,
                         viewport_width,
                         commit_set,
                     );

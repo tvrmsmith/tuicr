@@ -1,5 +1,7 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
+use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime};
 
 use chrono::Utc;
@@ -20,6 +22,7 @@ use crate::model::{
 use crate::persistence::load_latest_session_for_context;
 use crate::review_store::{AddCommentRequest, CommentTarget, add_comment_to_session};
 use crate::syntax::SyntaxHighlighter;
+use crate::syntax::markdown_render::BlockRow;
 use crate::theme::Theme;
 use crate::update::UpdateInfo;
 use crate::vcs::git::calculate_gap;
@@ -1173,6 +1176,28 @@ pub enum CommentVimPending {
     Cancel,
 }
 
+/// Comment-box body rows by content, valid for one box width, theme, and
+/// `render_markdown` setting. Height counters, placeholders, drawing, and the
+/// edit cursor each ask for a box's rows every frame, so they share one build.
+/// The theme compares by `Arc` identity (a new `Theme` builds a new
+/// highlighter).
+pub(crate) struct CommentRowsCache {
+    highlighter: Arc<SyntaxHighlighter>,
+    render_markdown: bool,
+    box_width: usize,
+    rows: HashMap<String, Rc<Vec<BlockRow>>>,
+}
+
+/// Sizes and draws comment boxes from only the `App` fields a box depends on,
+/// so code holding a `&mut` borrow of another field can still size one. Every
+/// method takes the column `width` a box's rows span, cursor-indicator column
+/// included; the box itself draws one column narrower.
+pub(crate) struct CommentBoxes<'a> {
+    theme: &'a Theme,
+    render_markdown: bool,
+    cache: &'a std::cell::RefCell<Option<CommentRowsCache>>,
+}
+
 pub struct App {
     pub theme: Theme,
     pub vcs: Box<dyn VcsBackend>,
@@ -1250,11 +1275,13 @@ pub struct App {
     pub(crate) search_matches_stale: bool,
     pub(crate) search_highlight_visible: bool,
     pub search_highlight_enabled: bool,
-    /// Render markdown in the PR description panel.
+    /// Render markdown in the PR description panel and comment boxes.
     pub render_markdown: bool,
     /// Rows last built by `pr_info_rows`, reused while its key still matches.
     pub(crate) pr_info_rows_cache:
         std::cell::RefCell<Option<crate::ui::pr_info_panel::PrInfoRowsCache>>,
+    /// Rows built by `CommentBoxes::body_rows`.
+    pub(crate) comment_rows_cache: std::cell::RefCell<Option<CommentRowsCache>>,
     pub(crate) search_return_mode: InputMode,
     pub(crate) overlay_return_mode: InputMode,
     pub comment_buffer: String,
