@@ -88,7 +88,10 @@ impl App {
             let head_or_none = crate::vcs::pristine::head_short_sha(&cwd);
             let base_commit = format!("pristine:{head_or_none}:{path_hash:016x}");
 
-            let vcs = Box::new(FileBackend::new_pristine(paths, cwd.clone())?);
+            let vcs = Box::new(
+                FileBackend::new_pristine(paths, cwd.clone())?
+                    .with_markdown_full_text(options.render_markdown_diffs),
+            );
             let mut vcs_info = vcs.info().clone();
             vcs_info.head_commit = base_commit;
             let highlighter = theme.syntax_highlighter();

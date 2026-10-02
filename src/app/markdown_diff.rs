@@ -33,7 +33,11 @@ struct CachedFile {
 enum Source {
     /// A Modified or Renamed file's `full_text`. Held, so its address cannot
     /// be reused by a later load while this entry compares against it.
-    Full(Arc<FullText>),
+    /// `rebuilt_old` stands in for a missing old side.
+    Full {
+        text: Arc<FullText>,
+        rebuilt_old: Option<Vec<String>>,
+    },
     /// An Added or Deleted file's hunk lines, which are the whole file.
     Hunks { old: Vec<String>, new: Vec<String> },
 }
@@ -42,8 +46,11 @@ impl Source {
     /// The old and new side lines.
     fn sides(&self) -> (&[String], &[String]) {
         match self {
-            Self::Full(text) => (
-                text.old.as_deref().unwrap_or_default(),
+            Self::Full { text, rebuilt_old } => (
+                rebuilt_old
+                    .as_deref()
+                    .or(text.old.as_deref())
+                    .unwrap_or_default(),
                 text.new.as_deref().unwrap_or_default(),
             ),
             Self::Hunks { old, new } => (old, new),
@@ -52,7 +59,8 @@ impl Source {
 
     fn same_as(&self, other: &Source) -> bool {
         match (self, other) {
-            (Self::Full(a), Self::Full(b)) => Arc::ptr_eq(a, b),
+            // The old side is rebuilt from the same text, so it matches too.
+            (Self::Full { text: a, .. }, Self::Full { text: b, .. }) => Arc::ptr_eq(a, b),
             (
                 Self::Hunks {
                     old: a_old,
@@ -94,8 +102,9 @@ fn is_renderable_markdown(file: &DiffFile) -> bool {
 
 /// What `file` renders from, or `None` when it must keep its syntect spans.
 /// Added and Deleted files render from their hunks. Any other file needs a
-/// `full_text` with both sides that every hunk line agrees with; a mismatch
-/// means the text is not the revision the diff was cut from.
+/// `full_text` new side that every hunk line agrees with; a mismatch means
+/// the text is not the revision the diff was cut from. A missing old side
+/// (PR loaders read only the head) is rebuilt from the new side and hunks.
 fn render_source(file: &DiffFile) -> Option<Source> {
     match file.status {
         FileStatus::Added => Some(Source::Hunks {
@@ -108,8 +117,20 @@ fn render_source(file: &DiffFile) -> Option<Source> {
         }),
         _ => {
             let text = file.full_text.as_ref()?;
-            let (old, new) = (text.old.as_deref()?, text.new.as_deref()?);
-            hunks_agree(file, old, new).then(|| Source::Full(Arc::clone(text)))
+            let new = text.new.as_deref()?;
+            let rebuilt_old = match text.old.as_deref() {
+                Some(old) => {
+                    if !hunks_agree(file, old, new) {
+                        return None;
+                    }
+                    None
+                }
+                None => Some(rebuild_old_side(file, new)?),
+            };
+            Some(Source::Full {
+                text: Arc::clone(text),
+                rebuilt_old,
+            })
         }
     }
 }
@@ -123,6 +144,70 @@ fn hunk_side(file: &DiffFile, lineno: impl Fn(&DiffLine) -> Option<u32>) -> Opti
         .enumerate()
         .map(|(idx, line)| (lineno(line) == Some(idx as u32 + 1)).then(|| line.content.clone()))
         .collect()
+}
+
+/// Index of the line before a hunk's range on one side. A zero-count range
+/// names the line it follows, so its start is already that index.
+fn cursor_before(start: u32, count: u32) -> usize {
+    if count == 0 {
+        start as usize
+    } else {
+        start.saturating_sub(1) as usize
+    }
+}
+
+/// The old side, rebuilt from the new side plus `file`'s hunks. `None` when
+/// the hunks do not line up with `new`: a hunk starts off the cursor, a count
+/// is not used up, or a Context/Addition line differs from `new` at its
+/// number. That means `new` is not the revision the diff was cut from.
+fn rebuild_old_side(file: &DiffFile, new: &[String]) -> Option<Vec<String>> {
+    let mut old: Vec<String> = Vec::with_capacity(new.len());
+    let mut new_cursor = 0usize;
+    for hunk in &file.hunks {
+        let hunk_new_start = cursor_before(hunk.new_start, hunk.new_count);
+        if hunk_new_start < new_cursor || hunk_new_start > new.len() {
+            return None;
+        }
+        old.extend_from_slice(&new[new_cursor..hunk_new_start]);
+        new_cursor = hunk_new_start;
+        if old.len() != cursor_before(hunk.old_start, hunk.old_count) {
+            return None;
+        }
+
+        let (mut old_used, mut new_used) = (0u32, 0u32);
+        for line in &hunk.lines {
+            match line.origin {
+                LineOrigin::Context | LineOrigin::Addition => {
+                    if new.get(new_cursor) != Some(&line.content)
+                        || line.new_lineno != Some(new_cursor as u32 + 1)
+                    {
+                        return None;
+                    }
+                    new_cursor += 1;
+                    new_used += 1;
+                    if line.origin == LineOrigin::Context {
+                        if line.old_lineno != Some(old.len() as u32 + 1) {
+                            return None;
+                        }
+                        old.push(line.content.clone());
+                        old_used += 1;
+                    }
+                }
+                LineOrigin::Deletion => {
+                    if line.old_lineno != Some(old.len() as u32 + 1) {
+                        return None;
+                    }
+                    old.push(line.content.clone());
+                    old_used += 1;
+                }
+            }
+        }
+        if old_used != hunk.old_count || new_used != hunk.new_count {
+            return None;
+        }
+    }
+    old.extend_from_slice(&new[new_cursor..]);
+    Some(old)
 }
 
 /// Whether every hunk line equals its side's line at its number: Context and
