@@ -491,11 +491,8 @@ fn push_body_rows(
 
     let mut pending = blocks.iter().peekable();
     // Pushes the placeholders of the blocks starting at or before `line`
-    // and returns the end of the last one. A block that ended before `line`
-    // had no row started inside it, so nothing to replace: media after a
-    // collapsed section's `</details>` on its line.
+    // and returns the end of the last one.
     let mut drain_blocks = |rows: &mut Vec<PrInfoRow>, line: usize| {
-        while pending.next_if(|block| block.lines.end <= line).is_some() {}
         let mut end = None;
         while let Some(block) = pending.next_if(|block| block.lines.start <= line) {
             rows.extend(block.media.clone().map(&placeholder));
@@ -1220,6 +1217,59 @@ mod tests {
                 "{body}"
             );
         }
+    }
+
+    #[test]
+    fn media_after_a_close_on_its_line_shows_in_both_states() {
+        let body = "<details><summary>A</summary>\n\nbody\n\n</details><img src=\"https://x.test/x.png\" alt=\"x\">\n\nAfter";
+
+        assert_eq!(
+            rendered(body),
+            vec![
+                row("▸ A", Some(RowAction::Details(0))),
+                row("[image: x]", Some(RowAction::Media(0))),
+                row("", None),
+                row("After", None)
+            ]
+        );
+        assert_eq!(
+            rendered_toggled(body, &[0]),
+            vec![
+                row("▾ A", Some(RowAction::Details(0))),
+                row("", None),
+                row("body", None),
+                row("", None),
+                row("[image: x]", Some(RowAction::Media(0))),
+                row("", None),
+                row("After", None)
+            ]
+        );
+    }
+
+    #[test]
+    fn inline_media_after_a_close_on_its_line_follows_its_row_in_both_states() {
+        let body = "<details><summary>A</summary>\n\nbody\n\n</details>see <img src=\"https://x.test/x.png\" alt=\"x\"> end";
+        let after = "see <img src=\"https://x.test/x.png\" alt=\"x\"> end";
+
+        assert_eq!(
+            rendered(body),
+            vec![
+                row("▸ A", Some(RowAction::Details(0))),
+                row(after, None),
+                row("[image: x]", Some(RowAction::Media(0)))
+            ]
+        );
+        assert_eq!(
+            rendered_toggled(body, &[0]),
+            vec![
+                row("▾ A", Some(RowAction::Details(0))),
+                row("", None),
+                row("body", None),
+                row("", None),
+                row(after, None),
+                row("[image: x]", Some(RowAction::Media(0)))
+            ]
+        );
     }
 
     #[test]

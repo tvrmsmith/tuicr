@@ -12,8 +12,8 @@ pub(super) struct Section {
     /// The `<details>` tag's start through the end of the `</summary>` tag
     /// that follows it, or through the `<details>` tag alone without one.
     pub header: Range<usize>,
-    /// Start of the matching `</details>` tag.
-    pub close: usize,
+    /// The matching `</details>` tag.
+    pub close: Range<usize>,
     /// The summary's text, tags stripped and whitespace collapsed, or
     /// `Details` when it is missing or empty.
     pub label: String,
@@ -56,7 +56,7 @@ pub(super) fn sections(src: &str, blocks: &[Range<usize>]) -> Vec<Section> {
         if tag.closing {
             if let Some(section) = pending.pop() {
                 found.push(Section {
-                    close: span.start,
+                    close: span.clone(),
                     ..section
                 });
             }
@@ -78,7 +78,7 @@ pub(super) fn sections(src: &str, blocks: &[Range<usize>]) -> Vec<Section> {
             id: next_id,
             header: span.start..header_end,
             // Replaced when the matching `</details>` arrives.
-            close: header_end,
+            close: header_end..header_end,
             label,
             open: tag.attr("open").is_some(),
             parent: pending.last().map(|section| section.id),
