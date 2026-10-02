@@ -80,7 +80,7 @@ impl VcsBackend for DummyVcs {
     }
 }
 
-fn build_app() -> App {
+pub(super) fn build_app() -> App {
     build_app_with_commits(Vec::new())
 }
 
@@ -378,7 +378,10 @@ fn dummy_commit(id: &str) -> CommitInfo {
     }
 }
 
-fn test_pr_details(number: u64, title: &str) -> crate::forge::traits::PullRequestDetails {
+pub(super) fn test_pr_details(
+    number: u64,
+    title: &str,
+) -> crate::forge::traits::PullRequestDetails {
     crate::forge::traits::PullRequestDetails {
         repository: ForgeRepository::github("github.com", "agavra", "tuicr"),
         number,
@@ -399,7 +402,7 @@ fn test_pr_details(number: u64, title: &str) -> crate::forge::traits::PullReques
     }
 }
 
-struct FakeForgeBackend {
+pub(super) struct FakeForgeBackend {
     details: crate::forge::traits::PullRequestDetails,
     patch: String,
     commits: Vec<crate::forge::traits::PullRequestCommit>,
@@ -408,7 +411,10 @@ struct FakeForgeBackend {
 }
 
 impl FakeForgeBackend {
-    fn open_pr_details(details: crate::forge::traits::PullRequestDetails, patch: String) -> Self {
+    pub(super) fn open_pr_details(
+        details: crate::forge::traits::PullRequestDetails,
+        patch: String,
+    ) -> Self {
         Self {
             details,
             patch,
@@ -481,7 +487,7 @@ impl crate::forge::traits::ForgeBackend for FakeForgeBackend {
     }
 }
 
-fn sample_pr(number: u64, title: &str) -> PullRequestSummary {
+pub(super) fn sample_pr(number: u64, title: &str) -> PullRequestSummary {
     PullRequestSummary {
         repository: ForgeRepository::github("github.com", "agavra", "tuicr"),
         number,
@@ -808,7 +814,7 @@ fn structured_patch(patch: &str) -> Vec<crate::model::FilePatch> {
     crate::vcs::diff_parser::git_fixture_file_patches(patch)
 }
 
-fn two_file_patch(changed_replacement: &str) -> String {
+pub(super) fn two_file_patch(changed_replacement: &str) -> String {
     match changed_replacement {
         "new changed" => {
             include_str!("../../../tests/fixtures/pr_refresh/two_file_new_changed.patch")

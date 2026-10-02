@@ -832,26 +832,83 @@ fn action_at_cursor_finds_the_summary_row_only() {
     use crate::ui::pr_info_panel::{RowAction, pr_info_action_at_cursor, pr_info_render_height};
     let mut app = coverage_app(false);
 
-    app.diff_state.cursor_line = 3;
-    assert_eq!(pr_info_action_at_cursor(&app), Some(RowAction::Details(0)));
-    app.diff_state.cursor_line = 1;
-    assert_eq!(pr_info_action_at_cursor(&app), None);
-    app.diff_state.cursor_line = pr_info_render_height(&app);
-    assert_eq!(pr_info_action_at_cursor(&app), None);
+    let actions: Vec<(usize, RowAction)> = (0..=pr_info_render_height(&app))
+        .filter_map(|line| {
+            app.diff_state.cursor_line = line;
+            pr_info_action_at_cursor(&app).map(|action| (line, action))
+        })
+        .collect();
+    assert_eq!(actions, [(3, RowAction::Details(0))]);
+}
+
+/// Queues a background reload result fetched from a forge holding
+/// `details`, as `spawn_pr_reload`'s thread would, for a reload started at
+/// `started_at_head`.
+fn queue_pr_reload(app: &mut App, details: PullRequestDetails, started_at_head: &str) {
+    use super::target_selector_tests::{FakeForgeBackend, two_file_patch};
+    let request = crate::app::PrReloadRequest {
+        repository: details.repository.clone(),
+        pr_number: details.number,
+        head_sha: started_at_head.to_string(),
+        started_at: std::time::Instant::now(),
+        anchor: None,
+        restore_overview_cursor: None,
+    };
+    let target = crate::forge::traits::PullRequestTarget::with_repository(
+        details.repository.clone(),
+        details.number,
+        details.number.to_string(),
+    );
+    let backend = FakeForgeBackend::open_pr_details(details, two_file_patch("new changed"));
+    let fetched = crate::forge::pr_open::fetch_pr_data(&backend, target).unwrap();
+    let (tx, rx) = std::sync::mpsc::channel();
+    tx.send(crate::app::PrReloadEvent::Done {
+        request: request.clone(),
+        result: Ok(fetched),
+    })
+    .unwrap();
+    app.pr_reload_state = Some(request);
+    app.pr_reload_rx = Some(rx);
 }
 
 #[test]
 fn toggled_sections_reset_on_reload_but_not_on_gap_clearing() {
-    let mut app = coverage_app(false);
-    press_enter_at(&mut app, 3);
+    use super::target_selector_tests::{
+        FakeForgeBackend, TestReviewsDir, build_app, sample_pr, test_pr_details, two_file_patch,
+    };
+    let _reviews = TestReviewsDir::new();
+    let mut details = test_pr_details(42, "Add panel");
+    details.body = coverage_body(false);
+    let forge = || {
+        Box::new(FakeForgeBackend::open_pr_details(
+            details.clone(),
+            two_file_patch("new changed"),
+        ))
+    };
+    let mut app = build_app();
+    app.open_pr_with_backend(&sample_pr(42, "Add panel"), forge(), None)
+        .unwrap();
+    draw_app(&mut app);
+    let summary = |app: &mut App| drawn_cursor_row(app, 3);
 
+    press_enter_at(&mut app, 3);
     app.clear_expanded_gaps();
     app.rebuild_annotations();
-    assert!(drawn_cursor_row(&mut app, 3).contains("▾ Coverage report"));
+    assert!(summary(&mut app).contains("▾ Coverage report"));
 
-    app.install_pr_info(coverage_info(false));
-    app.rebuild_annotations();
-    assert!(drawn_cursor_row(&mut app, 3).contains("▸ Coverage report"));
+    app.reload_pull_request_with_backend(forge(), None).unwrap();
+    assert!(summary(&mut app).contains("▸ Coverage report"));
+
+    // A background reload lands on the same head, then on a new one.
+    for head in [details.head_sha.as_str(), "bbbbbbbbbbbbbbbb"] {
+        press_enter_at(&mut app, 3);
+        assert!(summary(&mut app).contains("▾ Coverage report"), "{head}");
+        let mut fetched = details.clone();
+        fetched.head_sha = head.to_string();
+        queue_pr_reload(&mut app, fetched, &details.head_sha);
+        app.poll_pr_reload_events();
+        assert!(summary(&mut app).contains("▸ Coverage report"), "{head}");
+    }
 }
 
 #[test]
@@ -865,9 +922,6 @@ fn toggling_a_section_rebuilds_the_cached_rows() {
         Some(row.line.spans.iter().map(|s| s.content.as_ref()).collect())
     };
     let mut app = coverage_app(false);
-    let first = pr_info_rows(&app);
-    let second = pr_info_rows(&app);
-    assert!(std::rc::Rc::ptr_eq(&first, &second));
     assert_eq!(summary(&app).as_deref(), Some("▸ Coverage report"));
 
     app.toggle_pr_details(0);

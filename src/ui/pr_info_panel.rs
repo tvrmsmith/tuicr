@@ -1129,10 +1129,13 @@ mod tests {
             "<details><summary><img src=\"https://x.test/s.png\"></summary>\n\nBody\n\n</details>",
         );
 
-        assert_eq!(rows[0], row("▸ Details", Some(RowAction::Details(0))));
-        assert!(rows[1].0.starts_with("[image:"), "{rows:?}");
-        assert_eq!(rows[1].1, Some(RowAction::Media(0)));
-        assert!(rows.iter().all(|(text, _)| !text.contains("Body")));
+        assert_eq!(
+            rows,
+            vec![
+                row("▸ Details", Some(RowAction::Details(0))),
+                row("[image: s.png]", Some(RowAction::Media(0)))
+            ]
+        );
     }
 
     #[test]
@@ -1141,8 +1144,13 @@ mod tests {
             "<details><summary>Shot <img src=\"https://x.test/x.png\" alt=\"x\"></summary>\n\nBody\n\n</details>",
         );
 
-        assert_eq!(rows[0], row("▸ Shot", Some(RowAction::Details(0))));
-        assert_eq!(rows[1], row("[image: x]", Some(RowAction::Media(0))));
+        assert_eq!(
+            rows,
+            vec![
+                row("▸ Shot", Some(RowAction::Details(0))),
+                row("[image: x]", Some(RowAction::Media(0)))
+            ]
+        );
     }
 
     #[test]
