@@ -135,14 +135,14 @@ fn outside_comments(src: &str, block: Range<usize>) -> Vec<Range<usize>> {
     parts
 }
 
-/// Whether `block` is a comment or a `<pre>`, `<script>`, `<style>` or
-/// `<textarea>` block, whose tags are text rather than markup.
+/// Whether `block` is a comment or a `<script>`, `<style>` or `<textarea>`
+/// block, whose tags are text rather than markup.
 fn is_opaque(block: &str) -> bool {
     let Some(rest) = block.trim_start().strip_prefix('<') else {
         return false;
     };
     rest.starts_with("!--")
-        || ["pre", "script", "style", "textarea"].iter().any(|name| {
+        || ["script", "style", "textarea"].iter().any(|name| {
             rest.get(..name.len())
                 .is_some_and(|head| head.eq_ignore_ascii_case(name))
                 && !rest[name.len()..].starts_with(|c: char| c.is_ascii_alphanumeric())

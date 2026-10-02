@@ -8,9 +8,21 @@ use super::{MediaKind, MediaLine, MediaRef};
 
 /// Media in a markdown body, in document order.
 /// `repo_host` enables the bare-URL rule for `https://<repo_host>/user-attachments/assets/<id>`.
-pub fn find_media(body: &str, repo_host: Option<&str>) -> Vec<MediaLine> {
+/// `replaced` lists byte ranges a renderer draws elsewhere, left out when
+/// judging `media_only`; the entries are the same for any `replaced`.
+pub fn find_media(
+    body: &str,
+    repo_host: Option<&str>,
+    replaced: &[Range<usize>],
+) -> Vec<MediaLine> {
     let lines = LineIndex::new(body);
     let found = scan(body, &lines, repo_host);
+    let mut cuts: Vec<Range<usize>> = found
+        .iter()
+        .map(|item| item.span.clone())
+        .chain(replaced.iter().cloned())
+        .collect();
+    cuts.sort_by_key(|cut| cut.start);
     found
         .iter()
         .map(|item| {
@@ -18,7 +30,7 @@ pub fn find_media(body: &str, repo_host: Option<&str>) -> Vec<MediaLine> {
             MediaLine {
                 line: covered.start,
                 start: item.span.start,
-                media_only: is_media_only(&lines.text_without(body, &covered, &found)),
+                media_only: is_media_only(&lines.text_without(body, &covered, &cuts)),
                 lines: covered,
                 media: item.media.clone(),
             }
@@ -422,12 +434,13 @@ impl LineIndex {
                 .map_or(body.len(), |&next| next - 1)
     }
 
-    /// The text of `lines` with every media span cut out.
-    fn text_without(&self, body: &str, lines: &Range<usize>, found: &[Found]) -> String {
+    /// The text of `lines` with every range in `cuts`, sorted by start,
+    /// cut out.
+    fn text_without(&self, body: &str, lines: &Range<usize>, cuts: &[Range<usize>]) -> String {
         let end = self.span(body, lines.end - 1).end;
         let mut at = self.starts[lines.start];
         let mut rest = String::new();
-        for span in found.iter().map(|item| &item.span) {
+        for span in cuts {
             if span.end <= at || span.start >= end {
                 continue;
             }
@@ -456,7 +469,7 @@ mod tests {
     /// `find_media`'s result with every `start` zeroed, for the tests that
     /// pin the other fields.
     fn media_lines(body: &str, repo_host: Option<&str>) -> Vec<MediaLine> {
-        find_media(body, repo_host)
+        find_media(body, repo_host, &[])
             .into_iter()
             .map(|media| MediaLine { start: 0, ..media })
             .collect()
@@ -466,7 +479,10 @@ mod tests {
     fn start_is_the_byte_where_each_media_markup_starts() {
         let body = "ab ![x](https://x.test/x.png)\n<img src=\"https://x.test/y.png\">";
 
-        let starts: Vec<usize> = find_media(body, GITHUB).iter().map(|m| m.start).collect();
+        let starts: Vec<usize> = find_media(body, GITHUB, &[])
+            .iter()
+            .map(|m| m.start)
+            .collect();
 
         assert_eq!(starts, [3, 30]);
     }

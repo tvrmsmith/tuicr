@@ -1394,3 +1394,17 @@ fn media_inside_an_expanded_section_opens() {
     assert_eq!(*fake.open_calls.borrow(), vec!["https://x.test/1.png"]);
     assert_eq!(app.message.as_ref().unwrap().content, "Opening one…");
 }
+
+// Media after a collapsed section opens by its index among all body media.
+#[test]
+fn media_after_a_collapsed_section_opens_its_own_item() {
+    use crate::ui::pr_info_panel::{RowAction, pr_info_action_at_cursor};
+    let body = "<details><summary>A</summary>\n\n![a](https://x.test/a.png)\n\n</details>\n\n![b](https://x.test/b.png)";
+    let (mut app, fake) = setup_with_body(body, None);
+
+    app.diff_state.cursor_line = 3;
+    assert_eq!(pr_info_action_at_cursor(&app), Some(RowAction::Media(1)));
+    press_enter(&mut app);
+
+    assert_eq!(*fake.open_calls.borrow(), vec!["https://x.test/b.png"]);
+}

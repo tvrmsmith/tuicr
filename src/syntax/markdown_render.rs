@@ -57,11 +57,11 @@ pub(crate) struct Details {
 ///
 /// A block-level `<details>` section with a matching `</details>` renders as
 /// one summary row, `▸ label` collapsed or `▾ label` expanded, in place of its
-/// header (the `<details>` line through its `</summary>` line). Its body
-/// renders only while it is expanded, starting with any markup after the
-/// header on the header's last line. Its `</details>` renders nothing, and
-/// markup after it on its line renders in either state, up to a following
-/// `<details>`, whose header that line also is.
+/// header (the `<details>` tag through its `</summary>`). Its body renders
+/// only while it is expanded, and its `</details>` renders nothing. Other
+/// markup on a header's or a `</details>`'s lines renders as its own rows in
+/// source order around the summary rows: as body between a header and its
+/// `</details>`, outside the section before the header or after the close.
 /// Sections start collapsed, or expanded when the tag carries `open`;
 /// `toggled` names the sections that render opposite to that default, and
 /// ids that name no section are ignored.
@@ -130,14 +130,26 @@ pub(crate) fn render_block(
 /// one renders no row, so a caller placing its own rows for that markup
 /// (media placeholders) drops it.
 pub(crate) fn collapsed_details(src: &str, toggled: &BTreeSet<usize>) -> Vec<Range<usize>> {
-    let html_blocks: Vec<Range<usize>> = Parser::new_ext(src, parse_options())
-        .into_offset_iter()
-        .filter_map(|(event, r)| matches!(event, Event::Start(Tag::HtmlBlock)).then_some(r))
-        .collect();
-    details::sections(src, &html_blocks)
+    details::sections(src, &html_blocks(src))
         .into_iter()
         .filter(|section| !section.expanded(toggled))
         .map(|section| section.header.end..section.close.start)
+        .collect()
+}
+
+/// The headers of the `<details>` sections in `src`, in source bytes: the
+/// markup `render_block` draws as summary rows.
+pub(crate) fn details_headers(src: &str) -> Vec<Range<usize>> {
+    details::sections(src, &html_blocks(src))
+        .into_iter()
+        .map(|section| section.header)
+        .collect()
+}
+
+fn html_blocks(src: &str) -> Vec<Range<usize>> {
+    Parser::new_ext(src, parse_options())
+        .into_offset_iter()
+        .filter_map(|(event, r)| matches!(event, Event::Start(Tag::HtmlBlock)).then_some(r))
         .collect()
 }
 
@@ -315,9 +327,9 @@ struct Doc<'a> {
     summaries: HashMap<usize, Vec<Summary>>,
     /// Body and closing lines of collapsed sections.
     folded: Vec<bool>,
-    /// Markup after a shown section's `</details>` on its line, keyed by
-    /// start byte. It renders whether or not the section is collapsed.
-    after_close: BTreeMap<usize, Range<usize>>,
+    /// Shown markup on header and closing lines, outside every header and
+    /// `</details>`, one range per line keyed by start byte.
+    beside_tags: BTreeMap<usize, Range<usize>>,
 }
 
 /// The row a `<details>` section's header lines render as.
@@ -329,8 +341,6 @@ struct Summary {
     expanded: bool,
     /// The header's bytes in the source.
     header: Range<usize>,
-    /// Body markup after the header on its last line, while expanded.
-    tail: Option<Range<usize>>,
 }
 
 impl<'a> Doc<'a> {
@@ -359,7 +369,7 @@ impl<'a> Doc<'a> {
             html_blocks: Vec::new(),
             summaries: HashMap::new(),
             folded: vec![false; lines],
-            after_close: BTreeMap::new(),
+            beside_tags: BTreeMap::new(),
         };
         doc.walk(hl);
         doc
@@ -863,9 +873,10 @@ impl<'a> Doc<'a> {
         self.replace(content_end..line_end, vec![]);
     }
 
-    /// Replace each `<details>` section's header with a summary row and its
-    /// closing line with the markup after its `</details>`, and hide the body
-    /// of each collapsed one.
+    /// Replace each `<details>` section's header with a summary row, render
+    /// nothing for its `</details>`, and hide the body of each collapsed one.
+    /// Other markup on header and closing lines renders where it sits: in a
+    /// section's body between its header and `</details>`, outside after.
     /// `toggled` names the sections that render opposite to their default:
     /// collapsed, or expanded when the tag carries `open`.
     fn fold_details(&mut self, toggled: &BTreeSet<usize>) {
@@ -884,16 +895,17 @@ impl<'a> Doc<'a> {
             }
             false
         };
+        let mut tags: Vec<Range<usize>> = Vec::new();
+        let mut tag_lines = BTreeSet::new();
         // The last line of the previous summary's header, and its entry's key.
         let mut chain: Option<(usize, usize)> = None;
-        for (at, section) in sections.iter().enumerate() {
+        for section in &sections {
             let header = self.lines_of(&section.header);
             let (first, last) = (*header.start(), *header.end());
             let close = self.line_of(section.close.start).max(last);
             let expanded = by_id[&section.id].1;
-            for line in (first..=last).chain([close]) {
-                self.skip[line] = true;
-            }
+            tags.extend([section.header.clone(), section.close.clone()]);
+            tag_lines.extend((first..=last).chain([close]));
             if !expanded {
                 for line in last + 1..=close {
                     self.skip[line] = true;
@@ -903,35 +915,12 @@ impl<'a> Doc<'a> {
             if under_collapsed(section.parent) {
                 continue;
             }
-            // The tail stops at a `</details>` or a nested `<details>` on the
-            // same line: the close renders nothing, and the nested header
-            // renders as its own summary row, so neither shows twice.
-            let mut tail_end = self.line_range(last).end.min(section.close.start);
-            if let Some(next) = sections.get(at + 1) {
-                tail_end = tail_end.min(next.header.start);
-            }
-            let tail = self
-                .trimmed(section.header.end..tail_end.max(section.header.end))
-                .filter(|_| expanded);
-            // Markup after the close sits outside the section, so it shows
-            // in either state. It stops at the next `<details>` or
-            // `</details>` on the line for the same reason the tail does.
-            let after_end = sections
-                .iter()
-                .flat_map(|other| [other.header.start, other.close.start])
-                .filter(|&at| at >= section.close.end)
-                .fold(self.line_range(close).end, usize::min)
-                .max(section.close.end);
-            if let Some(after) = self.trimmed(section.close.end..after_end) {
-                self.after_close.insert(after.start, after);
-            }
             let summary = Summary {
                 id: section.id,
                 lines: first..last + 1,
                 label: section.label.clone(),
                 expanded,
                 header: section.header.clone(),
-                tail,
             };
             let key = match chain {
                 Some((key, prev_last)) if prev_last == first => key,
@@ -939,6 +928,32 @@ impl<'a> Doc<'a> {
             };
             self.summaries.entry(key).or_default().push(summary);
             chain = Some((key, last));
+        }
+        tags.sort_by_key(|tag| tag.start);
+        let shown = |at: usize| {
+            sections
+                .iter()
+                .filter(|s| s.header.end <= at && at < s.close.start)
+                .all(|s| by_id[&s.id].1)
+        };
+        for line in tag_lines {
+            self.skip[line] = true;
+            let bytes = self.line_range(line);
+            let mut at = bytes.start;
+            let mut gaps = Vec::new();
+            for tag in tags
+                .iter()
+                .filter(|tag| tag.start < bytes.end && bytes.start < tag.end)
+            {
+                gaps.push(at..tag.start.max(at));
+                at = at.max(tag.end);
+            }
+            gaps.push(at..bytes.end.max(at));
+            for gap in gaps {
+                if let Some(gap) = self.trimmed(gap).filter(|gap| shown(gap.start)) {
+                    self.beside_tags.insert(gap.start, gap);
+                }
+            }
         }
     }
 
@@ -966,7 +981,7 @@ impl<'a> Doc<'a> {
     }
 
     /// The rows of `tail`, markup that shares its line with a header or a
-    /// `</details>`: a summary's body start, or what follows a close.
+    /// `</details>`.
     fn tail_rows(
         &self,
         tail: &Range<usize>,
@@ -1104,30 +1119,27 @@ impl<'a> Doc<'a> {
         while line < self.line_count() {
             if let Some(chain) = self.summaries.get(&line) {
                 let end = chain.last().map_or(line + 1, |summary| summary.lines.end);
-                // Markup after a close on these lines renders in source
-                // order around the summaries.
+                // Other markup on these lines renders in source order around
+                // the summaries.
                 let bytes = self.line_starts[line]..self.line_range(end - 1).end;
-                let mut after_close = self.after_close.range(bytes).peekable();
+                let mut beside = self.beside_tags.range(bytes).peekable();
                 for summary in chain {
-                    while let Some((_, after)) =
-                        after_close.next_if(|(start, _)| **start < summary.header.start)
+                    while let Some((_, tail)) =
+                        beside.next_if(|(start, _)| **start < summary.header.start)
                     {
-                        out.extend(self.tail_rows(after, width, apart));
-                    }
-                    out.extend(self.summary_rows(summary, width));
-                    if let Some(tail) = &summary.tail {
                         out.extend(self.tail_rows(tail, width, apart));
                     }
+                    out.extend(self.summary_rows(summary, width));
                 }
-                for (_, after) in after_close {
-                    out.extend(self.tail_rows(after, width, apart));
+                for (_, tail) in beside {
+                    out.extend(self.tail_rows(tail, width, apart));
                 }
                 line = end;
                 continue;
             }
             if self.skip[line] {
-                for (_, after) in self.after_close.range(self.line_range(line)) {
-                    out.extend(self.tail_rows(after, width, apart));
+                for (_, tail) in self.beside_tags.range(self.line_range(line)) {
+                    out.extend(self.tail_rows(tail, width, apart));
                 }
                 line += 1;
                 continue;
@@ -2442,10 +2454,9 @@ mod tests {
     }
 
     #[test]
-    fn should_never_open_a_section_inside_a_comment_or_pre_block() {
+    fn should_never_open_a_section_inside_a_comment() {
         for src in [
             "<!-- </details><details><summary>X</summary></details> -->\n\nBody",
-            "<pre>\n<details><summary>X</summary></details>\n</pre>\n\nBody",
             "<div>\n<!-- a -> <details><summary>X</summary></details> -->\n</div>\n\nBody",
         ] {
             let rows = render_toggled(src, 40, &[]);
@@ -2453,6 +2464,73 @@ mod tests {
             assert!(rows.iter().all(|r| r.details.is_none()), "{src:?}");
             assert_eq!(rows.last().map(text).as_deref(), Some("Body"), "{src:?}");
         }
+    }
+
+    #[test]
+    fn should_open_a_section_inside_a_pre_block() {
+        let src = "<pre>\n<details><summary>Log</summary>\nsecret\n</details>\n</pre>\n\nAfter";
+
+        let rows = render_toggled(src, 40, &[]);
+
+        assert_eq!(
+            texts_trimmed(&rows),
+            ["<pre>", "▸ Log", "</pre>", "", "After"]
+        );
+        assert_eq!(details_of(&rows), [None, Some(0), None, None, None]);
+    }
+
+    #[test]
+    fn should_render_markup_before_a_close_on_its_line_as_body() {
+        let src = "<details>\n<summary>Logs</summary>\nlast line</details>\n\nAfter";
+
+        assert_eq!(
+            texts_trimmed(&render_toggled(src, 40, &[])),
+            ["▸ Logs", "", "After"]
+        );
+        assert_eq!(
+            texts_trimmed(&render_toggled(src, 40, &[0])),
+            ["▾ Logs", "last line", "", "After"]
+        );
+    }
+
+    #[test]
+    fn should_render_markup_before_a_close_ahead_of_the_next_header_on_its_line() {
+        let src = "<details><summary>A</summary>\nbody\nx</details><details><summary>B</summary>\nb\n</details>";
+
+        assert_eq!(texts_trimmed(&render_toggled(src, 40, &[])), ["▸ A", "▸ B"]);
+        assert_eq!(
+            texts_trimmed(&render_toggled(src, 40, &[0])),
+            ["▾ A", "body", "x", "▸ B"]
+        );
+    }
+
+    #[test]
+    fn should_render_markup_before_a_nested_header_as_the_parent_body() {
+        let src = "<details><summary>A</summary>\ntext <details><summary>B</summary>\ninner\n</details>\n</details>";
+
+        assert_eq!(texts_trimmed(&render_toggled(src, 40, &[])), ["▸ A"]);
+        assert_eq!(
+            texts_trimmed(&render_toggled(src, 40, &[0])),
+            ["▾ A", "text", "▸ B"]
+        );
+        assert_eq!(
+            texts_trimmed(&render_toggled(src, 40, &[0, 1])),
+            ["▾ A", "text", "▾ B", "inner"]
+        );
+    }
+
+    #[test]
+    fn should_render_markup_before_the_first_header_on_its_line_in_both_states() {
+        let src = "<p>Notes</p><details><summary>Logs</summary>\n\nbody\n\n</details>";
+
+        assert_eq!(
+            texts_trimmed(&render_toggled(src, 40, &[])),
+            ["<p>Notes</p>", "▸ Logs"]
+        );
+        assert_eq!(
+            texts_trimmed(&render_toggled(src, 40, &[0])),
+            ["<p>Notes</p>", "▾ Logs", "", "body"]
+        );
     }
 
     #[test]
