@@ -1297,3 +1297,60 @@ fn panning_an_image_just_wider_than_the_window_clamps_the_step() {
     press_resolved(&mut app, &fake, &img, Action::MediaLeft);
     assert_eq!(call_view(&fake, 3), window(0, 280));
 }
+
+// The renderer calls set_area every frame: an unchanged area must neither
+// bump the generation nor reissue the load, and the one in-flight result
+// must still be accepted.
+#[test]
+fn setting_the_same_area_twice_keeps_the_generation_and_the_load() {
+    let (mut app, fake) = setup(Some(Picker::halfblocks()));
+    app.diff_state.cursor_line = 3;
+    press_enter(&mut app);
+    app.media_viewer.as_mut().unwrap().set_area(rect_r());
+    app.poll_media_viewer_events();
+    let generation = viewer(&app).generation;
+    app.media_viewer.as_mut().unwrap().set_area(rect_r());
+    app.poll_media_viewer_events();
+    assert_eq!(call_count(&fake), 1);
+    assert_eq!(viewer(&app).generation, generation);
+    fake.send_load(
+        0,
+        LoadResult {
+            generation: fake.load_calls.borrow()[0].generation,
+            index: 1,
+            area: rect_r(),
+            view: View::Fit,
+            outcome: Ok(loaded_for(rect_r())),
+        },
+    );
+    app.poll_media_viewer_events();
+    assert!(matches!(viewer(&app).current, MediaSlot::Ready { .. }));
+}
+
+// A result for the item the viewer just left must not seed the new item's
+// source image or its next load request.
+#[test]
+fn a_result_for_another_item_is_dropped() {
+    let (mut app, fake) = setup(Some(Picker::halfblocks()));
+    app.diff_state.cursor_line = 3;
+    press_enter(&mut app);
+    app.media_viewer.as_mut().unwrap().set_area(rect_r());
+    app.poll_media_viewer_events();
+    press_in_viewer(&mut app, Action::MediaRight);
+    fake.send_load(
+        0,
+        LoadResult {
+            generation: fake.load_calls.borrow()[0].generation,
+            index: 1,
+            area: rect_r(),
+            view: View::Fit,
+            outcome: Ok(loaded_for(rect_r())),
+        },
+    );
+    app.poll_media_viewer_events();
+    assert!(viewer(&app).source.is_none());
+    assert_eq!(call_count(&fake), 2);
+    let calls = fake.load_calls.borrow();
+    assert_eq!(calls[1].index, 2);
+    assert!(calls[1].source.is_none());
+}
