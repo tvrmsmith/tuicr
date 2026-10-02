@@ -603,6 +603,15 @@ pub fn render_help(frame: &mut Frame, app: &mut App) {
                 "On a media placeholder in the PR description: open the media viewer, or the OS viewer when the terminal cannot draw images",
             ),
         ]),
+        Line::from(vec![
+            Span::styled(
+                "  Enter     ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(
+                "On a collapsible section's summary row (\u{25b8}/\u{25be}) in the PR description: expand or collapse it",
+            ),
+        ]),
         Line::from(""),
         Line::from(Span::styled(
             "Media Viewer",
