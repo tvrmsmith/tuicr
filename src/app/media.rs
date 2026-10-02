@@ -129,19 +129,21 @@ impl MediaJobs for ThreadMediaJobs {
     }
 }
 
-/// Open media viewer state. Holds only the current item's decoded protocol
-/// (or its loading/failed status); paging re-requests rather than caching
-/// every item.
+/// Open media viewer state. Holds only the current item's decoded image,
+/// its encoded protocol (or its loading/failed status) and the zoom; paging
+/// re-requests rather than caching every item.
 pub(crate) struct MediaViewer {
     pub items: Vec<MediaRef>,
     pub index: usize,
-    /// Bumped whenever the current item or its target area changes, so a
-    /// `LoadResult` for a superseded request is dropped instead of applied.
+    /// Bumped whenever the current item, its target area or the zoom level
+    /// changes, so a `LoadResult` for a superseded request is dropped instead
+    /// of applied. A pan keeps it, so the frame on screen stays until the
+    /// panned one lands.
     pub generation: u64,
     pub current: MediaSlot,
     area: Option<Rect>,
-    /// The `(generation, index, area)` of the last `load` request issued, so
-    /// `poll_media_viewer_events` doesn't re-request every tick.
+    /// The `(generation, index, area, view)` of the last `load` request
+    /// issued, so `poll_media_viewer_events` doesn't re-request every tick.
     requested: Option<(u64, usize, Rect, View)>,
     /// Channel for that request's in-flight `media_jobs.load` call. Owned by
     /// the viewer so closing it drops any result still on its way.
@@ -536,6 +538,7 @@ impl App {
                 let current = result.generation == viewer.generation;
                 viewer.current = match result.outcome {
                     Ok(loaded) => {
+                        // The index matched, so even a stale result decoded this item.
                         viewer.source = Some(loaded.source);
                         if !current {
                             return false;

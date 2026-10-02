@@ -1405,10 +1405,12 @@ mod tests {
             (KeyCode::Char('k'), Action::MediaUp),
             (KeyCode::Up, Action::MediaUp),
             (KeyCode::Char('z'), Action::MediaZoom),
+            (KeyCode::Char('x'), Action::None),
         ] {
             assert_eq!(
                 map_key_to_action_with_q_quits(key(code), mode, DEFAULT_LEADER_KEY, false),
-                expected
+                expected,
+                "{code:?}"
             );
         }
     }

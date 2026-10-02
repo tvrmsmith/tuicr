@@ -307,9 +307,9 @@ fn polling_again_does_not_reissue_the_same_request() {
     assert_eq!(fake.load_calls.borrow().len(), 1);
 }
 
-// 10: after #8, MediaNext, poll.
+// 10: after #8, MediaRight, poll.
 #[test]
-fn media_next_advances_and_reissues_a_load() {
+fn media_right_advances_and_reissues_a_load() {
     let (mut app, fake) = setup(Some(Picker::halfblocks()));
     app.diff_state.cursor_line = 3;
     press_enter(&mut app);
@@ -325,9 +325,9 @@ fn media_next_advances_and_reissues_a_load() {
     assert!(calls[1].generation > calls[0].generation);
 }
 
-// 11: after #10, MediaNext (already last item).
+// 11: after #10, MediaRight (already last item).
 #[test]
-fn media_next_at_the_last_item_is_a_no_op() {
+fn media_right_at_the_last_item_is_a_no_op() {
     let (mut app, _fake) = setup(Some(Picker::halfblocks()));
     app.diff_state.cursor_line = 3;
     press_enter(&mut app);
@@ -340,9 +340,9 @@ fn media_next_at_the_last_item_is_a_no_op() {
     assert_eq!(app.force_full_repaint, repaint_before);
 }
 
-// 12: viewer at index 0, MediaPrev.
+// 12: viewer at index 0, MediaLeft.
 #[test]
-fn media_prev_at_the_first_item_is_a_no_op() {
+fn media_left_at_the_first_item_is_a_no_op() {
     let (mut app, _fake) = setup(Some(Picker::halfblocks()));
     app.diff_state.cursor_line = 2;
     press_enter(&mut app);
@@ -700,10 +700,6 @@ fn an_extensionless_png_download_becomes_ready() {
         .save_with_format(&path, image::ImageFormat::Png)
         .expect("write png");
     let outcome = crate::app::media::render_file(&path, &Picker::halfblocks(), rect_r(), View::Fit);
-    let source = outcome
-        .as_ref()
-        .map(|loaded| loaded.source.clone())
-        .unwrap();
     fake.send_load(
         0,
         LoadResult {
@@ -715,6 +711,7 @@ fn an_extensionless_png_download_becomes_ready() {
         },
     );
     app.poll_media_viewer_events();
+    let source = viewer(&app).source.as_ref().expect("decoded source cached");
     assert_eq!((source.width(), source.height()), (4, 4));
     match &viewer(&app).current {
         MediaSlot::Ready { area, .. } => assert_eq!(*area, rect_r()),
@@ -724,13 +721,15 @@ fn an_extensionless_png_download_becomes_ready() {
     }
 }
 
-/// 2000x1000, red left half and blue right half.
+/// 2000x1000: blue right half, green upper-left and red lower-left quarters.
 fn split_image() -> image::DynamicImage {
-    image::DynamicImage::ImageRgb8(image::RgbImage::from_fn(2000, 1000, |x, _| {
-        if x < 1000 {
-            image::Rgb([255, 0, 0])
-        } else {
+    image::DynamicImage::ImageRgb8(image::RgbImage::from_fn(2000, 1000, |x, y| {
+        if x >= 1000 {
             image::Rgb([0, 0, 255])
+        } else if y < 500 {
+            image::Rgb([0, 255, 0])
+        } else {
+            image::Rgb([255, 0, 0])
         }
     }))
 }
@@ -780,7 +779,7 @@ fn a_window_over_the_right_half_draws_only_blue() {
     }
 }
 
-// A window over the lower left is all red.
+// A window over the lower left is all red; the upper left above it is green.
 #[test]
 fn a_window_over_the_lower_left_draws_only_red() {
     let (protocol, buffer) = render_window(View::Window {
@@ -794,19 +793,33 @@ fn a_window_over_the_lower_left_draws_only_red() {
     for (x, y) in [(0, 0), (79, 0), (0, 21), (79, 21)] {
         assert_cell(&buffer, x, y, (255, 0, 0));
     }
-}
-
-// A window straddling the red/blue seam shows red on its left edge, blue on its right.
-#[test]
-fn a_window_across_the_seam_draws_both_colours() {
-    let (_, buffer) = render_window(View::Window {
-        x: 600,
+    let (_, above) = render_window(View::Window {
+        x: 200,
         y: 0,
         width: 800,
         height: 440,
     });
-    assert_eq!(buffer[(0, 0)].fg, ratatui::style::Color::Rgb(255, 0, 0));
-    assert_eq!(buffer[(79, 0)].fg, ratatui::style::Color::Rgb(0, 0, 255));
+    assert_cell(&above, 0, 0, (0, 255, 0));
+}
+
+// A window from x 700 puts the red/blue seam (x 1000) 300 px in, between
+// cells 29 and 30, which the resize blends. A fit render would put it at 40.
+#[test]
+fn a_window_across_the_seam_draws_both_colours() {
+    let (protocol, buffer) = render_window(View::Window {
+        x: 700,
+        y: 560,
+        width: 800,
+        height: 440,
+    });
+    let size = protocol.size();
+    assert_eq!((size.width, size.height), (80, 22));
+    for y in [0, 21] {
+        assert_cell(&buffer, 0, y, (255, 0, 0));
+        assert_cell(&buffer, 28, y, (255, 0, 0));
+        assert_cell(&buffer, 31, y, (0, 0, 255));
+        assert_cell(&buffer, 79, y, (0, 0, 255));
+    }
 }
 
 fn image_request(
@@ -1235,4 +1248,52 @@ fn a_stale_result_caches_the_source_and_the_same_poll_reissues_from_it() {
     assert_eq!(calls[1].area, rect_r2());
     assert_eq!(calls[1].view, View::Fit);
     assert!(Arc::ptr_eq(calls[1].source.as_ref().unwrap(), &img));
+}
+
+// A stale error, from before a second z, leaves the slot and the cached
+// source alone, and the same poll requests the current generation's view.
+#[test]
+fn a_stale_error_result_is_dropped_and_keeps_the_cached_source() {
+    let img = source_image();
+    let (mut app, fake) = state_r(&img);
+    press_in_viewer(&mut app, Action::MediaZoom);
+    app.poll_media_viewer_events();
+    let stale_generation = fake.load_calls.borrow()[1].generation;
+    press_in_viewer(&mut app, Action::MediaZoom);
+    fake.send_load(
+        1,
+        LoadResult {
+            generation: stale_generation,
+            index: 1,
+            area: rect_r(),
+            view: window(600, 280),
+            outcome: Err(LoadError::Failed("decode failed".to_string())),
+        },
+    );
+    app.poll_media_viewer_events();
+    assert!(matches!(viewer(&app).current, MediaSlot::Loading));
+    assert!(Arc::ptr_eq(viewer(&app).source.as_ref().unwrap(), &img));
+    assert_eq!(call_count(&fake), 3);
+    let calls = fake.load_calls.borrow();
+    assert_eq!(calls[2].generation, viewer(&app).generation);
+    assert!(calls[2].generation > stale_generation);
+    assert_eq!(calls[2].area, rect_r());
+    assert_eq!(calls[2].view, View::Fit);
+}
+
+// An image 4 px wider than the window: a pan right moves only those 4 px, the
+// next press is a no-op, and a pan left returns to 0.
+#[test]
+fn panning_an_image_just_wider_than_the_window_clamps_the_step() {
+    let img = Arc::new(image::DynamicImage::new_rgb8(804, 1000));
+    let (mut app, fake) = state_r(&img);
+    press_resolved(&mut app, &fake, &img, Action::MediaZoom);
+    assert_eq!(call_view(&fake, 1), window(2, 280));
+    press_resolved(&mut app, &fake, &img, Action::MediaRight);
+    assert_eq!(call_view(&fake, 2), window(4, 280));
+    press_in_viewer(&mut app, Action::MediaRight);
+    app.poll_media_viewer_events();
+    assert_eq!(call_count(&fake), 3);
+    press_resolved(&mut app, &fake, &img, Action::MediaLeft);
+    assert_eq!(call_view(&fake, 3), window(0, 280));
 }
