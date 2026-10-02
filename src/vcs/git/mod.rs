@@ -151,6 +151,15 @@ impl GitRepoMode {
 }
 
 impl GitBackend {
+    /// Makes diff loads read each markdown file's full text into
+    /// `DiffFile::full_text` (`render_markdown_diffs`).
+    pub(crate) fn with_markdown_full_text(self, on: bool) -> Self {
+        match self {
+            Self::Libgit2(backend) => Self::Libgit2(backend.with_markdown_full_text(on)),
+            Self::Cli(backend) => Self::Cli(backend.with_markdown_full_text(on)),
+        }
+    }
+
     /// Discover a git repository from the current directory.
     pub fn discover(
         preference: GitBackendPreference,
@@ -757,6 +766,166 @@ mod tests {
     #[test]
     fn sha256_root_commit_with_worktree_diff() {
         assert_root_diff_for_object_formats("worktree");
+    }
+
+    const GUIDE_HEAD: &str = "# Guide\n\n| a | old |\n";
+    const GUIDE_WORKDIR: &str = "# Guide\n\n| a | new |\n\n## Setup\n";
+
+    fn lines(text: &str) -> Option<Vec<String>> {
+        Some(text.lines().map(str::to_string).collect())
+    }
+
+    fn file_at<'a>(files: &'a [DiffFile], path: &str) -> &'a DiffFile {
+        files
+            .iter()
+            .find(|file| file.display_path() == Path::new(path))
+            .unwrap_or_else(|| panic!("no diff file for {path}"))
+    }
+
+    /// A repo whose HEAD holds `docs/guide.md` at `GUIDE_HEAD` and a Rust file.
+    fn markdown_repo() -> tempfile::TempDir {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        setup_standard_repo(root);
+        fs::create_dir(root.join("docs")).unwrap();
+        fs::write(root.join("docs/guide.md"), GUIDE_HEAD).unwrap();
+        fs::write(root.join("src/lib.rs"), "fn a() {}\n").unwrap();
+        run_git_command(root, &["add", "."]).unwrap();
+        run_git_command(root, &["commit", "-m", "guide"]).unwrap();
+        dir
+    }
+
+    fn markdown_backend(root: &Path, preference: GitBackendPreference, on: bool) -> GitBackend {
+        GitBackend::discover_from(root, preference, DiffWhitespaceMode::Normal)
+            .unwrap()
+            .with_markdown_full_text(on)
+    }
+
+    #[test]
+    fn should_attach_both_sides_of_a_modified_markdown_file_to_the_working_tree_diff() {
+        for preference in [GitBackendPreference::Libgit2, GitBackendPreference::Cli] {
+            let dir = markdown_repo();
+            fs::write(dir.path().join("docs/guide.md"), GUIDE_WORKDIR).unwrap();
+            fs::write(dir.path().join("src/lib.rs"), "fn b() {}\n").unwrap();
+            let backend = markdown_backend(dir.path(), preference, true);
+
+            let files = backend
+                .get_working_tree_diff(&SyntaxHighlighter::default())
+                .unwrap();
+
+            assert_eq!(
+                file_at(&files, "docs/guide.md").full_text.as_deref(),
+                Some(&crate::model::FullText {
+                    old: lines(GUIDE_HEAD),
+                    new: lines(GUIDE_WORKDIR),
+                }),
+                "{preference:?}"
+            );
+            assert_eq!(
+                file_at(&files, "src/lib.rs").full_text,
+                None,
+                "{preference:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn should_not_read_markdown_full_text_when_the_flag_is_off() {
+        for preference in [GitBackendPreference::Libgit2, GitBackendPreference::Cli] {
+            let dir = markdown_repo();
+            fs::write(dir.path().join("docs/guide.md"), GUIDE_WORKDIR).unwrap();
+            let backend = markdown_backend(dir.path(), preference, false);
+
+            let files = backend
+                .get_working_tree_diff(&SyntaxHighlighter::default())
+                .unwrap();
+
+            assert_eq!(
+                file_at(&files, "docs/guide.md").full_text,
+                None,
+                "{preference:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn should_read_the_staged_markdown_text_not_the_workdir_for_the_staged_diff() {
+        let staged = "# Guide\n\n| a | staged |\n";
+        for preference in [GitBackendPreference::Libgit2, GitBackendPreference::Cli] {
+            let dir = markdown_repo();
+            fs::write(dir.path().join("docs/guide.md"), staged).unwrap();
+            run_git_command(dir.path(), &["add", "docs/guide.md"]).unwrap();
+            fs::write(dir.path().join("docs/guide.md"), GUIDE_WORKDIR).unwrap();
+            let backend = markdown_backend(dir.path(), preference, true);
+
+            let files = backend
+                .get_staged_diff(&SyntaxHighlighter::default())
+                .unwrap();
+
+            let text = file_at(&files, "docs/guide.md").full_text.clone();
+            assert_eq!(
+                text.map(|t| t.new.clone()),
+                Some(lines(staged)),
+                "{preference:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn should_read_the_parent_and_newest_commit_blobs_for_a_commit_range() {
+        let middle = "# Guide\n\n| a | middle |\n";
+        let newest = "# Guide\n\n| a | newest |\n";
+        for preference in [GitBackendPreference::Libgit2, GitBackendPreference::Cli] {
+            let dir = markdown_repo();
+            for (content, message) in [(middle, "middle"), (newest, "newest")] {
+                fs::write(dir.path().join("docs/guide.md"), content).unwrap();
+                run_git_command(dir.path(), &["commit", "-am", message]).unwrap();
+            }
+            fs::write(dir.path().join("docs/guide.md"), GUIDE_WORKDIR).unwrap();
+            let backend = markdown_backend(dir.path(), preference, true);
+            let range = backend.resolve_revision_range("HEAD~2..HEAD").unwrap();
+
+            let files = backend
+                .get_commit_range_diff(&range, &SyntaxHighlighter::default())
+                .unwrap();
+
+            assert_eq!(
+                file_at(&files, "docs/guide.md").full_text.as_deref(),
+                Some(&crate::model::FullText {
+                    old: lines(GUIDE_HEAD),
+                    new: lines(newest),
+                }),
+                "{preference:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn should_expand_tabs_in_markdown_full_text_like_the_hunk_lines() {
+        for preference in [GitBackendPreference::Libgit2, GitBackendPreference::Cli] {
+            let dir = markdown_repo();
+            fs::write(dir.path().join("docs/guide.md"), "# Guide\n\n\tindented\n").unwrap();
+            let backend = markdown_backend(dir.path(), preference, true);
+
+            let files = backend
+                .get_working_tree_diff(&SyntaxHighlighter::default())
+                .unwrap();
+
+            let guide = file_at(&files, "docs/guide.md");
+            let added = guide
+                .hunks
+                .iter()
+                .flat_map(|hunk| &hunk.lines)
+                .find(|line| line.new_lineno == Some(3))
+                .expect("added line 3");
+            let new = guide
+                .full_text
+                .as_ref()
+                .and_then(|t| t.new.clone())
+                .unwrap();
+            assert_eq!(new[2], "    indented", "{preference:?}");
+            assert_eq!(new[2], added.content, "{preference:?}");
+        }
     }
 
     fn setup_standard_repo(root: &Path) {

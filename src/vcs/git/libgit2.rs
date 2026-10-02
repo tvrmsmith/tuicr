@@ -16,6 +16,9 @@ pub struct Libgit2Backend {
     repo: Repository,
     info: VcsInfo,
     whitespace_mode: DiffWhitespaceMode,
+    /// Whether diff loads read each markdown file's full text
+    /// (`render_markdown_diffs`).
+    markdown_full_text: bool,
 }
 
 /// Declare libgit2 extensions tuicr understands so discovery doesn't refuse
@@ -86,7 +89,15 @@ impl Libgit2Backend {
             repo,
             info,
             whitespace_mode,
+            markdown_full_text: false,
         })
+    }
+
+    /// Makes diff loads read each markdown file's full text into
+    /// `DiffFile::full_text` (`render_markdown_diffs`).
+    pub(crate) fn with_markdown_full_text(mut self, on: bool) -> Self {
+        self.markdown_full_text = on;
+        self
     }
 }
 
@@ -100,15 +111,30 @@ impl VcsBackend for Libgit2Backend {
     }
 
     fn get_working_tree_diff(&self, highlighter: &SyntaxHighlighter) -> Result<Vec<DiffFile>> {
-        diff::get_working_tree_diff(&self.repo, &self.whitespace_mode, highlighter)
+        diff::get_working_tree_diff(
+            &self.repo,
+            &self.whitespace_mode,
+            highlighter,
+            self.markdown_full_text,
+        )
     }
 
     fn get_staged_diff(&self, highlighter: &SyntaxHighlighter) -> Result<Vec<DiffFile>> {
-        diff::get_staged_diff(&self.repo, &self.whitespace_mode, highlighter)
+        diff::get_staged_diff(
+            &self.repo,
+            &self.whitespace_mode,
+            highlighter,
+            self.markdown_full_text,
+        )
     }
 
     fn get_unstaged_diff(&self, highlighter: &SyntaxHighlighter) -> Result<Vec<DiffFile>> {
-        diff::get_unstaged_diff(&self.repo, &self.whitespace_mode, highlighter)
+        diff::get_unstaged_diff(
+            &self.repo,
+            &self.whitespace_mode,
+            highlighter,
+            self.markdown_full_text,
+        )
     }
 
     fn list_changed_paths(&self, kind: ChangeKind) -> Result<Vec<PathBuf>> {
@@ -172,6 +198,7 @@ impl VcsBackend for Libgit2Backend {
             revision_range,
             &self.whitespace_mode,
             highlighter,
+            self.markdown_full_text,
         )
     }
 
@@ -201,6 +228,7 @@ impl VcsBackend for Libgit2Backend {
             commit_ids,
             &self.whitespace_mode,
             highlighter,
+            self.markdown_full_text,
         )
     }
 

@@ -89,14 +89,11 @@ fn file(path: &str, lines_per_file: usize) -> DiffFile {
         is_too_large: false,
         is_commit_message: false,
         content_hash,
+        full_text: None,
     }
 }
 
 fn app_with(files: Vec<DiffFile>) -> App {
-    app_with_vcs(files, |info| Box::new(StubVcs(info)))
-}
-
-fn app_with_vcs(files: Vec<DiffFile>, vcs: impl FnOnce(VcsInfo) -> Box<dyn VcsBackend>) -> App {
     let vcs_info = VcsInfo {
         root_path: PathBuf::from("/tmp"),
         head_commit: "head".into(),
@@ -110,7 +107,7 @@ fn app_with_vcs(files: Vec<DiffFile>, vcs: impl FnOnce(VcsInfo) -> Box<dyn VcsBa
         SessionDiffSource::WorkingTree,
     );
     App::build(
-        vcs(vcs_info.clone()),
+        Box::new(StubVcs(vcs_info.clone())),
         vcs_info,
         crate::theme::Theme::dark(),
         None,
@@ -309,41 +306,6 @@ fn render_perf_pr_panel() {
     );
 }
 
-/// Serves one markdown file's whole new side to the markdown renderer's fetch.
-struct ServingVcs {
-    info: VcsInfo,
-    content: String,
-}
-impl VcsBackend for ServingVcs {
-    fn info(&self) -> &VcsInfo {
-        &self.info
-    }
-    fn get_working_tree_diff(
-        &self,
-        _hl: &crate::syntax::SyntaxHighlighter,
-    ) -> crate::error::Result<Vec<DiffFile>> {
-        Ok(Vec::new())
-    }
-    fn fetch_context_lines(
-        &self,
-        _path: &std::path::Path,
-        _status: FileStatus,
-        _ref_commit: Option<&str>,
-        start: u32,
-        end: u32,
-    ) -> crate::error::Result<Vec<DiffLine>> {
-        Ok(crate::vcs::slice_context_lines(&self.content, start, end))
-    }
-    fn file_line_count(
-        &self,
-        _path: &std::path::Path,
-        _status: FileStatus,
-        _ref_commit: Option<&str>,
-    ) -> crate::error::Result<u32> {
-        Ok(self.content.lines().count() as u32)
-    }
-}
-
 /// One 20-line block of markdown: heading, prose with inline styling, a list,
 /// a table, and a fenced code block.
 fn markdown_block(section: usize) -> [String; 20] {
@@ -372,11 +334,12 @@ fn markdown_block(section: usize) -> [String; 20] {
 }
 
 /// A 2000-line markdown file with a one-line change inside every block,
-/// alternating between a table row and a code line, plus the new side the
-/// renderer fetches.
-fn large_markdown_diff() -> (DiffFile, String) {
+/// alternating between a table row and a code line, with both sides' full
+/// text attached as the loaders attach it.
+fn large_markdown_diff() -> DiffFile {
     let blocks = 100;
-    let mut new_side = String::new();
+    let mut old_side = Vec::new();
+    let mut new_side = Vec::new();
     let mut patch = String::new();
     for section in 0..blocks {
         let block = markdown_block(section);
@@ -387,9 +350,13 @@ fn large_markdown_diff() -> (DiffFile, String) {
         patch.push_str(&format!("-{} old\n", block[changed]));
         patch.push_str(&format!("+{}\n", block[changed]));
         patch.push_str(&format!(" {}\n", block[changed + 1]));
-        for line in &block {
-            new_side.push_str(line);
-            new_side.push('\n');
+        for (idx, line) in block.iter().enumerate() {
+            old_side.push(if idx == changed {
+                format!("{line} old")
+            } else {
+                line.clone()
+            });
+            new_side.push(line.clone());
         }
     }
     let path = PathBuf::from("docs/large.md");
@@ -400,14 +367,18 @@ fn large_markdown_diff() -> (DiffFile, String) {
         crate::theme::Theme::dark().syntax_highlighter(),
     )
     .expect("parse large markdown diff");
-    (files.remove(0), new_side)
+    let mut file = files.remove(0);
+    file.full_text = Some(std::sync::Arc::new(crate::model::FullText {
+        old: Some(old_side),
+        new: Some(new_side),
+    }));
+    file
 }
 
 /// Median frame time in microseconds over `frames` draws of the large
 /// markdown diff, plus the one-time cost of turning rendering on.
 fn markdown_diff_frame_micros(render_markdown_diffs: bool, frames: usize) -> (u128, u128) {
-    let (file, content) = large_markdown_diff();
-    let mut app = app_with_vcs(vec![file], |info| Box::new(ServingVcs { info, content }));
+    let mut app = app_with(vec![large_markdown_diff()]);
     app.diff_state.wrap_lines = true;
     let mut terminal = Terminal::new(TestBackend::new(180, 50)).unwrap();
     // The first frame records the panel width the annotations need.
@@ -417,7 +388,8 @@ fn markdown_diff_frame_micros(render_markdown_diffs: bool, frames: usize) -> (u1
 
     let start = Instant::now();
     if render_markdown_diffs {
-        app.set_render_markdown_diffs(true);
+        app.render_markdown_diffs = true;
+        app.rebuild_annotations();
     }
     let setup = start.elapsed().as_micros();
     let first = &app.diff_files[0].hunks[0].lines[0];

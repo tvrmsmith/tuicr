@@ -104,6 +104,7 @@ pub(crate) fn build_pr_app() -> App {
             is_too_large: false,
             is_commit_message: false,
             content_hash: 0,
+            full_text: None,
         }],
         session,
         DiffSource::PullRequest(Box::new(pr)),

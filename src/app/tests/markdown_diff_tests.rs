@@ -1,10 +1,9 @@
 //! Rendered `.md` diffs, observed through the whole app drawn into a
-//! `TestBackend`. The mock VCS serves a synthetic markdown file and counts
-//! fetches.
+//! `TestBackend`. The diff files carry the full text the loaders read, and
+//! rendering must never fetch: the mock VCS panics on a fetch.
 
-use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
@@ -12,11 +11,8 @@ use ratatui::buffer::Buffer;
 use ratatui::style::Modifier;
 
 use crate::app::*;
-use crate::error::TuicrError;
-use crate::forge::traits::{ForgeBackend, ForgeFileLinesRequest};
-use crate::model::{DiffLine, FilePatch, FileStatus};
+use crate::model::{DiffLine, FilePatch, FileStatus, FullText};
 use crate::theme::Theme;
-use crate::vcs::slice_context_lines;
 use crate::vcs::traits::VcsType;
 
 const GUIDE: &str = "docs/guide.md";
@@ -37,6 +33,21 @@ const GUIDE_NEW: [&str; 15] = [
     "## Setup",
     "",
     "Run **fast** with [docs](https://example.com) and `cargo`.",
+];
+
+const GUIDE_OLD: [&str; 12] = [
+    "# Guide",
+    "",
+    "| Name | Notes |",
+    "| --- | --- |",
+    "| a | first |",
+    "| b | old |",
+    "",
+    "```python",
+    "x = 1",
+    "y = 2",
+    "```",
+    "",
 ];
 
 const GUIDE_PATCH: &str = "\
@@ -62,62 +73,19 @@ const LIB_PATCH: &str = "\
 +fn added() {}
 ";
 
-/// State shared between the test and the mock backends, which the `App`
-/// owns once built.
-#[derive(Default)]
-struct Served {
-    /// Full new side per path. A path with no entry serves nothing.
-    files: HashMap<String, String>,
-    fail: bool,
-    /// What a reload of the working tree diff returns.
-    patches: Vec<FilePatch>,
-    /// Paths of every `fetch_context_lines` call. Line counts are not recorded.
-    fetches: Vec<String>,
-}
-
-type SharedServed = Arc<Mutex<Served>>;
-
-fn serve(served: &SharedServed, path: &Path) -> crate::error::Result<String> {
-    let state = served.lock().unwrap();
-    if state.fail {
-        return Err(TuicrError::UnsupportedOperation(
-            "mock fetch failure".into(),
-        ));
-    }
-    Ok(state
-        .files
-        .get(&path.display().to_string())
-        .cloned()
-        .unwrap_or_default())
-}
-
-fn fetch_count(served: &SharedServed) -> usize {
-    served.lock().unwrap().fetches.len()
-}
-
-fn fetch_count_for(served: &SharedServed, path: &str) -> usize {
-    served
-        .lock()
-        .unwrap()
-        .fetches
-        .iter()
-        .filter(|fetched| fetched.as_str() == path)
-        .count()
-}
-
-struct MockVcs {
+/// A VCS that answers line counts, as the real ones do for the end-of-file
+/// gap, and panics on a fetch: rendering reads only `DiffFile::full_text`.
+struct NoFetchVcs {
     info: VcsInfo,
-    served: SharedServed,
 }
 
-impl VcsBackend for MockVcs {
+impl VcsBackend for NoFetchVcs {
     fn info(&self) -> &VcsInfo {
         &self.info
     }
 
-    fn get_working_tree_diff(&self, highlighter: &SyntaxHighlighter) -> Result<Vec<DiffFile>> {
-        let patches = self.served.lock().unwrap().patches.clone();
-        crate::vcs::diff_parser::parse_file_patches(patches, highlighter)
+    fn get_working_tree_diff(&self, _highlighter: &SyntaxHighlighter) -> Result<Vec<DiffFile>> {
+        unimplemented!("these tests never reload")
     }
 
     fn fetch_context_lines(
@@ -125,16 +93,10 @@ impl VcsBackend for MockVcs {
         file_path: &Path,
         _file_status: FileStatus,
         _ref_commit: Option<&str>,
-        start_line: u32,
-        end_line: u32,
+        _start_line: u32,
+        _end_line: u32,
     ) -> Result<Vec<DiffLine>> {
-        self.served
-            .lock()
-            .unwrap()
-            .fetches
-            .push(file_path.display().to_string());
-        let content = serve(&self.served, file_path)?;
-        Ok(slice_context_lines(&content, start_line, end_line))
+        panic!("rendering fetched {}", file_path.display())
     }
 
     fn file_line_count(
@@ -143,20 +105,22 @@ impl VcsBackend for MockVcs {
         _file_status: FileStatus,
         _ref_commit: Option<&str>,
     ) -> Result<u32> {
-        Ok(serve(&self.served, file_path)?.lines().count() as u32)
+        match file_path.to_str() {
+            Some(GUIDE) => Ok(GUIDE_NEW.len() as u32),
+            _ => Ok(1),
+        }
     }
 }
 
-fn joined(lines: &[&str]) -> String {
-    let mut text = lines.join("\n");
-    text.push('\n');
-    text
+fn owned(lines: &[&str]) -> Vec<String> {
+    lines.iter().map(|line| line.to_string()).collect()
 }
 
-fn new_side_with_two_lines_inserted() -> String {
-    let mut lines = vec!["intro one", "intro two"];
-    lines.extend(GUIDE_NEW);
-    joined(&lines)
+fn guide_text() -> Arc<FullText> {
+    Arc::new(FullText {
+        old: Some(owned(&GUIDE_OLD)),
+        new: Some(owned(&GUIDE_NEW)),
+    })
 }
 
 fn file_patch(path: &str, status: FileStatus, patch: &str) -> FilePatch {
@@ -168,31 +132,20 @@ fn file_patch(path: &str, status: FileStatus, patch: &str) -> FilePatch {
     FilePatch::new(old_path, new_path, status, patch)
 }
 
-/// `patch` with every `@@` header's starts moved down by `by` lines.
-fn shifted(patch: &str, by: u32) -> String {
-    patch
-        .lines()
-        .map(|line| match line.strip_prefix("@@ -") {
-            Some(rest) => {
-                let (old, rest) = rest.split_once(" +").unwrap();
-                let (new, _) = rest.split_once(" @@").unwrap();
-                let shift = |range: &str| {
-                    let (start, count) = range.split_once(',').unwrap();
-                    format!("{},{count}", start.parse::<u32>().unwrap() + by)
-                };
-                format!("@@ -{} +{} @@", shift(old), shift(new))
-            }
-            None => line.to_string(),
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
-        + "\n"
-}
-
 /// Parses patches the way the real loaders do, so hunk lines carry syntect spans.
 fn parse(patches: Vec<FilePatch>) -> Vec<DiffFile> {
     crate::vcs::diff_parser::parse_file_patches(patches, Theme::dark().syntax_highlighter())
         .expect("parse fixture patches")
+}
+
+/// `files` with `text` attached to the guide, as a loader leaves it.
+fn with_guide_text(mut files: Vec<DiffFile>, text: Option<Arc<FullText>>) -> Vec<DiffFile> {
+    for file in &mut files {
+        if file.display_path() == Path::new(GUIDE) {
+            file.full_text = text.clone();
+        }
+    }
+    files
 }
 
 fn guide_patches() -> Vec<FilePatch> {
@@ -202,14 +155,8 @@ fn guide_patches() -> Vec<FilePatch> {
     ]
 }
 
-fn served_with_guide() -> SharedServed {
-    let served = SharedServed::default();
-    {
-        let mut state = served.lock().unwrap();
-        state.files.insert(GUIDE.to_string(), joined(&GUIDE_NEW));
-        state.patches = guide_patches();
-    }
-    served
+fn guide_files(text: Option<Arc<FullText>>) -> Vec<DiffFile> {
+    with_guide_text(parse(guide_patches()), text)
 }
 
 fn vcs_info() -> VcsInfo {
@@ -221,7 +168,7 @@ fn vcs_info() -> VcsInfo {
     }
 }
 
-fn build_app(files: Vec<DiffFile>, served: &SharedServed) -> App {
+fn build_app(files: Vec<DiffFile>) -> App {
     let vcs_info = vcs_info();
     let session = ReviewSession::new(
         vcs_info.root_path.clone(),
@@ -230,9 +177,8 @@ fn build_app(files: Vec<DiffFile>, served: &SharedServed) -> App {
         SessionDiffSource::WorkingTree,
     );
     let mut app = App::build(
-        Box::new(MockVcs {
+        Box::new(NoFetchVcs {
             info: vcs_info.clone(),
-            served: Arc::clone(served),
         }),
         vcs_info,
         Theme::dark(),
@@ -252,14 +198,20 @@ fn build_app(files: Vec<DiffFile>, served: &SharedServed) -> App {
     app
 }
 
-fn guide_app(served: &SharedServed) -> App {
-    build_app(parse(guide_patches()), served)
+/// Turns rendering on the way startup does: the flag, then a rebuild.
+fn render_markdown_diffs(app: &mut App) {
+    app.render_markdown_diffs = true;
+    app.rebuild_annotations();
 }
 
-fn rendered_guide_app(served: &SharedServed) -> App {
-    let mut app = guide_app(served);
-    app.set_render_markdown_diffs(true);
+fn rendered_app(files: Vec<DiffFile>) -> App {
+    let mut app = build_app(files);
+    render_markdown_diffs(&mut app);
     app
+}
+
+fn rendered_guide_app() -> App {
+    rendered_app(guide_files(Some(guide_text())))
 }
 
 fn draw(app: &mut App) -> Buffer {
@@ -397,12 +349,31 @@ fn row_for_old(buffer: &Buffer, n: u32) -> DrawnRow {
         .unwrap_or_else(|| panic!("no row for old {n}"))
 }
 
-// 1. One row per source line.
+fn draw_sized(app: &mut App, width: u16, height: u16) -> Buffer {
+    let backend = TestBackend::new(width, height);
+    let mut terminal = Terminal::new(backend).unwrap();
+    terminal
+        .draw(|frame| crate::ui::render(frame, app))
+        .expect("draw frame");
+    terminal.backend().buffer().clone()
+}
+
+/// The first drawn row carrying gutter number `n`, for layouts where the file
+/// header's rule row confuses `file_block` (narrow terminals, PR mode).
+fn drawn_row_numbered(buffer: &Buffer, n: u32) -> DrawnRow {
+    let panel_x = diff_panel_x(buffer);
+    (2..buffer.area.height - 2)
+        .map(|y| parse_row(buffer, y, panel_x))
+        .find(|row| row.number == Some(n))
+        .unwrap_or_else(|| panic!("no row numbered {n}"))
+}
+
+// 9. With the full text attached, contract B's scenarios 1-8 hold.
+
 #[test]
 fn should_draw_one_row_per_hunk_line_when_markdown_diffs_render() {
-    let served = served_with_guide();
-    let mut off = guide_app(&served);
-    let mut on = rendered_guide_app(&served);
+    let mut off = build_app(guide_files(Some(guide_text())));
+    let mut on = rendered_guide_app();
 
     let off_buffer = draw(&mut off);
     let on_buffer = draw(&mut on);
@@ -418,11 +389,9 @@ fn should_draw_one_row_per_hunk_line_when_markdown_diffs_render() {
     );
 }
 
-// 2. Table header above the hunk, removed row in its old context.
 #[test]
 fn should_render_table_rows_with_the_header_columns_above_the_hunk() {
-    let served = served_with_guide();
-    let mut app = rendered_guide_app(&served);
+    let mut app = rendered_guide_app();
 
     let buffer = draw(&mut app);
 
@@ -441,11 +410,9 @@ fn should_render_table_rows_with_the_header_columns_above_the_hunk() {
     }
 }
 
-// 3. Hunk starting inside a code block.
 #[test]
 fn should_render_code_block_rows_when_a_hunk_starts_inside_the_fence() {
-    let served = served_with_guide();
-    let mut app = rendered_guide_app(&served);
+    let mut app = rendered_guide_app();
 
     let buffer = draw(&mut app);
 
@@ -460,11 +427,9 @@ fn is_underlined(cell: &ratatui::buffer::Cell) -> bool {
     cell.modifier.contains(Modifier::UNDERLINED)
 }
 
-// 4. Headings and inline.
 #[test]
 fn should_render_headings_and_inline_markup_without_their_markers() {
-    let served = served_with_guide();
-    let mut app = rendered_guide_app(&served);
+    let mut app = rendered_guide_app();
 
     let buffer = draw(&mut app);
 
@@ -479,11 +444,9 @@ fn should_render_headings_and_inline_markup_without_their_markers() {
     assert!(!prose.text.contains("https"));
 }
 
-// 5. Diff colours kept.
 #[test]
 fn should_keep_the_diff_background_on_rendered_rows() {
-    let served = served_with_guide();
-    let mut app = rendered_guide_app(&served);
+    let mut app = rendered_guide_app();
     let theme = Theme::dark();
 
     let buffer = draw(&mut app);
@@ -508,17 +471,14 @@ fn should_keep_the_diff_background_on_rendered_rows() {
     }
 }
 
-// 6. Fence rows in a diff (Added file, no fetch).
 #[test]
-fn should_render_an_added_file_from_its_hunk_without_fetching() {
-    let served = served_with_guide();
+fn should_render_an_added_file_from_its_hunk() {
     let added = file_patch(
         "docs/new.md",
         FileStatus::Added,
         "@@ -0,0 +1,5 @@\n+Intro\n+```python\n+print(1)\n+```\n+After\n",
     );
-    let mut app = build_app(parse(vec![added]), &served);
-    app.set_render_markdown_diffs(true);
+    let mut app = rendered_app(parse(vec![added]));
 
     let buffer = draw(&mut app);
 
@@ -526,34 +486,27 @@ fn should_render_an_added_file_from_its_hunk_without_fetching() {
     let texts: Vec<&str> = rows.iter().map(|row| row.text.as_str()).collect();
     assert_eq!(texts, ["Intro", "python", "\u{2502} print(1)", "", "After"]);
     assert_eq!(rows[1].cell_of(&buffer, "python").fg, Theme::dark().fg_dim);
-    assert_eq!(fetch_count_for(&served, "docs/new.md"), 0);
 }
 
-// 7. Deleted file renders from its hunk.
 #[test]
-fn should_render_a_deleted_file_from_its_hunk_without_fetching() {
-    let served = served_with_guide();
+fn should_render_a_deleted_file_from_its_hunk() {
     let deleted = file_patch(
         "docs/old.md",
         FileStatus::Deleted,
         "@@ -1,2 +0,0 @@\n-## Gone\n-Text\n",
     );
-    let mut app = build_app(parse(vec![deleted]), &served);
-    app.set_render_markdown_diffs(true);
+    let mut app = rendered_app(parse(vec![deleted]));
 
     let buffer = draw(&mut app);
 
     let rows = numbered_rows(&buffer, "docs/old.md");
     let texts: Vec<&str> = rows.iter().map(|row| row.text.as_str()).collect();
     assert_eq!(texts, ["Gone", "Text"]);
-    assert_eq!(fetch_count_for(&served, "docs/old.md"), 0);
 }
 
-// 8. Side-by-side.
 #[test]
 fn should_render_markdown_rows_on_both_sides_in_side_by_side_view() {
-    let served = served_with_guide();
-    let mut app = rendered_guide_app(&served);
+    let mut app = rendered_guide_app();
     app.diff_view_mode = DiffViewMode::SideBySide;
     app.rebuild_annotations();
 
@@ -580,17 +533,15 @@ fn should_render_markdown_rows_on_both_sides_in_side_by_side_view() {
     assert!(rows.iter().all(|row| !row.contains("## Setup")));
 }
 
-// 9. Off by default.
+// 10. Off by default.
 #[test]
-fn should_keep_source_text_and_not_fetch_when_markdown_diffs_are_off() {
-    let served = served_with_guide();
-    let mut app = guide_app(&served);
+fn should_keep_source_text_when_markdown_diffs_are_off() {
+    let mut app = build_app(guide_files(Some(guide_text())));
 
     let buffer = draw(&mut app);
 
     assert_eq!(row_for_new(&buffer, 13).text, "## Setup");
     assert_eq!(row_for_new(&buffer, 6).text, "| b | second |");
-    assert_eq!(fetch_count(&served), 0);
 }
 
 fn annotation_of_new_line(app: &App, new: u32) -> usize {
@@ -605,17 +556,10 @@ fn annotation_of_new_line(app: &App, new: u32) -> usize {
         .unwrap_or_else(|| panic!("no annotation for new {new}"))
 }
 
-fn failing_served() -> SharedServed {
-    let served = served_with_guide();
-    served.lock().unwrap().fail = true;
-    served
-}
-
-// 10. Fetch failure falls back to source.
+// 11. No full text (a failed read) falls back to source.
 #[test]
-fn should_fall_back_to_source_when_the_fetch_fails() {
-    let served = failing_served();
-    let mut app = rendered_guide_app(&served);
+fn should_fall_back_to_source_when_the_full_text_is_missing() {
+    let mut app = rendered_app(guide_files(None));
 
     let buffer = draw(&mut app);
 
@@ -626,37 +570,16 @@ fn should_fall_back_to_source_when_the_fetch_fails() {
     assert_eq!(app.diff_state.cursor_line, annotation_of_new_line(&app, 14));
 }
 
-// 11. A failed fetch is not retried on every rebuild, and an explicit reload retries.
+// 12. Text that disagrees with the hunks falls back to source.
 #[test]
-fn should_not_retry_a_failed_fetch_until_an_explicit_reload() {
-    let served = failing_served();
-    let mut app = rendered_guide_app(&served);
-    let after_first_attempt = fetch_count(&served);
-
-    for _ in 0..3 {
-        app.rebuild_annotations();
-    }
-    assert_eq!(fetch_count(&served), after_first_attempt);
-
-    served.lock().unwrap().fail = false;
-    app.reload_diff_files().expect("reload");
-
-    let buffer = draw(&mut app);
-    assert_eq!(row_for_new(&buffer, 13).text, "Setup");
-}
-
-// 12. Check failure falls back to source.
-#[test]
-fn should_fall_back_to_source_when_the_served_file_disagrees_with_the_hunks() {
-    let served = served_with_guide();
-    let mut lines = GUIDE_NEW.to_vec();
-    lines[5] = "| b | other |";
-    served
-        .lock()
-        .unwrap()
-        .files
-        .insert(GUIDE.to_string(), joined(&lines));
-    let mut app = rendered_guide_app(&served);
+fn should_fall_back_to_source_when_the_full_text_disagrees_with_the_hunks() {
+    let mut new = owned(&GUIDE_NEW);
+    new[5] = "| b | other |".to_string();
+    let text = Arc::new(FullText {
+        old: Some(owned(&GUIDE_OLD)),
+        new: Some(new),
+    });
+    let mut app = rendered_app(guide_files(Some(text)));
 
     let buffer = draw(&mut app);
 
@@ -664,82 +587,45 @@ fn should_fall_back_to_source_when_the_served_file_disagrees_with_the_hunks() {
     assert_eq!(row_for_new(&buffer, 13).text, "## Setup");
 }
 
-// 13. Success is cached, never refetched per rebuild.
+// 13. New text for the same hunks re-renders.
 #[test]
-fn should_not_refetch_a_rendered_file_on_rebuild_or_comment() {
-    let served = served_with_guide();
-    let mut app = rendered_guide_app(&served);
-    let after_render = fetch_count(&served);
-    assert!(after_render > 0);
-
-    for _ in 0..3 {
-        app.rebuild_annotations();
-    }
-    app.diff_state.cursor_line = annotation_of_new_line(&app, 13);
-    app.enter_comment_mode(false, Some((13, LineSide::New)));
-    app.comment_buffer = "note".to_string();
-    app.save_comment();
+fn should_re_render_when_a_reload_brings_new_full_text_for_the_same_hunks() {
+    let mut app = rendered_guide_app();
     let buffer = draw(&mut app);
-    assert_eq!(fetch_count(&served), after_render);
-    assert_eq!(row_for_new(&buffer, 13).text, "Setup");
-}
+    assert_eq!(row_for_new(&buffer, 6).text, "b    \u{2502} second");
 
-// 14. Stale source refetches.
-#[test]
-fn should_refetch_once_when_the_hunks_moved_under_a_cached_source() {
-    let served = served_with_guide();
-    let mut app = rendered_guide_app(&served);
-    let after_render = fetch_count(&served);
-
-    served
-        .lock()
-        .unwrap()
-        .files
-        .insert(GUIDE.to_string(), new_side_with_two_lines_inserted());
-    app.diff_files = parse(vec![file_patch(
-        GUIDE,
-        FileStatus::Modified,
-        &shifted(GUIDE_PATCH, 2),
-    )]);
+    let widen = |lines: &[&str]| {
+        let mut lines = owned(lines);
+        lines[2] = "| Label | Notes |".to_string();
+        lines
+    };
+    let widened = Arc::new(FullText {
+        old: Some(widen(&GUIDE_OLD)),
+        new: Some(widen(&GUIDE_NEW)),
+    });
+    app.diff_files = guide_files(Some(widened));
     app.rebuild_annotations();
 
     let buffer = draw(&mut app);
-    assert_eq!(row_for_new(&buffer, 15).text, "Setup");
-    assert_eq!(fetch_count(&served), after_render + 1);
+    assert_eq!(row_for_new(&buffer, 6).text, "b     \u{2502} second");
 }
 
-// 14b. A revision change refetches.
-#[test]
-fn should_refetch_once_when_the_revision_changes() {
-    let served = served_with_guide();
-    let mut app = guide_app(&served);
-    app.diff_source = DiffSource::CommitRange(vec!["rev1".to_string()]);
-    app.set_render_markdown_diffs(true);
-    let buffer = draw(&mut app);
-    assert_eq!(row_for_new(&buffer, 6).text, "b    │ second");
-    let after_render = fetch_count(&served);
+const BASE_SHA: &str = "1234567890abcdef";
+const HEAD_SHA: &str = "abcdef0123456789";
 
-    let widened = joined(&GUIDE_NEW).replace("| Name | Notes |", "| Label | Notes |");
-    served
-        .lock()
-        .unwrap()
-        .files
-        .insert(GUIDE.to_string(), widened);
-    app.diff_source = DiffSource::CommitRange(vec!["rev2".to_string()]);
-    app.rebuild_annotations();
-
-    let buffer = draw(&mut app);
-    assert_eq!(row_for_new(&buffer, 6).text, "b     │ second");
-    assert_eq!(fetch_count(&served), after_render + 1);
+fn joined(lines: &[&str]) -> String {
+    let mut text = lines.join("\n");
+    text.push('\n');
+    text
 }
 
-/// A forge that serves the shared files through `fetch_file_lines`, so fetches
-/// through it land in the same counter as the VCS mock's.
-struct MockForge {
-    served: SharedServed,
+/// A forge serving the guide PR: its patches, and the guide's content at the
+/// base and head shas. Records every `fetch_file_content` request.
+struct GuideForge {
+    content_requests: Arc<std::sync::Mutex<Vec<(String, PathBuf)>>>,
 }
 
-impl ForgeBackend for MockForge {
+impl crate::forge::traits::ForgeBackend for GuideForge {
     fn list_pull_requests(
         &self,
         _query: crate::forge::traits::PullRequestListQuery,
@@ -750,41 +636,66 @@ impl ForgeBackend for MockForge {
         &self,
         _target: crate::forge::traits::PullRequestTarget,
     ) -> Result<crate::forge::traits::PullRequestDetails> {
-        unimplemented!()
+        Ok(crate::forge::traits::PullRequestDetails {
+            repository: crate::forge::traits::ForgeRepository::github(
+                "github.com",
+                "owner",
+                "repo",
+            ),
+            number: 42,
+            title: "Guide".to_string(),
+            url: "https://github.com/owner/repo/pull/42".to_string(),
+            state: "OPEN".to_string(),
+            is_draft: false,
+            author: None,
+            head_ref_name: "feature".to_string(),
+            base_ref_name: "main".to_string(),
+            head_sha: HEAD_SHA.to_string(),
+            base_sha: BASE_SHA.to_string(),
+            body: String::new(),
+            updated_at: None,
+            closed: false,
+            merged_at: None,
+            diff_start_sha: None,
+        })
     }
     fn get_pull_request_diff(
         &self,
         _pr: &crate::forge::traits::PullRequestDetails,
     ) -> Result<Vec<FilePatch>> {
-        unimplemented!()
+        Ok(guide_patches())
     }
-    fn fetch_file_lines(&self, request: ForgeFileLinesRequest) -> Result<Vec<DiffLine>> {
-        self.served
-            .lock()
-            .unwrap()
-            .fetches
-            .push(request.path.display().to_string());
-        let content = serve(&self.served, &request.path)?;
-        Ok(slice_context_lines(
-            &content,
-            request.start_line,
-            request.end_line,
-        ))
+    fn fetch_file_lines(
+        &self,
+        request: crate::forge::traits::ForgeFileLinesRequest,
+    ) -> Result<Vec<DiffLine>> {
+        panic!("rendering fetched lines of {}", request.path.display())
     }
-    fn file_line_count(&self, request: ForgeFileLinesRequest) -> Result<u32> {
-        Ok(serve(&self.served, &request.path)?.lines().count() as u32)
+    fn fetch_file_content(
+        &self,
+        request: crate::forge::traits::ForgeFileLinesRequest,
+    ) -> Result<String> {
+        let key = (request.sha().to_string(), request.path.clone());
+        self.content_requests.lock().unwrap().push(key.clone());
+        match (key.0.as_str(), key.1.to_str()) {
+            (BASE_SHA, Some(GUIDE)) => Ok(joined(&GUIDE_OLD)),
+            (HEAD_SHA, Some(GUIDE)) => Ok(joined(&GUIDE_NEW)),
+            _ => Err(crate::error::TuicrError::Forge(format!(
+                "no content for {key:?}"
+            ))),
+        }
     }
     fn list_review_threads(
         &self,
         _pr: &crate::forge::traits::PullRequestDetails,
     ) -> Result<Vec<crate::forge::remote_comments::RemoteReviewThread>> {
-        unimplemented!()
+        Ok(Vec::new())
     }
     fn list_pull_request_commits(
         &self,
         _pr: &crate::forge::traits::PullRequestDetails,
     ) -> Result<Vec<crate::forge::traits::PullRequestCommit>> {
-        unimplemented!()
+        Ok(Vec::new())
     }
     fn get_pull_request_commit_range_diff(
         &self,
@@ -803,129 +714,79 @@ impl ForgeBackend for MockForge {
     }
 }
 
-/// A PR-mode app with no forge backend attached yet, as it is before the
-/// forge session finishes opening.
-fn pr_app_without_forge() -> App {
-    use crate::forge::traits::{ForgeRepository, PrSessionKey};
-
-    let pr = PullRequestDiffSource {
-        key: PrSessionKey::new(
-            ForgeRepository::github("github.com", "owner", "repo"),
-            42,
-            "abc1234567890",
-        ),
-        base_sha: "def0987654321".to_string(),
+// 14. PR mode renders at load.
+#[test]
+fn should_render_a_pr_markdown_file_on_the_first_draw_after_opening() {
+    let _reviews = super::target_selector_tests::TestReviewsDir::new();
+    let mut app = build_app(Vec::new());
+    app.render_markdown_diffs = true;
+    let content_requests = Arc::default();
+    let summary = crate::forge::traits::PullRequestSummary {
+        repository: crate::forge::traits::ForgeRepository::github("github.com", "owner", "repo"),
+        number: 42,
         title: "Guide".to_string(),
-        url: "https://github.com/owner/repo/pull/42".to_string(),
+        author: None,
         head_ref_name: "feature".to_string(),
         base_ref_name: "main".to_string(),
+        updated_at: None,
+        url: "https://github.com/owner/repo/pull/42".to_string(),
         state: "OPEN".to_string(),
-        closed: false,
-        merged: false,
+        is_draft: false,
     };
-    let vcs_info = VcsInfo {
-        root_path: PathBuf::from("forge:github.com/owner/repo"),
-        head_commit: pr.key.head_sha.clone(),
-        branch_name: Some(pr.head_ref_name.clone()),
-        vcs_type: VcsType::File,
-    };
-    let mut session = ReviewSession::new(
-        vcs_info.root_path.clone(),
-        pr.key.head_sha.clone(),
-        Some(pr.head_ref_name.clone()),
-        SessionDiffSource::PullRequest,
-    );
-    session.pr_session_key = Some(pr.key.clone());
-    let mut app = App::build(
-        Box::new(crate::vcs::PrNoopVcs::new(vcs_info.clone())),
-        vcs_info,
-        Theme::dark(),
-        None,
-        false,
-        parse(vec![file_patch(GUIDE, FileStatus::Modified, GUIDE_PATCH)]),
-        session,
-        DiffSource::PullRequest(Box::new(pr)),
-        InputMode::Normal,
-        Vec::new(),
-        None,
+
+    app.open_pr_with_backend(
+        &summary,
+        Box::new(GuideForge {
+            content_requests: Arc::clone(&content_requests),
+        }),
         None,
     )
-    .expect("build pr app");
+    .expect("open PR");
     app.diff_view_mode = DiffViewMode::Unified;
-    app.diff_state.wrap_lines = false;
-    app
-}
-
-// 15. PR mode renders after an early fetch failure.
-#[test]
-fn should_render_in_pr_mode_once_the_forge_backend_attaches() {
-    let served = served_with_guide();
-    let mut app = pr_app_without_forge();
-    app.set_render_markdown_diffs(true);
-
     let buffer = draw(&mut app);
-    assert_eq!(drawn_row_numbered(&buffer, 13).text, "## Setup");
 
-    app.forge_backend = Some(Box::new(MockForge {
-        served: Arc::clone(&served),
-    }));
-    app.rebuild_annotations();
-
-    let buffer = draw(&mut app);
+    assert!(matches!(app.diff_source, DiffSource::PullRequest(_)));
     assert_eq!(drawn_row_numbered(&buffer, 13).text, "Setup");
+    let requested: Vec<(String, PathBuf)> = content_requests.lock().unwrap().clone();
+    assert_eq!(
+        requested,
+        [
+            (BASE_SHA.to_string(), PathBuf::from(GUIDE)),
+            (HEAD_SHA.to_string(), PathBuf::from(GUIDE)),
+        ]
+    );
 }
+
+// 15. Contract C's scenarios hold: wrap height, theme change, search.
 
 const LINK_LINE: &str =
     "See [docs](https://example.com/a/very/long/path/that/keeps/going/and/going/on/forever).";
 
-/// The guide with `LINK_LINE` added after line 15, as new line 16.
-fn link_line_patches() -> Vec<FilePatch> {
+/// The guide with `LINK_LINE` added after line 15, as new line 16, its full
+/// text attached.
+fn link_line_files() -> Vec<DiffFile> {
     let patch =
         GUIDE_PATCH.replace("@@ -12,1 +12,4 @@", "@@ -12,1 +12,5 @@") + &format!("+{LINK_LINE}\n");
-    vec![
-        file_patch(GUIDE, FileStatus::Modified, &patch),
-        file_patch("src/lib.rs", FileStatus::Modified, LIB_PATCH),
-    ]
+    let mut new = owned(&GUIDE_NEW);
+    new.push(LINK_LINE.to_string());
+    let text = Arc::new(FullText {
+        old: Some(owned(&GUIDE_OLD)),
+        new: Some(new),
+    });
+    with_guide_text(
+        parse(vec![
+            file_patch(GUIDE, FileStatus::Modified, &patch),
+            file_patch("src/lib.rs", FileStatus::Modified, LIB_PATCH),
+        ]),
+        Some(text),
+    )
 }
 
-fn served_with_link_line() -> SharedServed {
-    let served = served_with_guide();
-    {
-        let mut state = served.lock().unwrap();
-        let mut lines: Vec<&str> = GUIDE_NEW.to_vec();
-        lines.push(LINK_LINE);
-        state.files.insert(GUIDE.to_string(), joined(&lines));
-        state.patches = link_line_patches();
-    }
-    served
-}
-
-fn draw_sized(app: &mut App, width: u16, height: u16) -> Buffer {
-    let backend = TestBackend::new(width, height);
-    let mut terminal = Terminal::new(backend).unwrap();
-    terminal
-        .draw(|frame| crate::ui::render(frame, app))
-        .expect("draw frame");
-    terminal.backend().buffer().clone()
-}
-
-/// The first drawn row carrying gutter number `n`, for narrow terminals where
-/// the file header's rule row confuses `file_block`.
-fn drawn_row_numbered(buffer: &Buffer, n: u32) -> DrawnRow {
-    let panel_x = diff_panel_x(buffer);
-    (2..buffer.area.height - 2)
-        .map(|y| parse_row(buffer, y, panel_x))
-        .find(|row| row.number == Some(n))
-        .unwrap_or_else(|| panic!("no row numbered {n}"))
-}
-
-// 10. Wrapped row height follows the rendered text (unified).
 #[test]
 fn should_size_a_wrapped_unified_row_by_its_rendered_text() {
-    let served = served_with_link_line();
-    let mut app = build_app(parse(link_line_patches()), &served);
+    let mut app = build_app(link_line_files());
     app.diff_state.wrap_lines = true;
-    app.set_render_markdown_diffs(true);
+    render_markdown_diffs(&mut app);
 
     let buffer = draw_sized(&mut app, 60, 60);
 
@@ -947,15 +808,15 @@ fn should_size_a_wrapped_unified_row_by_its_rendered_text() {
     assert!(header.contains("src/lib.rs"), "row two below: {header}");
 }
 
-// 11. Wrapped row height follows the rendered text (side-by-side).
 #[test]
 fn should_size_a_wrapped_side_by_side_row_by_its_rendered_text() {
-    let served = served_with_link_line();
     let sbs_app = |render: bool| {
-        let mut app = build_app(parse(link_line_patches()), &served);
+        let mut app = build_app(link_line_files());
         app.diff_state.wrap_lines = true;
         app.diff_view_mode = DiffViewMode::SideBySide;
-        app.set_render_markdown_diffs(render);
+        if render {
+            render_markdown_diffs(&mut app);
+        }
         draw_sized(&mut app, 100, 60);
         app
     };
@@ -1003,17 +864,14 @@ fn preview_in_picker(app: &mut App, name: &str) {
 
 const OTHER_THEME: &str = "light";
 
-// 12. Confirming a theme keeps the render.
 #[test]
 fn should_keep_the_render_and_recolor_it_when_a_theme_is_confirmed() {
-    let served = served_with_guide();
-    let mut app = rendered_guide_app(&served);
+    let mut app = rendered_guide_app();
     let dark_fg = {
         let buffer = draw(&mut app);
         let heading = drawn_row_numbered(&buffer, 13);
         heading.cell_of(&buffer, "S").fg
     };
-    let fetches = fetch_count(&served);
 
     preview_in_picker(&mut app, OTHER_THEME);
     app.confirm_theme_picker();
@@ -1022,15 +880,11 @@ fn should_keep_the_render_and_recolor_it_when_a_theme_is_confirmed() {
     let heading = drawn_row_numbered(&buffer, 13);
     assert_eq!(heading.text, "Setup");
     assert_ne!(heading.cell_of(&buffer, "S").fg, dark_fg);
-    assert_eq!(fetch_count(&served), fetches);
 }
 
-// 13. Previewing a theme keeps the current .md file rendered.
 #[test]
 fn should_keep_the_current_markdown_file_rendered_when_a_theme_is_previewed() {
-    let served = served_with_guide();
-    let mut app = rendered_guide_app(&served);
-    let fetches = fetch_count(&served);
+    let mut app = rendered_guide_app();
     assert_eq!(app.diff_state.current_file_idx, 0);
     // A drawn frame first, so the preview cannot lean on a layout rebuild.
     draw(&mut app);
@@ -1039,15 +893,11 @@ fn should_keep_the_current_markdown_file_rendered_when_a_theme_is_previewed() {
 
     let buffer = draw(&mut app);
     assert_eq!(drawn_row_numbered(&buffer, 13).text, "Setup");
-    assert_eq!(fetch_count(&served), fetches);
 }
 
-// 14. Cancelling the picker keeps the render under the original theme.
 #[test]
 fn should_keep_the_render_under_the_original_theme_when_the_picker_is_cancelled() {
-    let served = served_with_guide();
-    let mut app = rendered_guide_app(&served);
-    let fetches = fetch_count(&served);
+    let mut app = rendered_guide_app();
     let original_fg = {
         let buffer = draw(&mut app);
         let heading = drawn_row_numbered(&buffer, 13);
@@ -1061,14 +911,11 @@ fn should_keep_the_render_under_the_original_theme_when_the_picker_is_cancelled(
     let heading = drawn_row_numbered(&buffer, 13);
     assert_eq!(heading.text, "Setup");
     assert_eq!(heading.cell_of(&buffer, "S").fg, original_fg);
-    assert_eq!(fetch_count(&served), fetches);
 }
 
-// 15. Search paints the rendered cells.
 #[test]
 fn should_paint_search_matches_on_rendered_cells() {
-    let served = served_with_guide();
-    let mut app = rendered_guide_app(&served);
+    let mut app = rendered_guide_app();
     app.search_buffer = "Setup".to_string();
     assert!(app.search_in_diff_from_cursor());
     assert!(app.search_highlight_visible);

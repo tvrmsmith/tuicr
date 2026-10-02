@@ -68,6 +68,7 @@ fn file(path: &str, contents: &[&str]) -> DiffFile {
         is_too_large: false,
         is_commit_message: false,
         content_hash,
+        full_text: None,
     }
 }
 

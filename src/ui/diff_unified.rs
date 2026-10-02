@@ -1580,6 +1580,7 @@ mod remote_comments_snapshot_tests {
             is_too_large: false,
             is_commit_message: false,
             content_hash,
+            full_text: None,
         }
     }
 
@@ -1595,6 +1596,7 @@ mod remote_comments_snapshot_tests {
             is_too_large: false,
             is_commit_message: false,
             content_hash,
+            full_text: None,
         }
     }
 
@@ -1760,6 +1762,7 @@ mod remote_comments_snapshot_tests {
             is_too_large: false,
             is_commit_message: true,
             content_hash,
+            full_text: None,
         }
     }
 
@@ -1994,6 +1997,7 @@ mod remote_comments_snapshot_tests {
             is_too_large: false,
             is_commit_message: false,
             content_hash,
+            full_text: None,
         };
         let mut app = make_revision_app(vec![file]);
         app.set_diff_wrap(true);
@@ -2060,6 +2064,7 @@ mod remote_comments_snapshot_tests {
             is_too_large: false,
             is_commit_message: false,
             content_hash,
+            full_text: None,
         };
 
         let mut app = make_revision_app(vec![file]);
@@ -2146,6 +2151,7 @@ mod remote_comments_snapshot_tests {
             is_too_large: false,
             is_commit_message: false,
             content_hash,
+            full_text: None,
         };
         let mut app = make_revision_app(vec![file]);
         app.set_diff_wrap(true);
@@ -2212,6 +2218,7 @@ mod remote_comments_snapshot_tests {
             is_too_large: false,
             is_commit_message: false,
             content_hash,
+            full_text: None,
         };
         let mut app = make_revision_app(vec![file]);
         app.set_diff_wrap(true);
@@ -2328,6 +2335,7 @@ mod remote_comments_snapshot_tests {
             is_too_large: false,
             is_commit_message: false,
             content_hash,
+            full_text: None,
         };
 
         let mut app = make_revision_app(vec![diff_file]);

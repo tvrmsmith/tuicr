@@ -66,6 +66,7 @@ fn file(path: &str, hunks: Vec<DiffHunk>) -> DiffFile {
         is_too_large: false,
         is_commit_message: false,
         content_hash,
+        full_text: None,
     }
 }
 
