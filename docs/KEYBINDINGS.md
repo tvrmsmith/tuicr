@@ -179,8 +179,9 @@ can draw images.
 | `Esc` / `q` | Close the viewer |
 
 At 1:1 each image pixel takes one terminal pixel, so text in a large screenshot
-becomes readable. Each pan re-encodes only the visible part. Paging always returns
-to fit.
+becomes readable. `z` does nothing until the image has loaded, or when the whole
+image already fits. Each pan moves a quarter of the visible window, stops at the
+image edges, and re-encodes only the visible part. Paging always returns to fit.
 
 ## Visual mode
 
