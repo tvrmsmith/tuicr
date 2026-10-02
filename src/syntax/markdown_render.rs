@@ -2237,6 +2237,29 @@ mod tests {
     }
 
     #[test]
+    fn should_end_a_parents_header_line_body_where_a_nested_header_starts() {
+        let src = "<details><summary>A</summary>mid<details><summary>B</summary>\nbody\n</details>\n</details>";
+
+        let rows = render_toggled(src, 40, &[0]);
+
+        assert_eq!(texts_trimmed(&rows), ["▾ A", "mid", "▸ B"]);
+        assert_eq!(details_of(&rows), [Some(0), None, Some(1)]);
+    }
+
+    #[test]
+    fn should_chain_three_nested_headers_sharing_a_line() {
+        for src in [
+            "<details><summary>A</summary><details><summary>B</summary><details><summary>C</summary>\nbody\n</details>\n</details>\n</details>",
+            "<details>\n<summary>A</summary><details><summary>B</summary><details><summary>C</summary>\nbody\n</details>\n</details>\n</details>",
+        ] {
+            let rows = render_toggled(src, 40, &[0, 1]);
+
+            assert_eq!(texts_trimmed(&rows), ["▾ A", "▾ B", "▸ C"], "{src:?}");
+            assert_eq!(details_of(&rows), [Some(0), Some(1), Some(2)], "{src:?}");
+        }
+    }
+
+    #[test]
     fn should_label_a_section_details_when_a_nested_section_opens_inside_its_summary() {
         let src = "<details>\n<summary>A\n<details>\n<summary>B</summary>\n\nInner\n\n</details>\n\n</details>";
 
