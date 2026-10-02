@@ -1359,7 +1359,7 @@ fn a_result_for_another_item_is_dropped() {
     assert!(calls[1].source.is_none());
 }
 
-// 10: media inside an expanded `<details>` section opens; collapsed, it has no row.
+// 21: media inside an expanded `<details>` section opens; collapsed, it has no row.
 #[test]
 fn media_inside_an_expanded_section_opens() {
     use crate::ui::pr_info_panel::{RowAction, pr_info_action_at_cursor, pr_info_rows};

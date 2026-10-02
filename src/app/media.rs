@@ -359,10 +359,10 @@ pub(crate) fn render_file(
 }
 
 impl App {
-    /// Enter on a PR-description media placeholder row (`index` is
-    /// `pr_info_panel::pr_info_media_at_cursor`'s result): opens the in-TUI
-    /// viewer when the terminal can draw images, otherwise fetches the item
-    /// and hands it to the OS opener.
+    /// Enter on a PR-description media placeholder row (`index` is the
+    /// `RowAction::Media` index `pr_info_panel::pr_info_action_at_cursor`
+    /// returned): opens the in-TUI viewer when the terminal can draw images,
+    /// otherwise fetches the item and hands it to the OS opener.
     pub(crate) fn enter_media(&mut self, index: usize) {
         let Some(info) = self.pr_info.as_ref() else {
             return;

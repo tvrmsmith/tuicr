@@ -1006,7 +1006,7 @@ impl App {
         // Wire the forge backend so context expansion routes through it.
         app.forge_backend = Some(backend);
         app.forge_repository = Some(target_repo);
-        app.pr_info = Some(opened.pr_info);
+        app.install_pr_info(opened.pr_info);
         // PR open establishes the target repo directly; no further canonical
         // resolution needed on PR-tab entry (which won't happen anyway since
         // the user came straight from CLI into PR diff mode).

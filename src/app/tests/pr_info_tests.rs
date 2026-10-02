@@ -852,17 +852,24 @@ fn toggled_sections_reset_on_reload_but_not_on_gap_clearing() {
     app.install_pr_info(coverage_info(false));
     app.rebuild_annotations();
     assert!(drawn_cursor_row(&mut app, 3).contains("▸ Coverage report"));
-    assert!(app.pr_details_toggled.is_empty());
 }
 
 #[test]
 fn toggling_a_section_rebuilds_the_cached_rows() {
+    use crate::ui::pr_info_panel::{RowAction, pr_info_rows};
+    let summary = |app: &App| -> Option<String> {
+        let rows = pr_info_rows(app);
+        let row = rows
+            .iter()
+            .find(|row| row.action == Some(RowAction::Details(0)))?;
+        Some(row.line.spans.iter().map(|s| s.content.as_ref()).collect())
+    };
     let mut app = coverage_app(false);
-    let first = crate::ui::pr_info_panel::pr_info_rows(&app);
-    let second = crate::ui::pr_info_panel::pr_info_rows(&app);
+    let first = pr_info_rows(&app);
+    let second = pr_info_rows(&app);
     assert!(std::rc::Rc::ptr_eq(&first, &second));
+    assert_eq!(summary(&app).as_deref(), Some("▸ Coverage report"));
 
     app.toggle_pr_details(0);
-    let third = crate::ui::pr_info_panel::pr_info_rows(&app);
-    assert!(!std::rc::Rc::ptr_eq(&second, &third));
+    assert_eq!(summary(&app).as_deref(), Some("▾ Coverage report"));
 }

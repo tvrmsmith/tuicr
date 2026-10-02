@@ -17,6 +17,7 @@ pub fn find_media(body: &str, repo_host: Option<&str>) -> Vec<MediaLine> {
             let covered = lines.covered(&item.span);
             MediaLine {
                 line: covered.start,
+                start: item.span.start,
                 media_only: is_media_only(&lines.text_without(body, &covered, &found)),
                 lines: covered,
                 media: item.media.clone(),
@@ -452,6 +453,24 @@ mod tests {
 
     const GITHUB: Option<&str> = Some("github.com");
 
+    /// `find_media`'s result with every `start` zeroed, for the tests that
+    /// pin the other fields.
+    fn media_lines(body: &str, repo_host: Option<&str>) -> Vec<MediaLine> {
+        find_media(body, repo_host)
+            .into_iter()
+            .map(|media| MediaLine { start: 0, ..media })
+            .collect()
+    }
+
+    #[test]
+    fn start_is_the_byte_where_each_media_markup_starts() {
+        let body = "ab ![x](https://x.test/x.png)\n<img src=\"https://x.test/y.png\">";
+
+        let starts: Vec<usize> = find_media(body, GITHUB).iter().map(|m| m.start).collect();
+
+        assert_eq!(starts, [3, 30]);
+    }
+
     fn m(
         line: usize,
         lines: std::ops::Range<usize>,
@@ -462,6 +481,7 @@ mod tests {
     ) -> MediaLine {
         MediaLine {
             line,
+            start: 0,
             lines,
             media_only,
             media: MediaRef {
@@ -475,7 +495,7 @@ mod tests {
     #[test]
     fn markdown_image_on_its_own_line_is_media_only() {
         assert_eq!(
-            find_media("Intro\n![shot](https://x.test/a.png)\nOutro", GITHUB),
+            media_lines("Intro\n![shot](https://x.test/a.png)\nOutro", GITHUB),
             vec![m(
                 1,
                 1..2,
@@ -490,7 +510,7 @@ mod tests {
     #[test]
     fn empty_alt_falls_back_to_the_file_name_without_query() {
         assert_eq!(
-            find_media("![](https://x.test/dir/b.png?raw=1)", GITHUB),
+            media_lines("![](https://x.test/dir/b.png?raw=1)", GITHUB),
             vec![m(
                 0,
                 0..1,
@@ -505,7 +525,7 @@ mod tests {
     #[test]
     fn images_inside_prose_are_not_media_only() {
         assert_eq!(
-            find_media(
+            media_lines(
                 "see ![a](https://x.test/1.png) and ![b](https://x.test/2.png) end",
                 GITHUB
             ),
@@ -533,7 +553,7 @@ mod tests {
     #[test]
     fn images_inside_code_are_not_media() {
         assert_eq!(
-            find_media(
+            media_lines(
                 "```\n![x](https://x.test/c.png)\n```\n`![y](https://x.test/d.png)`",
                 GITHUB
             ),
@@ -544,7 +564,7 @@ mod tests {
     #[test]
     fn inline_img_tag_takes_its_alt_as_label() {
         assert_eq!(
-            find_media(
+            media_lines(
                 "Before <img src=\"https://x.test/e.png\" alt=\"E\"> after",
                 GITHUB
             ),
@@ -562,7 +582,7 @@ mod tests {
     #[test]
     fn img_block_with_single_quotes_and_no_alt_uses_the_file_name() {
         assert_eq!(
-            find_media("<img src='https://x.test/f.jpg'>", GITHUB),
+            media_lines("<img src='https://x.test/f.jpg'>", GITHUB),
             vec![m(
                 0,
                 0..1,
@@ -578,7 +598,7 @@ mod tests {
     fn multi_line_img_in_an_html_block_covers_every_line_of_its_tag() {
         let body = "<p align=\"center\">\n  <img width=\"400\"\n    alt=\"Login page\"\n    src=\"https://x.test/login.png\">\n</p>";
         assert_eq!(
-            find_media(body, GITHUB),
+            media_lines(body, GITHUB),
             vec![m(
                 1,
                 1..4,
@@ -593,7 +613,7 @@ mod tests {
     #[test]
     fn video_with_src_runs_through_its_close_tag() {
         assert_eq!(
-            find_media(
+            media_lines(
                 "<video src=\"https://x.test/demo.mp4\" controls></video>",
                 GITHUB
             ),
@@ -611,7 +631,7 @@ mod tests {
     #[test]
     fn video_with_a_multi_line_open_tag_covers_through_its_close_tag() {
         assert_eq!(
-            find_media(
+            media_lines(
                 "<video controls\n  src=\"https://x.test/v2.mov\">\n</video>",
                 GITHUB
             ),
@@ -630,7 +650,7 @@ mod tests {
     fn video_without_src_takes_its_first_source_child() {
         let body = "<video controls>\n<source src=\"https://x.test/s.webm\" type=\"video/webm\">\n</video>";
         assert_eq!(
-            find_media(body, GITHUB),
+            media_lines(body, GITHUB),
             vec![m(
                 0,
                 0..3,
@@ -647,7 +667,7 @@ mod tests {
     #[test]
     fn bare_attachment_url_on_the_repo_host_is_an_attachment() {
         assert_eq!(
-            find_media(ATTACHMENT_BODY, GITHUB),
+            media_lines(ATTACHMENT_BODY, GITHUB),
             vec![m(
                 2,
                 2..3,
@@ -661,18 +681,21 @@ mod tests {
 
     #[test]
     fn attachment_urls_need_a_repo_host() {
-        assert_eq!(find_media(ATTACHMENT_BODY, None), vec![]);
+        assert_eq!(media_lines(ATTACHMENT_BODY, None), vec![]);
     }
 
     #[test]
     fn attachment_urls_on_another_host_are_not_media() {
-        assert_eq!(find_media(ATTACHMENT_BODY, Some("ghe.example.com")), vec![]);
+        assert_eq!(
+            media_lines(ATTACHMENT_BODY, Some("ghe.example.com")),
+            vec![]
+        );
     }
 
     #[test]
     fn attachment_urls_follow_an_enterprise_repo_host() {
         assert_eq!(
-            find_media(
+            media_lines(
                 "https://ghe.example.com/user-attachments/assets/abc",
                 Some("ghe.example.com")
             ),
@@ -690,7 +713,7 @@ mod tests {
     #[test]
     fn attachment_url_inside_prose_is_not_media() {
         assert_eq!(
-            find_media(
+            media_lines(
                 "see https://github.com/user-attachments/assets/abc here",
                 GITHUB
             ),
@@ -701,7 +724,7 @@ mod tests {
     #[test]
     fn image_wrapped_in_a_link_is_media_only() {
         assert_eq!(
-            find_media(
+            media_lines(
                 "[![CI](https://x.test/badge.svg)](https://x.test/ci)",
                 GITHUB
             ),
@@ -719,7 +742,7 @@ mod tests {
     #[test]
     fn image_in_a_blockquote_is_media_only() {
         assert_eq!(
-            find_media("> ![q](https://x.test/q.png)", GITHUB),
+            media_lines("> ![q](https://x.test/q.png)", GITHUB),
             vec![m(
                 0,
                 0..1,
@@ -734,7 +757,7 @@ mod tests {
     #[test]
     fn images_in_list_items_are_media_only() {
         assert_eq!(
-            find_media(
+            media_lines(
                 "- ![l](https://x.test/l.png)\n1. ![n](https://x.test/n.png)",
                 GITHUB
             ),
@@ -748,7 +771,7 @@ mod tests {
     #[test]
     fn alt_text_across_lines_collapses_to_single_spaces() {
         assert_eq!(
-            find_media("![two\nlines](https://x.test/g.png)", GITHUB),
+            media_lines("![two\nlines](https://x.test/g.png)", GITHUB),
             vec![m(
                 0,
                 0..2,
@@ -763,7 +786,7 @@ mod tests {
     #[test]
     fn image_inside_link_text_with_prose_is_not_media_only() {
         assert_eq!(
-            find_media(
+            media_lines(
                 "[see ![i](https://x.test/i.png) here](https://x.test)",
                 GITHUB
             ),
@@ -780,13 +803,13 @@ mod tests {
 
     #[test]
     fn img_tag_without_src_stays_prose() {
-        assert_eq!(find_media("<img alt=\"x\">", GITHUB), vec![]);
+        assert_eq!(media_lines("<img alt=\"x\">", GITHUB), vec![]);
     }
 
     #[test]
     fn image_title_is_not_part_of_the_url_or_label() {
         assert_eq!(
-            find_media("![t](https://x.test/t.png \"Title\")", GITHUB),
+            media_lines("![t](https://x.test/t.png \"Title\")", GITHUB),
             vec![m(
                 0,
                 0..1,
@@ -801,7 +824,7 @@ mod tests {
     #[test]
     fn reference_style_image_resolves_its_url() {
         assert_eq!(
-            find_media("![r][ref]\n\n[ref]: https://x.test/r.png", GITHUB),
+            media_lines("![r][ref]\n\n[ref]: https://x.test/r.png", GITHUB),
             vec![m(
                 0,
                 0..1,
@@ -816,7 +839,7 @@ mod tests {
     #[test]
     fn html_tags_sharing_the_line_leave_it_media_only() {
         assert_eq!(
-            find_media("<p><img src=\"https://x.test/p.png\"></p>", GITHUB),
+            media_lines("<p><img src=\"https://x.test/p.png\"></p>", GITHUB),
             vec![m(
                 0,
                 0..1,
@@ -830,7 +853,7 @@ mod tests {
 
     #[test]
     fn empty_and_plain_bodies_hold_no_media() {
-        assert_eq!(find_media("", Some("github.com")), vec![]);
-        assert_eq!(find_media("plain prose", Some("github.com")), vec![]);
+        assert_eq!(media_lines("", Some("github.com")), vec![]);
+        assert_eq!(media_lines("plain prose", Some("github.com")), vec![]);
     }
 }
