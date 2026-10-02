@@ -368,7 +368,7 @@ fn drawn_row_numbered(buffer: &Buffer, n: u32) -> DrawnRow {
         .unwrap_or_else(|| panic!("no row numbered {n}"))
 }
 
-// 9. With the full text attached, contract B's scenarios 1-8 hold.
+// With the full text attached: one row per line, a table header above the // hunk, a hunk inside a fence, headings and inline, diff colours, Added and // Deleted files, side-by-side.
 
 #[test]
 fn should_draw_one_row_per_hunk_line_when_markdown_diffs_render() {
@@ -533,7 +533,7 @@ fn should_render_markdown_rows_on_both_sides_in_side_by_side_view() {
     assert!(rows.iter().all(|row| !row.contains("## Setup")));
 }
 
-// 10. Off by default.
+// Off by default.
 #[test]
 fn should_keep_source_text_when_markdown_diffs_are_off() {
     let mut app = build_app(guide_files(Some(guide_text())));
@@ -556,7 +556,7 @@ fn annotation_of_new_line(app: &App, new: u32) -> usize {
         .unwrap_or_else(|| panic!("no annotation for new {new}"))
 }
 
-// 11. No full text (a failed read) falls back to source.
+// No full text (a failed read) falls back to source.
 #[test]
 fn should_fall_back_to_source_when_the_full_text_is_missing() {
     let mut app = rendered_app(guide_files(None));
@@ -567,7 +567,7 @@ fn should_fall_back_to_source_when_the_full_text_is_missing() {
     assert_eq!(row_for_new(&buffer, 6).text, "| b | second |");
 }
 
-// 12. Text that disagrees with the hunks falls back to source.
+// Text that disagrees with the hunks falls back to source.
 #[test]
 fn should_fall_back_to_source_when_the_full_text_disagrees_with_the_hunks() {
     let mut new = owned(&GUIDE_NEW);
@@ -643,7 +643,7 @@ fn should_rebuild_the_old_side_around_a_hunk_that_deletes_without_adding() {
     assert_eq!(old_3.text, "Gone");
 }
 
-// 13. A new full text Arc for the same hunks re-renders.
+// A new full text Arc for the same hunks re-renders.
 #[test]
 fn should_re_render_when_the_full_text_arc_changes_for_the_same_hunks() {
     let mut app = rendered_guide_app();
@@ -784,7 +784,7 @@ impl crate::forge::traits::ForgeBackend for GuideForge {
     }
 }
 
-// 14. PR mode renders at load.
+// PR mode renders at load.
 #[test]
 fn should_render_a_pr_markdown_file_on_the_first_draw_after_opening() {
     let _reviews = super::target_selector_tests::TestReviewsDir::new();
@@ -859,7 +859,7 @@ fn should_keep_an_unchanged_markdown_file_as_source_in_all_files_mode_when_off()
     assert_eq!(drawn_row_numbered(&buffer, 1).text, "## Notes");
 }
 
-// 15. Contract C's scenarios hold: wrap height, theme change, search.
+// Wrap height, theme change and search on rendered rows.
 
 const LINK_LINE: &str =
     "See [docs](https://example.com/a/very/long/path/that/keeps/going/and/going/on/forever).";
