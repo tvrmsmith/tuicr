@@ -3,10 +3,11 @@
 //! the queue that shows all of them: `App::set_startup_warnings` takes the slot
 //! for the first and hands it to the next each time a TTL runs out.
 
-use std::time::Instant;
+use std::thread;
+use std::time::{Duration, Instant};
 
 use super::grouping_tests::ungrouped_app;
-use crate::app::App;
+use crate::app::{App, MESSAGE_TTL_WARNING};
 
 fn app() -> App {
     ungrouped_app(Vec::new())
@@ -91,5 +92,30 @@ fn a_message_the_human_asked_for_replaces_the_queue() {
         "",
         "an answer to a keypress ends the startup queue rather than being \
          followed by it: the human has moved on"
+    );
+}
+
+#[test]
+fn a_warning_set_before_a_slow_first_frame_keeps_its_full_ttl_on_screen() {
+    let mut app = app();
+    app.set_warning("docs/guide.md shows as source");
+
+    assert!(
+        !app.clear_expired_message(),
+        "a message nobody has seen yet does not expire"
+    );
+    // The first frame of a PR load can block on forge reads for seconds.
+    thread::sleep(Duration::from_millis(20));
+    let drawn_at = Instant::now();
+    app.start_message_clock();
+
+    let expires_at = app
+        .message
+        .as_ref()
+        .and_then(|m| m.expires_at)
+        .expect("a drawn warning has a deadline");
+    assert!(
+        expires_at >= drawn_at + MESSAGE_TTL_WARNING,
+        "the TTL counts from the first drawn frame, not from when the warning was set"
     );
 }

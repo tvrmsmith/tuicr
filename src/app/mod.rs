@@ -1135,7 +1135,10 @@ pub enum MessageType {
 pub struct Message {
     pub content: String,
     pub message_type: MessageType,
-    /// When this message should be auto-cleared. `None` means sticky.
+    /// How long the message stays once drawn. `None` means sticky.
+    pub ttl: Option<Duration>,
+    /// When this message should be auto-cleared. `None` until the message is
+    /// first drawn, so a slow first frame cannot spend its TTL off screen.
     pub expires_at: Option<Instant>,
 }
 

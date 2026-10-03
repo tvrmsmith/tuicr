@@ -622,6 +622,7 @@ fn main() -> anyhow::Result<()> {
                 ui::render(frame, &mut app);
             })?;
             execute!(terminal.backend_mut(), EndSynchronizedUpdate)?;
+            app.start_message_clock();
             needs_redraw = false;
         }
 
