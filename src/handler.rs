@@ -1800,11 +1800,13 @@ pub fn handle_diff_action(app: &mut App, action: Action) {
         Action::MouseScrollDown(n) => app.scroll_view_down(n),
         Action::MouseScrollUp(n) => app.scroll_view_up(n),
         Action::SelectFile => {
-            if let Some(index) = crate::ui::pr_info_panel::pr_info_media_at_cursor(app) {
-                app.enter_media(index);
-            } else if let Some(hit) = app.get_gap_at_cursor() {
-                match hit {
-                    GapCursorHit::Expander(gap_id, dir) => {
+            use crate::ui::pr_info_panel::{RowAction, pr_info_action_at_cursor};
+            match pr_info_action_at_cursor(app) {
+                Some(RowAction::Media(index)) => app.enter_media(index),
+                Some(RowAction::Details(id)) => app.toggle_pr_details(id),
+                Some(RowAction::Collapse(id)) => app.collapse_pr_details(id),
+                None => match app.get_gap_at_cursor() {
+                    Some(GapCursorHit::Expander(gap_id, dir)) => {
                         let limit = if dir == ExpandDirection::Both {
                             None
                         } else {
@@ -1814,15 +1816,14 @@ pub fn handle_diff_action(app: &mut App, action: Action) {
                             app.set_error(format!("Failed to expand: {e}"));
                         }
                     }
-                    GapCursorHit::HiddenLines(gap_id) => {
+                    Some(GapCursorHit::HiddenLines(gap_id)) => {
                         if let Err(e) = app.expand_gap(gap_id, ExpandDirection::Both, None) {
                             app.set_error(format!("Failed to expand: {e}"));
                         }
                     }
-                    GapCursorHit::ExpandedContent(gap_id) => {
-                        app.collapse_gap(gap_id);
-                    }
-                }
+                    Some(GapCursorHit::ExpandedContent(gap_id)) => app.collapse_gap(gap_id),
+                    None => {}
+                },
             }
         }
         Action::SelectFileFull => {

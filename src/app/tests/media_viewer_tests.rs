@@ -150,9 +150,13 @@ impl MediaJobs for Rc<FakeMediaJobs> {
 /// as one line (row 0 is the panel's own title line, so body rows start at
 /// 1: `Intro`, `[image: one]`, `[image: two]`, `[video: v.mp4]`).
 fn setup(probe_result: Option<Picker>) -> (App, Rc<FakeMediaJobs>) {
+    setup_with_body(BODY, probe_result)
+}
+
+fn setup_with_body(body: &str, probe_result: Option<Picker>) -> (App, Rc<FakeMediaJobs>) {
     let mut app = build_pr_app();
     let mut info = app.pr_info.take().expect("pr info");
-    info.details.body = BODY.to_string();
+    info.details.body = body.to_string();
     app.pr_info = Some(info);
     app.diff_state.viewport_width = 82;
     app.rebuild_annotations();
@@ -1353,4 +1357,54 @@ fn a_result_for_another_item_is_dropped() {
     let calls = fake.load_calls.borrow();
     assert_eq!(calls[1].index, 2);
     assert!(calls[1].source.is_none());
+}
+
+// 21: media inside an expanded `<details>` section opens; collapsed, it has no row.
+#[test]
+fn media_inside_an_expanded_section_opens() {
+    use crate::ui::pr_info_panel::{RowAction, pr_info_action_at_cursor, pr_info_rows};
+    let body = "![zero](https://x.test/0.png)\n\n<details>\n<summary>Shots</summary>\n\n![one](https://x.test/1.png)\n\n</details>";
+    let (mut app, fake) = setup_with_body(body, None);
+    let row_text = |app: &App, idx: usize| -> String {
+        pr_info_rows(app)[idx]
+            .line
+            .spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect()
+    };
+
+    assert_eq!(row_text(&app, 1), "[image: zero]");
+    assert_eq!(row_text(&app, 2), "");
+    assert_eq!(row_text(&app, 3), "▶ Shots");
+    assert!(
+        !pr_info_rows(&app)
+            .iter()
+            .enumerate()
+            .any(|(idx, _)| row_text(&app, idx) == "[image: one]")
+    );
+
+    app.diff_state.cursor_line = 3;
+    press_enter(&mut app);
+    assert_eq!(row_text(&app, 5), "[image: one]");
+    app.diff_state.cursor_line = 5;
+    assert_eq!(pr_info_action_at_cursor(&app), Some(RowAction::Media(1)));
+
+    press_enter(&mut app);
+    assert_eq!(*fake.open_calls.borrow(), vec!["https://x.test/1.png"]);
+    assert_eq!(app.message.as_ref().unwrap().content, "Opening one…");
+}
+
+// Media after a collapsed section opens by its index among all body media.
+#[test]
+fn media_after_a_collapsed_section_opens_its_own_item() {
+    use crate::ui::pr_info_panel::{RowAction, pr_info_action_at_cursor};
+    let body = "<details><summary>A</summary>\n\n![a](https://x.test/a.png)\n\n</details>\n\n![b](https://x.test/b.png)";
+    let (mut app, fake) = setup_with_body(body, None);
+
+    app.diff_state.cursor_line = 3;
+    assert_eq!(pr_info_action_at_cursor(&app), Some(RowAction::Media(1)));
+    press_enter(&mut app);
+
+    assert_eq!(*fake.open_calls.borrow(), vec!["https://x.test/b.png"]);
 }

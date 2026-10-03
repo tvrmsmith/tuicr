@@ -137,6 +137,7 @@ src/
 │   ├── mod.rs           # SyntaxHighlighter: syntect highlighting for diffs and code
 │   ├── cmark.rs         # Highlighted markdown source (comment bodies, render_markdown = false)
 │   └── markdown_render.rs # render_block -> BlockRow: rendered, reflowed markdown rows
+│       └── details.rs   # <details> section detection; render_block folds them
 │
 └── ui/
     ├── mod.rs

@@ -189,8 +189,14 @@ fn should_walk_from_overview_to_first_file_with_next_file() {
 
 #[test]
 fn should_build_pr_info_panel_lines() {
-    let rows =
-        crate::ui::pr_info_panel::build_pr_info_rows(&sample_pr_info(), 80, &Theme::dark(), true);
+    let rows = crate::ui::pr_info_panel::build_pr_info_rows(
+        &sample_pr_info(),
+        80,
+        &Theme::dark(),
+        crate::ui::pr_info_panel::BodyRender::Markdown {
+            toggled: &std::collections::BTreeSet::new(),
+        },
+    );
     assert!(rows.len() > 5);
 }
 
@@ -206,8 +212,8 @@ fn media_at_cursor_finds_the_placeholder_row_on_a_media_only_line() {
 
     app.diff_state.cursor_line = 2;
     assert_eq!(
-        crate::ui::pr_info_panel::pr_info_media_at_cursor(&app),
-        Some(0)
+        crate::ui::pr_info_panel::pr_info_action_at_cursor(&app),
+        Some(crate::ui::pr_info_panel::RowAction::Media(0))
     );
 }
 
@@ -223,7 +229,7 @@ fn media_at_cursor_is_none_on_a_prose_row() {
 
     app.diff_state.cursor_line = 1;
     assert_eq!(
-        crate::ui::pr_info_panel::pr_info_media_at_cursor(&app),
+        crate::ui::pr_info_panel::pr_info_action_at_cursor(&app),
         None
     );
 }
@@ -242,7 +248,7 @@ fn media_at_cursor_is_none_below_the_pr_info_panel() {
     app.diff_state.cursor_line = below;
     assert!(!crate::ui::pr_info_panel::is_cursor_in_pr_info(&app));
     assert_eq!(
-        crate::ui::pr_info_panel::pr_info_media_at_cursor(&app),
+        crate::ui::pr_info_panel::pr_info_action_at_cursor(&app),
         None
     );
 }
@@ -627,4 +633,347 @@ fn should_draw_the_panel_at_full_width_on_the_first_frame() {
             .iter()
             .any(|row| row.contains("Readable on the very first frame"))
     );
+}
+
+const COVERAGE_TABLE_ROWS: usize = 40;
+
+fn coverage_table() -> String {
+    let mut table = String::from("| File | Lines |\n|------|-------|\n");
+    for i in 0..COVERAGE_TABLE_ROWS {
+        table.push_str(&format!("| f{i:02}.rs | {i} |\n"));
+    }
+    table.trim_end().to_string()
+}
+
+fn coverage_body(open: bool) -> String {
+    let tag = if open { "<details open>" } else { "<details>" };
+    format!(
+        "Intro\n\n{tag}\n<summary>Coverage report</summary>\n\n{}\n\n</details>\n\nOutro",
+        coverage_table()
+    )
+}
+
+fn coverage_info(open: bool) -> PullRequestInfo {
+    let mut info = sample_pr_info();
+    info.details.body = coverage_body(open);
+    info
+}
+
+fn coverage_app(open: bool) -> App {
+    let mut app = build_pr_app();
+    app.pr_info = Some(coverage_info(open));
+    draw_app(&mut app);
+    app
+}
+
+fn press_enter(app: &mut App) {
+    crate::handler::handle_diff_action(app, crate::input::Action::SelectFile);
+    draw_app(app);
+}
+
+fn press_enter_at(app: &mut App, line: usize) {
+    app.diff_state.cursor_line = line;
+    press_enter(app);
+}
+
+#[test]
+fn enter_on_the_summary_row_rebuilds_annotations_before_the_next_frame() {
+    let mut app = coverage_app(false);
+    let panel_annotations = |app: &App| {
+        app.line_annotations
+            .iter()
+            .filter(|line| matches!(line, crate::app::AnnotatedLine::PrInfoLine { .. }))
+            .count()
+    };
+    let collapsed = panel_annotations(&app);
+
+    app.diff_state.cursor_line = 3;
+    crate::handler::handle_diff_action(&mut app, crate::input::Action::SelectFile);
+
+    let expanded = panel_annotations(&app);
+    assert!(expanded > collapsed, "{collapsed} -> {expanded}");
+    assert_eq!(
+        expanded,
+        crate::ui::pr_info_panel::pr_info_render_height(&app)
+    );
+}
+
+#[test]
+fn details_section_is_collapsed_by_default() {
+    let mut app = coverage_app(false);
+
+    assert!(drawn_cursor_row(&mut app, 3).contains("▶ Coverage report"));
+    assert!(
+        !rows_of(&draw_app(&mut app))
+            .iter()
+            .any(|row| row.contains("f00.rs"))
+    );
+    assert!(drawn_cursor_row(&mut app, 5).contains("Outro"));
+    assert_panel_annotations_match_drawn_rows(&mut app);
+}
+
+#[test]
+fn enter_on_the_summary_row_expands_the_section() {
+    let mut app = coverage_app(false);
+    press_enter_at(&mut app, 3);
+
+    assert_eq!(app.diff_state.cursor_line, 3);
+    assert!(drawn_cursor_row(&mut app, 3).contains("▼ Coverage report"));
+    let rows = rows_of(&draw_app(&mut app));
+    let table_row = rows
+        .iter()
+        .find(|row| row.contains("f00.rs"))
+        .expect("table row drawn");
+    assert!(table_row.contains('│'), "{table_row:?}");
+
+    let table_height = crate::syntax::markdown_render::render_block(
+        &Theme::dark(),
+        &coverage_table(),
+        crate::ui::pr_info_panel::pr_info_content_width(app.diff_state.viewport_width),
+        &[],
+        &std::collections::BTreeSet::new(),
+    )
+    .len();
+    assert!(drawn_cursor_row(&mut app, 6 + table_height).contains("Outro"));
+    assert_panel_annotations_match_drawn_rows(&mut app);
+}
+
+#[test]
+fn enter_on_an_expanded_summary_row_collapses_the_section() {
+    let mut app = coverage_app(false);
+    press_enter_at(&mut app, 3);
+    press_enter_at(&mut app, 3);
+
+    assert_eq!(app.diff_state.cursor_line, 3);
+    assert!(drawn_cursor_row(&mut app, 3).contains("▶ Coverage report"));
+    assert!(
+        !rows_of(&draw_app(&mut app))
+            .iter()
+            .any(|row| row.contains("f00.rs"))
+    );
+    assert!(drawn_cursor_row(&mut app, 5).contains("Outro"));
+    assert_panel_annotations_match_drawn_rows(&mut app);
+}
+
+#[test]
+fn details_open_section_starts_expanded() {
+    let mut app = coverage_app(true);
+
+    assert!(drawn_cursor_row(&mut app, 3).contains("▼ Coverage report"));
+    assert!(
+        rows_of(&draw_app(&mut app))
+            .iter()
+            .any(|row| row.contains("f00.rs"))
+    );
+}
+
+#[test]
+fn nested_sections_toggle_independently() {
+    let body = "<details>\n<summary>Outer</summary>\n\nOuter body\n\n<details>\n<summary>Inner</summary>\n\nInner body\n\n</details>\n\n</details>";
+    let mut info = sample_pr_info();
+    info.details.body = body.to_string();
+    let mut app = build_pr_app();
+    app.pr_info = Some(info);
+    draw_app(&mut app);
+    let drawn = |app: &mut App, line: usize| drawn_cursor_row(app, line);
+    let has =
+        |app: &mut App, needle: &str| rows_of(&draw_app(app)).iter().any(|r| r.contains(needle));
+
+    assert!(drawn(&mut app, 1).contains("▶ Outer"));
+
+    press_enter_at(&mut app, 1);
+    assert!(drawn(&mut app, 1).contains("▼ Outer"));
+    assert!(drawn(&mut app, 3).contains("Outer body"));
+    assert!(drawn(&mut app, 5).contains("▶ Inner"));
+    assert!(!has(&mut app, "Inner body"));
+    assert_panel_annotations_match_drawn_rows(&mut app);
+
+    press_enter_at(&mut app, 5);
+    assert!(drawn(&mut app, 5).contains("▼ Inner"));
+    assert!(drawn(&mut app, 7).contains("Inner body"));
+    assert!(drawn(&mut app, 1).contains("▼ Outer"));
+    assert_panel_annotations_match_drawn_rows(&mut app);
+
+    // Enter in the inner body closes only the inner section.
+    press_enter_at(&mut app, 7);
+    assert_eq!(app.diff_state.cursor_line, 5);
+    assert!(drawn(&mut app, 5).contains("▶ Inner"));
+    assert!(!has(&mut app, "Inner body"));
+    assert!(drawn(&mut app, 1).contains("▼ Outer"));
+    assert_panel_annotations_match_drawn_rows(&mut app);
+
+    // Enter in the outer body closes the outer section.
+    press_enter_at(&mut app, 3);
+    assert_eq!(app.diff_state.cursor_line, 1);
+    assert!(drawn(&mut app, 1).contains("▶ Outer"));
+    assert!(!has(&mut app, "Outer body"));
+    assert_panel_annotations_match_drawn_rows(&mut app);
+}
+
+#[test]
+fn enter_inside_an_expanded_body_collapses_it_onto_the_summary_row() {
+    let mut app = coverage_app(false);
+    press_enter_at(&mut app, 3);
+    let panel = crate::ui::pr_info_panel::pr_info_render_height(&app);
+    let table_row = (0..panel)
+        .find(|&line| drawn_cursor_row(&mut app, line).contains("f39.rs"))
+        .expect("last table row");
+
+    press_enter_at(&mut app, table_row);
+
+    assert_eq!(app.diff_state.cursor_line, 3);
+    assert!(drawn_cursor_row(&mut app, 3).contains("▶ Coverage report"));
+    assert!(
+        !rows_of(&draw_app(&mut app))
+            .iter()
+            .any(|row| row.contains("f00.rs"))
+    );
+    assert!(drawn_cursor_row(&mut app, 5).contains("Outro"));
+    assert_panel_annotations_match_drawn_rows(&mut app);
+}
+
+#[test]
+fn enter_outside_every_section_does_nothing() {
+    let mut app = coverage_app(true);
+    app.diff_state.cursor_line = 1;
+    let before = rows_of(&draw_app(&mut app));
+
+    press_enter(&mut app);
+
+    assert_eq!(app.diff_state.cursor_line, 1);
+    assert_eq!(rows_of(&draw_app(&mut app)), before);
+}
+
+#[test]
+fn rendering_off_shows_details_source_and_ignores_enter() {
+    let mut app = coverage_app(false);
+    app.render_markdown = false;
+    let drawn = rows_of(&draw_app(&mut app));
+    for needle in ["<details>", "<summary>Coverage report</summary>", "f00.rs"] {
+        assert!(drawn.iter().any(|row| row.contains(needle)), "{needle}");
+    }
+    // The gutter cursor also draws `▶`, so look for the marker with its label.
+    assert!(
+        !drawn
+            .iter()
+            .any(|row| row.contains("▶ Coverage report") || row.contains("▼ Coverage report"))
+    );
+
+    let panel = crate::ui::pr_info_panel::pr_info_render_height(&app);
+    for line in 0..panel {
+        app.diff_state.cursor_line = line;
+        assert_eq!(
+            crate::ui::pr_info_panel::pr_info_action_at_cursor(&app),
+            None
+        );
+    }
+
+    let summary_line = (0..panel)
+        .find(|&line| drawn_cursor_row(&mut app, line).contains("<summary>"))
+        .expect("summary source row");
+    app.diff_state.cursor_line = summary_line;
+    let before = rows_of(&draw_app(&mut app));
+    press_enter(&mut app);
+    assert_eq!(rows_of(&draw_app(&mut app)), before);
+}
+
+#[test]
+fn action_at_cursor_finds_the_summary_row_only() {
+    use crate::ui::pr_info_panel::{RowAction, pr_info_action_at_cursor, pr_info_render_height};
+    let mut app = coverage_app(false);
+
+    let actions: Vec<(usize, RowAction)> = (0..=pr_info_render_height(&app))
+        .filter_map(|line| {
+            app.diff_state.cursor_line = line;
+            pr_info_action_at_cursor(&app).map(|action| (line, action))
+        })
+        .collect();
+    assert_eq!(actions, [(3, RowAction::Details(0))]);
+}
+
+/// Queues a background reload result fetched from a forge holding
+/// `details`, as `spawn_pr_reload`'s thread would, for a reload started at
+/// `started_at_head`.
+fn queue_pr_reload(app: &mut App, details: PullRequestDetails, started_at_head: &str) {
+    use super::target_selector_tests::{FakeForgeBackend, two_file_patch};
+    let request = crate::app::PrReloadRequest {
+        repository: details.repository.clone(),
+        pr_number: details.number,
+        head_sha: started_at_head.to_string(),
+        started_at: std::time::Instant::now(),
+        anchor: None,
+        restore_overview_cursor: None,
+    };
+    let target = crate::forge::traits::PullRequestTarget::with_repository(
+        details.repository.clone(),
+        details.number,
+        details.number.to_string(),
+    );
+    let backend = FakeForgeBackend::open_pr_details(details, two_file_patch("new changed"));
+    let fetched = crate::forge::pr_open::fetch_pr_data(&backend, target).unwrap();
+    let (tx, rx) = std::sync::mpsc::channel();
+    tx.send(crate::app::PrReloadEvent::Done {
+        request: request.clone(),
+        result: Ok(fetched),
+    })
+    .unwrap();
+    app.pr_reload_state = Some(request);
+    app.pr_reload_rx = Some(rx);
+}
+
+#[test]
+fn toggled_sections_reset_on_reload_but_not_on_gap_clearing() {
+    use super::target_selector_tests::{
+        FakeForgeBackend, TestReviewsDir, build_app, sample_pr, test_pr_details, two_file_patch,
+    };
+    let _reviews = TestReviewsDir::new();
+    let mut details = test_pr_details(42, "Add panel");
+    details.body = coverage_body(false);
+    let forge = || {
+        Box::new(FakeForgeBackend::open_pr_details(
+            details.clone(),
+            two_file_patch("new changed"),
+        ))
+    };
+    let mut app = build_app();
+    app.open_pr_with_backend(&sample_pr(42, "Add panel"), forge(), None)
+        .unwrap();
+    draw_app(&mut app);
+    let summary = |app: &mut App| drawn_cursor_row(app, 3);
+
+    press_enter_at(&mut app, 3);
+    app.clear_expanded_gaps();
+    app.rebuild_annotations();
+    assert!(summary(&mut app).contains("▼ Coverage report"));
+
+    app.reload_pull_request_with_backend(forge(), None).unwrap();
+    assert!(summary(&mut app).contains("▶ Coverage report"));
+
+    // A background reload lands on the same head, then on a new one.
+    for head in [details.head_sha.as_str(), "bbbbbbbbbbbbbbbb"] {
+        press_enter_at(&mut app, 3);
+        assert!(summary(&mut app).contains("▼ Coverage report"), "{head}");
+        let mut fetched = details.clone();
+        fetched.head_sha = head.to_string();
+        queue_pr_reload(&mut app, fetched, &details.head_sha);
+        app.poll_pr_reload_events();
+        assert!(summary(&mut app).contains("▶ Coverage report"), "{head}");
+    }
+}
+
+#[test]
+fn toggling_a_section_rebuilds_the_cached_rows() {
+    use crate::ui::pr_info_panel::{RowAction, pr_info_rows};
+    let summary = |app: &App| -> Option<String> {
+        let rows = pr_info_rows(app);
+        let row = rows
+            .iter()
+            .find(|row| row.action == Some(RowAction::Details(0)))?;
+        Some(row.line.spans.iter().map(|s| s.content.as_ref()).collect())
+    };
+    let mut app = coverage_app(false);
+    assert_eq!(summary(&app).as_deref(), Some("▶ Coverage report"));
+
+    app.toggle_pr_details(0);
+    assert_eq!(summary(&app).as_deref(), Some("▼ Coverage report"));
 }

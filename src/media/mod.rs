@@ -27,6 +27,8 @@ pub struct MediaRef {
 pub struct MediaLine {
     /// 0-based source line (the body split on `\n`) where the media starts.
     pub line: usize,
+    /// Byte in the body where the media's markup starts.
+    pub start: usize,
     /// Source lines the media's markup covers, so a multi-line `<img>` or
     /// `<video>` spans several.
     pub lines: std::ops::Range<usize>,
