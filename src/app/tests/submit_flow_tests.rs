@@ -86,6 +86,7 @@ fn make_pr_app_with_single_modified_file(file_path: &str) -> App {
         is_too_large: false,
         is_commit_message: false,
         content_hash: 0,
+        full_text: None,
     };
     let pr_source = PullRequestDiffSource {
         key: PrSessionKey::new(

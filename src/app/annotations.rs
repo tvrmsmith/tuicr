@@ -57,6 +57,7 @@ impl App {
     /// - Comments are added/removed
     /// - Diff view mode changes
     pub fn rebuild_annotations(&mut self) {
+        self.apply_markdown_diff_renders();
         if self.file_line_count_cache.is_empty() {
             self.populate_file_line_count_cache();
         }

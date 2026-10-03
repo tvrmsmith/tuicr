@@ -15,6 +15,7 @@ mod grouping_feedback_tests;
 mod grouping_status_tests;
 pub(crate) mod grouping_tests;
 mod grouping_toggle_tests;
+mod markdown_diff_tests;
 mod media_viewer_tests;
 mod persistence_merge_tests;
 pub(crate) mod pr_info_tests;

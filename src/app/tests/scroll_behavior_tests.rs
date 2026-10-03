@@ -70,6 +70,7 @@ fn build_scroll_app(n: usize, viewport: usize, scroll_offset_config: usize) -> A
         is_too_large: false,
         is_commit_message: false,
         content_hash: 0,
+        full_text: None,
     };
 
     let vcs_info = VcsInfo {

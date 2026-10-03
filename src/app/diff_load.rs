@@ -91,6 +91,7 @@ impl App {
             is_too_large: false,
             is_commit_message: true,
             content_hash,
+            full_text: None,
         };
         self.diff_files.insert(0, commit_msg_file);
         self.session.add_diff_file(&self.diff_files[0]);
@@ -1131,6 +1132,7 @@ impl App {
         let vcs = detect_vcs(
             vcs_open_options.git_backend_preference,
             vcs_open_options.diff_whitespace_mode,
+            vcs_open_options.render_markdown_diffs,
         )?;
         let root_path = &vcs.info().root_path;
         let fetch_source = Self::narrowed_fetch_source(
@@ -1647,6 +1649,7 @@ mod tests {
             is_too_large,
             is_commit_message: false,
             content_hash,
+            full_text: None,
         }
     }
 
@@ -1772,6 +1775,7 @@ mod tests {
                 &self.repo,
                 &self.whitespace_mode,
                 highlighter,
+                false,
             )
         }
 
@@ -1854,7 +1858,7 @@ mod tests {
     }
 
     #[test]
-    fn watch_worker_open_options_retain_whitespace_overrides() {
+    fn watch_worker_open_options_retain_whitespace_overrides_and_markdown_full_text() {
         let mode = DiffWhitespaceMode::Auto(crate::vcs::WhitespaceAutoPolicy::with_overrides([
             ("rs".into(), false),
             ("custom".into(), true),
@@ -1873,10 +1877,12 @@ mod tests {
             commit_selection: CommitSelectionStart::All,
             pr_target: None,
             repo_url_override: None,
+            render_markdown_diffs: true,
         };
         let captured = options.vcs_open_options();
         assert_eq!(captured.git_backend_preference, GitBackendPreference::Cli);
         assert_eq!(captured.diff_whitespace_mode, mode);
+        assert!(captured.render_markdown_diffs);
         assert_eq!(captured.clone().diff_whitespace_mode, mode);
     }
 
@@ -1890,6 +1896,7 @@ mod tests {
         let captured = VcsOpenOptions {
             git_backend_preference: GitBackendPreference::Libgit2,
             diff_whitespace_mode: mode.clone(),
+            render_markdown_diffs: false,
         };
         let vcs = policy_vcs(repo, captured.diff_whitespace_mode.clone());
         let highlighter = SyntaxHighlighter::default();

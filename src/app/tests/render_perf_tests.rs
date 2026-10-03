@@ -89,6 +89,7 @@ fn file(path: &str, lines_per_file: usize) -> DiffFile {
         is_too_large: false,
         is_commit_message: false,
         content_hash,
+        full_text: None,
     }
 }
 
@@ -299,6 +300,135 @@ fn render_perf_pr_panel() {
             micros as f64 / 1000.0
         );
     }
+    println!(
+        "rendered / source frame: {:.2}x",
+        on as f64 / off.max(1) as f64
+    );
+}
+
+/// One 20-line block of markdown: heading, prose with inline styling, a list,
+/// a table, and a fenced code block.
+fn markdown_block(section: usize) -> [String; 20] {
+    [
+        format!("## Section {section}"),
+        String::new(),
+        format!("Prose with **bold**, _emphasis_, `code` and a [link](https://x.test/{section})."),
+        String::new(),
+        "- item one".to_string(),
+        "- item two with **bold**".to_string(),
+        "  - nested detail".to_string(),
+        String::new(),
+        "| Name | Qty |".to_string(),
+        "| --- | ---: |".to_string(),
+        "| a | 1 |".to_string(),
+        "| b | 2 |".to_string(),
+        String::new(),
+        "```rust".to_string(),
+        "let a = compute(1);".to_string(),
+        "let b = compute(2);".to_string(),
+        "```".to_string(),
+        String::new(),
+        "Closing paragraph with *emphasis*.".to_string(),
+        String::new(),
+    ]
+}
+
+/// A 2000-line markdown file with a one-line change inside every block,
+/// alternating between a table row and a code line, with both sides' full
+/// text attached as the loaders attach it.
+fn large_markdown_diff() -> DiffFile {
+    let blocks = 100;
+    let mut old_side = Vec::new();
+    let mut new_side = Vec::new();
+    let mut patch = String::new();
+    for section in 0..blocks {
+        let block = markdown_block(section);
+        let changed = if section % 2 == 0 { 11 } else { 15 };
+        let start = section * 20 + changed;
+        patch.push_str(&format!("@@ -{start},3 +{start},3 @@\n"));
+        patch.push_str(&format!(" {}\n", block[changed - 1]));
+        patch.push_str(&format!("-{} old\n", block[changed]));
+        patch.push_str(&format!("+{}\n", block[changed]));
+        patch.push_str(&format!(" {}\n", block[changed + 1]));
+        for (idx, line) in block.iter().enumerate() {
+            old_side.push(if idx == changed {
+                format!("{line} old")
+            } else {
+                line.clone()
+            });
+            new_side.push(line.clone());
+        }
+    }
+    let path = PathBuf::from("docs/large.md");
+    let file_patch =
+        crate::model::FilePatch::new(Some(path.clone()), Some(path), FileStatus::Modified, patch);
+    let mut files = crate::vcs::diff_parser::parse_file_patches(
+        vec![file_patch],
+        crate::theme::Theme::dark().syntax_highlighter(),
+    )
+    .expect("parse large markdown diff");
+    let mut file = files.remove(0);
+    file.full_text = Some(std::sync::Arc::new(crate::model::FullText {
+        old: Some(old_side),
+        new: Some(new_side),
+    }));
+    file
+}
+
+/// Median frame time in microseconds over `frames` draws of the large
+/// markdown diff, plus the one-time cost of turning rendering on.
+fn markdown_diff_frame_micros(render_markdown_diffs: bool, frames: usize) -> (u128, u128) {
+    let mut app = app_with(vec![large_markdown_diff()]);
+    app.diff_state.wrap_lines = true;
+    let mut terminal = Terminal::new(TestBackend::new(180, 50)).unwrap();
+    // The first frame records the panel width the annotations need.
+    terminal
+        .draw(|frame| crate::ui::render(frame, &mut app))
+        .expect("draw frame");
+
+    let start = Instant::now();
+    if render_markdown_diffs {
+        app.render_markdown_diffs = true;
+        app.rebuild_annotations();
+    }
+    let setup = start.elapsed().as_micros();
+    let first = &app.diff_files[0].hunks[0].lines[0];
+    let drawn: String = first
+        .highlighted_spans
+        .iter()
+        .flatten()
+        .map(|(_, text)| text.as_str())
+        .collect();
+    assert_eq!(
+        drawn != first.content,
+        render_markdown_diffs,
+        "the table row must be rendered exactly when rendering is on"
+    );
+    app.diff_state.cursor_line = 400;
+
+    let mut samples = Vec::new();
+    for _ in 0..frames {
+        let start = Instant::now();
+        terminal
+            .draw(|frame| crate::ui::render(frame, &mut app))
+            .expect("draw frame");
+        samples.push(start.elapsed().as_micros());
+    }
+    samples.sort_unstable();
+    (samples[samples.len() / 2], setup)
+}
+
+#[test]
+#[ignore = "timing measurement, run explicitly"]
+fn render_perf_markdown_diff() {
+    let (off, _) = markdown_diff_frame_micros(false, 21);
+    let (on, setup) = markdown_diff_frame_micros(true, 21);
+    for (render_markdown_diffs, micros) in [(false, off), (true, on)] {
+        println!(
+            "markdown diff, 2000 lines, 100 hunks, wrap on, render_markdown_diffs={render_markdown_diffs}: {micros} us/frame"
+        );
+    }
+    println!("one-time render on enable: {setup} us");
     println!(
         "rendered / source frame: {:.2}x",
         on as f64 / off.max(1) as f64

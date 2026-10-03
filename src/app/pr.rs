@@ -344,6 +344,7 @@ impl App {
         let base_sha = current.base_sha.clone();
         let show_pr_checks = self.show_pr_checks;
         let show_pr_comments = self.show_pr_comments;
+        let render_markdown_diffs = self.render_markdown_diffs;
         std::thread::spawn(move || {
             let backend = create_forge_backend(
                 &repository,
@@ -369,9 +370,14 @@ impl App {
                 merged_at: None,
                 diff_start_sha: None,
             };
-            let outcome = backend
-                .get_pull_request_commit_range_diff(&details, &start_sha, &end_sha)
-                .map_err(|e| e.to_string());
+            let outcome = crate::forge::pr_open::fetch_pr_range_patches(
+                backend.as_ref(),
+                &details,
+                &start_sha,
+                &end_sha,
+                render_markdown_diffs,
+            )
+            .map_err(|e| e.to_string());
             let _ = tx.send(PrRangeReloadEvent::Done {
                 request,
                 result: outcome,
@@ -415,11 +421,10 @@ impl App {
         self.pr_range_reload_state = None;
 
         match result {
-            Ok(patches) => {
-                if let Err(e) = self.finish_pr_range_reload(&request, patches) {
-                    self.set_error(format!("Range diff failed: {e}"));
-                }
-            }
+            Ok((patches, unreadable)) => match self.finish_pr_range_reload(&request, patches) {
+                Ok(()) => self.warn_unreadable_markdown(&unreadable),
+                Err(e) => self.set_error(format!("Range diff failed: {e}")),
+            },
             Err(e) => {
                 self.set_error(format!("Range diff failed: {e}"));
             }
@@ -511,6 +516,7 @@ impl App {
         let pr_number = current.key.number;
         let show_pr_checks = self.show_pr_checks;
         let show_pr_comments = self.show_pr_comments;
+        let render_markdown_diffs = self.render_markdown_diffs;
         std::thread::spawn(move || {
             let backend = create_forge_backend(
                 &repository,
@@ -520,7 +526,8 @@ impl App {
             );
             let target =
                 PullRequestTarget::with_repository(repository, pr_number, pr_number.to_string());
-            let outcome = fetch_pr_data(backend.as_ref(), target).map_err(|e| e.to_string());
+            let outcome = fetch_pr_data(backend.as_ref(), target, render_markdown_diffs)
+                .map_err(|e| e.to_string());
             let _ = tx.send(PrReloadEvent::Done {
                 request,
                 result: outcome,
@@ -569,8 +576,8 @@ impl App {
             return;
         }
         match result {
-            Ok((details, patches, commits, review_metadata, pr_info)) => {
-                if let Err(e) = self.finish_pr_reload(
+            Ok((details, patches, commits, review_metadata, pr_info, unreadable)) => {
+                match self.finish_pr_reload(
                     details,
                     patches,
                     commits,
@@ -578,7 +585,8 @@ impl App {
                     pr_info,
                     &request,
                 ) {
-                    self.set_error(format!("Reload failed: {e}"));
+                    Ok(()) => self.warn_unreadable_markdown(&unreadable),
+                    Err(e) => self.set_error(format!("Reload failed: {e}")),
                 }
             }
             Err(e) => {
@@ -706,7 +714,7 @@ impl App {
     #[allow(dead_code)]
     pub fn reload_pull_request_with_backend(
         &mut self,
-        backend: Box<dyn ForgeBackend>,
+        backend: Box<dyn ForgeBackend + Sync>,
         local_checkout: Option<std::path::PathBuf>,
     ) -> Result<bool> {
         use crate::forge::pr_open::open_pull_request;
@@ -723,11 +731,12 @@ impl App {
             current.key.number.to_string(),
         );
         let highlighter = self.theme.syntax_highlighter();
-        let opened = open_pull_request(
+        let (opened, unreadable) = open_pull_request(
             backend.as_ref(),
             target,
             local_checkout.as_deref(),
             highlighter,
+            self.render_markdown_diffs,
         )?;
 
         let head_changed = opened.details.head_sha != current.key.head_sha;
@@ -759,6 +768,7 @@ impl App {
         // Same-head reload keeps the old cursor; clamp it into the (possibly
         // shorter) new diff so a following `cursor_down` can't underflow.
         self.diff_state.cursor_line = self.diff_state.cursor_line.min(self.max_cursor_line());
+        self.warn_unreadable_markdown(&unreadable);
 
         Ok(head_changed)
     }
@@ -986,6 +996,7 @@ impl App {
         let local_checkout = self.local_checkout_for(repository);
         let show_pr_checks = self.show_pr_checks;
         let show_pr_comments = self.show_pr_comments;
+        let render_markdown_diffs = self.render_markdown_diffs;
         std::thread::spawn(move || {
             let backend = create_forge_backend(
                 &summary_repo,
@@ -995,7 +1006,8 @@ impl App {
             );
             let target =
                 PullRequestTarget::with_repository(summary_repo, pr_number, pr_number.to_string());
-            let outcome = fetch_pr_data(backend.as_ref(), target).map_err(|e| e.to_string());
+            let outcome = fetch_pr_data(backend.as_ref(), target, render_markdown_diffs)
+                .map_err(|e| e.to_string());
             let _ = tx.send(PrOpenEvent::Done {
                 request,
                 result: outcome,
@@ -1031,8 +1043,8 @@ impl App {
                     return;
                 }
                 match result {
-                    Ok((details, patches, commits, review_metadata, pr_info)) => {
-                        if let Err(e) = self.finish_pr_open(
+                    Ok((details, patches, commits, review_metadata, pr_info, unreadable)) => {
+                        match self.finish_pr_open(
                             details,
                             patches,
                             commits,
@@ -1040,10 +1052,11 @@ impl App {
                             pr_info,
                             &request,
                         ) {
-                            self.set_error(format!(
+                            Ok(()) => self.warn_unreadable_markdown(&unreadable),
+                            Err(e) => self.set_error(format!(
                                 "Failed to open PR #{}: {}",
                                 request.pr_number, e
-                            ));
+                            )),
                         }
                     }
                     Err(e) => {
@@ -1311,7 +1324,7 @@ impl App {
     pub fn open_pr_with_backend(
         &mut self,
         summary: &crate::forge::traits::PullRequestSummary,
-        backend: Box<dyn ForgeBackend>,
+        backend: Box<dyn ForgeBackend + Sync>,
         local_checkout: Option<std::path::PathBuf>,
     ) -> Result<()> {
         use crate::forge::pr_open::open_pull_request;
@@ -1323,11 +1336,12 @@ impl App {
             summary.number.to_string(),
         );
         let highlighter = self.theme.syntax_highlighter();
-        let mut opened = open_pull_request(
+        let (mut opened, unreadable) = open_pull_request(
             backend.as_ref(),
             target,
             local_checkout.as_deref(),
             highlighter,
+            self.render_markdown_diffs,
         )?;
         self.seed_configured_visibility(&mut opened.session);
         let opened = Self::opened_pr_with_persisted_session(opened)?;
@@ -1345,7 +1359,20 @@ impl App {
         self.forge_review_summaries = summaries;
         self.prune_locked_comments();
         self.rebuild_annotations();
+        self.warn_unreadable_markdown(&unreadable);
         Ok(())
+    }
+
+    /// Tells the reviewer why PR markdown files whose text a load could not
+    /// read show as source. Call it after the load is applied, so the warning
+    /// is the message the reviewer sees.
+    pub(in crate::app) fn warn_unreadable_markdown(
+        &mut self,
+        unreadable: &crate::forge::pr_open::UnreadableMarkdown,
+    ) {
+        if let Some(warning) = unreadable.warning() {
+            self.set_warning(warning);
+        }
     }
 
     pub fn begin_pr_filter(&mut self) {

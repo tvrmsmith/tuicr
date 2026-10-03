@@ -74,6 +74,7 @@ fn diff_file_with_marker_bg(path: &str, marker_bg: Color) -> DiffFile {
         is_too_large: false,
         is_commit_message: false,
         content_hash,
+        full_text: None,
     }
 }
 

@@ -1,6 +1,6 @@
 use ratatui::style::Style;
 use serde::{Deserialize, Serialize};
-use std::{collections::HashMap, path::PathBuf};
+use std::{collections::HashMap, path::PathBuf, sync::Arc};
 
 use crate::hash::Fnv1aHasher;
 use crate::model::comment::LineSide;
@@ -17,6 +17,9 @@ pub struct FilePatch {
     pub patch: String,
     pub is_binary: bool,
     pub is_too_large: bool,
+    /// Both sides in full when the loader read them, carried to the parsed
+    /// `DiffFile`.
+    pub full_text: Option<Arc<FullText>>,
 }
 
 impl FilePatch {
@@ -33,6 +36,7 @@ impl FilePatch {
             patch: patch.into(),
             is_binary: false,
             is_too_large: false,
+            full_text: None,
         }
     }
 
@@ -97,6 +101,15 @@ pub struct DiffHunk {
     pub new_count: u32,
 }
 
+/// A file's whole text on each side, one entry per line split like
+/// `str::lines`, tabs expanded exactly as in `DiffLine::content`. A side is
+/// `None` when the file does not exist there or could not be read.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FullText {
+    pub old: Option<Vec<String>>,
+    pub new: Option<Vec<String>>,
+}
+
 #[derive(Debug, Clone)]
 pub struct DiffFile {
     pub old_path: Option<PathBuf>,
@@ -107,6 +120,10 @@ pub struct DiffFile {
     pub is_too_large: bool,
     pub is_commit_message: bool,
     pub content_hash: u64,
+    /// Both sides in full, read at load time for files whose rendering needs
+    /// more than the hunks (markdown under `render_markdown_diffs`). `None`
+    /// when the loader did not read it or the read failed.
+    pub full_text: Option<Arc<FullText>>,
 }
 
 impl DiffHunk {

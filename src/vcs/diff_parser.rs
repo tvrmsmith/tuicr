@@ -51,6 +51,7 @@ fn materialize_file_patch(patch: FilePatch, highlighter: &SyntaxHighlighter) -> 
         is_too_large: patch.is_too_large,
         is_commit_message: false,
         content_hash,
+        full_text: patch.full_text,
     })
 }
 

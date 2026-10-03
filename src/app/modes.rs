@@ -83,8 +83,20 @@ impl App {
         self.message = Some(Message {
             content: msg.into(),
             message_type,
-            expires_at: ttl.map(|d| Instant::now() + d),
+            ttl,
+            expires_at: None,
         });
+    }
+
+    /// Starts the current message's TTL clock if it has not started yet. The
+    /// main loop calls this after each drawn frame, so the TTL counts time the
+    /// message was on screen, not time spent loading before the first frame.
+    pub fn start_message_clock(&mut self) {
+        if let Some(message) = self.message.as_mut()
+            && message.expires_at.is_none()
+        {
+            message.expires_at = message.ttl.map(|ttl| Instant::now() + ttl);
+        }
     }
 
     /// Returns `true` if the slot changed — a message expired, or the next

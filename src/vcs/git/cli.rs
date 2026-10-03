@@ -43,6 +43,9 @@ pub struct GitCliBackend {
     untracked_cache: bool,
     fsmonitor: bool,
     whitespace_mode: DiffWhitespaceMode,
+    /// Whether diff loads read each markdown file's full text
+    /// (`render_markdown_diffs`).
+    markdown_full_text: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -82,7 +85,15 @@ impl GitCliBackend {
             untracked_cache,
             fsmonitor,
             whitespace_mode,
+            markdown_full_text: false,
         })
+    }
+
+    /// Makes diff loads read each markdown file's full text into
+    /// `DiffFile::full_text` (`render_markdown_diffs`).
+    pub(crate) fn with_markdown_full_text(mut self, on: bool) -> Self {
+        self.markdown_full_text = on;
+        self
     }
 
     pub fn repo_mode(&self) -> GitRepoMode {
@@ -147,13 +158,24 @@ impl GitCliBackend {
             return Err(TuicrError::NoChanges);
         }
 
-        let old_cache =
-            git_source_content_cache(&self.root_path, old_source, &files, LineSide::Old);
-        let new_cache =
-            git_source_content_cache(&self.root_path, new_source, &files, LineSide::New);
+        let old_cache = git_source_content_cache(
+            &self.root_path,
+            old_source,
+            &files,
+            LineSide::Old,
+            self.markdown_full_text,
+        );
+        let new_cache = git_source_content_cache(
+            &self.root_path,
+            new_source,
+            &files,
+            LineSide::New,
+            self.markdown_full_text,
+        );
         enhance_with_full_file_highlight(
             &mut files,
             highlighter,
+            self.markdown_full_text,
             |path| {
                 read_path_from_git_source_cached(
                     &self.root_path,
@@ -873,6 +895,7 @@ fn build_untracked_diff_file(
         is_too_large: false,
         is_commit_message: false,
         content_hash,
+        full_text: None,
     })
 }
 
@@ -886,6 +909,7 @@ fn diff_file_without_hunks(path: &Path, is_binary: bool, is_too_large: bool) -> 
         is_too_large,
         is_commit_message: false,
         content_hash: 0,
+        full_text: None,
     }
 }
 
@@ -995,8 +1019,9 @@ fn git_source_content_cache(
     source: GitContentSource<'_>,
     files: &[DiffFile],
     side: LineSide,
+    markdown_full_text: bool,
 ) -> Option<HashMap<PathBuf, String>> {
-    let paths = container_file_paths(files, side);
+    let paths = container_file_paths(files, side, markdown_full_text);
     match source {
         GitContentSource::Revision(rev) => {
             let requests = paths
@@ -1748,20 +1773,27 @@ mod tests {
         assert_eq!(
             summarize_files(cli_backend.get_working_tree_diff(&highlighter).unwrap()),
             summarize_files(
-                diff::get_working_tree_diff(&repo, &DiffWhitespaceMode::Normal, &highlighter)
-                    .unwrap()
+                diff::get_working_tree_diff(
+                    &repo,
+                    &DiffWhitespaceMode::Normal,
+                    &highlighter,
+                    false
+                )
+                .unwrap()
             )
         );
         assert_eq!(
             summarize_files(cli_backend.get_staged_diff(&highlighter).unwrap()),
             summarize_files(
-                diff::get_staged_diff(&repo, &DiffWhitespaceMode::Normal, &highlighter).unwrap()
+                diff::get_staged_diff(&repo, &DiffWhitespaceMode::Normal, &highlighter, false)
+                    .unwrap()
             )
         );
         assert_eq!(
             summarize_files(cli_backend.get_unstaged_diff(&highlighter).unwrap()),
             summarize_files(
-                diff::get_unstaged_diff(&repo, &DiffWhitespaceMode::Normal, &highlighter).unwrap()
+                diff::get_unstaged_diff(&repo, &DiffWhitespaceMode::Normal, &highlighter, false)
+                    .unwrap()
             )
         );
         assert_eq!(
@@ -1785,6 +1817,7 @@ mod tests {
                     ),
                     &DiffWhitespaceMode::Normal,
                     &highlighter,
+                    false,
                 )
                 .unwrap()
             )
@@ -1801,6 +1834,7 @@ mod tests {
                     &[ids[1].clone()],
                     &DiffWhitespaceMode::Normal,
                     &highlighter,
+                    false,
                 )
                 .unwrap()
             )
@@ -1876,6 +1910,7 @@ mod tests {
             &libgit2_range,
             &DiffWhitespaceMode::Normal,
             &highlighter,
+            false,
         )
         .expect("failed to get libgit2 range diff");
 

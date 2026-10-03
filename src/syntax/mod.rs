@@ -45,6 +45,14 @@ pub(crate) fn needs_full_file_highlight(path: &Path) -> bool {
     )
 }
 
+/// Whether `path` names a markdown file (`.md` or `.markdown`, any case), the
+/// files `render_markdown_diffs` renders.
+pub(crate) fn is_markdown_path(path: &Path) -> bool {
+    path.extension()
+        .and_then(|ext| ext.to_str())
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("md") || ext.eq_ignore_ascii_case("markdown"))
+}
+
 /// Oniguruma's process-wide cap on backtracking steps per match attempt, in place of
 /// its 10,000,000-step default. Some Markdown lines with inline code send it into
 /// a catastrophic backtracking loop. This could be as low as 1000 but that is not much
@@ -136,6 +144,13 @@ impl SyntaxHighlighter {
             del_bg: Color::Reset,
             markdown_palette,
         }
+    }
+
+    /// The colour the markdown palette gives headings, for tests that check
+    /// rendered cells against the theme rather than the renderer.
+    #[cfg(test)]
+    pub(crate) fn markdown_heading_fg(&self) -> Option<Color> {
+        self.markdown_palette.heading.fg
     }
 
     /// Highlight all lines in a file's content.
@@ -904,6 +919,7 @@ mod tests {
             is_too_large: false,
             is_commit_message: false,
             content_hash: 0,
+            full_text: None,
         };
 
         highlighter.rehighlight_file_in_place(&mut file);
