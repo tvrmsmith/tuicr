@@ -170,10 +170,18 @@ can draw images.
 
 | Key | Action |
 |-----|--------|
-| `→` / `l` | Next media item |
-| `←` / `h` | Previous media item |
+| `→` / `l` | Next media item; pan right while zoomed |
+| `←` / `h` | Previous media item; pan left while zoomed |
+| `↓` / `j` | Pan down while zoomed |
+| `↑` / `k` | Pan up while zoomed |
+| `z` | Toggle zoom between fit and 1:1 |
 | `o` | Open the current item with the external opener |
 | `Esc` / `q` | Close the viewer |
+
+At 1:1 each image pixel takes one terminal pixel, so text in a large screenshot
+becomes readable. `z` does nothing until the image has loaded, or when the whole
+image already fits. Each pan moves a quarter of the visible window, stops at the
+image edges, and re-encodes only the visible part. Paging always returns to fit.
 
 ## Visual mode
 

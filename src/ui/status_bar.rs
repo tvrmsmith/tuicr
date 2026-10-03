@@ -9,6 +9,7 @@ use ratatui::{
 };
 use unicode_width::UnicodeWidthStr;
 
+use crate::app::media::Zoom;
 use crate::app::{App, DiffSource, FocusedPanel, InputMode, Message, MessageType};
 use crate::theme::Theme;
 use crate::ui::commit_row::CURSOR_GLYPH;
@@ -397,9 +398,17 @@ pub fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
                 InputMode::GroupingFeedback => Cow::Borrowed(
                     "   tab field \u{00b7} 1/2/3 verdict \u{00b7} j/k+space tag \u{00b7} \u{21b5} submit \u{00b7} esc skip",
                 ),
-                InputMode::MediaViewer => Cow::Borrowed(
-                    "   \u{2190}/\u{2192} browse \u{00b7} o open outside \u{00b7} esc close",
-                ),
+                InputMode::MediaViewer => {
+                    let zoomed = app
+                        .media_viewer
+                        .as_ref()
+                        .is_some_and(|viewer| viewer.zoom != Zoom::Fit);
+                    Cow::Borrowed(if zoomed {
+                        "   h/j/k/l pan \u{00b7} z fit \u{00b7} o open outside \u{00b7} esc close"
+                    } else {
+                        "   \u{2190}/\u{2192} browse \u{00b7} z zoom \u{00b7} o open outside \u{00b7} esc close"
+                    })
+                }
             }
         };
         let hints_span = Span::styled(hints, Style::default().fg(theme.fg_secondary));

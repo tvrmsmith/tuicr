@@ -12,7 +12,7 @@ use ratatui::{
 use ratatui_image::Image;
 
 use crate::app::App;
-use crate::app::media::MediaSlot;
+use crate::app::media::{MediaSlot, Zoom};
 use crate::ui::{status_bar, styles};
 
 pub fn render(frame: &mut Frame, app: &mut App) {
@@ -43,8 +43,13 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         .get(viewer.index)
         .map(|item| item.label.as_str())
         .unwrap_or_default();
+    let zoom_marker = if viewer.zoom == Zoom::Fit {
+        ""
+    } else {
+        " \u{b7} 1:1"
+    };
     let header = format!(
-        "media {}/{} \u{b7} {label}",
+        "media {}/{} \u{b7} {label}{zoom_marker}",
         viewer.index + 1,
         viewer.items.len()
     );
@@ -148,7 +153,7 @@ mod tests {
 
     use crate::app::App;
     use crate::app::InputMode;
-    use crate::app::media::{MediaSlot, MediaViewer};
+    use crate::app::media::{MediaSlot, MediaViewer, Zoom};
     use crate::app::tests::pr_info_tests::build_pr_app;
     use crate::theme::{ThemeArg, resolve_theme};
 
@@ -201,6 +206,50 @@ mod tests {
         (0..buffer.area.width)
             .map(|x| buffer[(x, y)].symbol().to_string())
             .collect()
+    }
+
+    fn zoomed_app() -> App {
+        let mut app = app_with_viewer(MediaSlot::Loading);
+        app.media_viewer.as_mut().unwrap().zoom = Zoom::Actual { origin: (0, 0) };
+        app
+    }
+
+    #[test]
+    fn header_omits_the_zoom_marker_at_fit() {
+        let mut app = app_with_viewer(MediaSlot::Loading);
+        let row = row_text(&draw_app(&mut app, 100, 12), 0);
+
+        assert!(row.contains("media 2/3 \u{b7} two"));
+        assert!(!row.contains("1:1"));
+    }
+
+    #[test]
+    fn header_shows_the_zoom_marker_while_zoomed() {
+        let mut app = zoomed_app();
+        let row = row_text(&draw_app(&mut app, 100, 12), 0);
+
+        assert!(row.contains("media 2/3 \u{b7} two \u{b7} 1:1"));
+    }
+
+    #[test]
+    fn status_bar_hints_browse_and_zoom_at_fit() {
+        let mut app = app_with_viewer(MediaSlot::Loading);
+        let buffer = draw_app(&mut app, 100, 12);
+
+        assert!(row_text(&buffer, 11).contains(
+            "\u{2190}/\u{2192} browse \u{b7} z zoom \u{b7} o open outside \u{b7} esc close"
+        ));
+    }
+
+    #[test]
+    fn status_bar_hints_pan_and_fit_while_zoomed() {
+        let mut app = zoomed_app();
+        let buffer = draw_app(&mut app, 100, 12);
+
+        assert!(
+            row_text(&buffer, 11)
+                .contains("h/j/k/l pan \u{b7} z fit \u{b7} o open outside \u{b7} esc close")
+        );
     }
 
     #[test]
