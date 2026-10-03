@@ -609,7 +609,7 @@ pub fn render_help(frame: &mut Frame, app: &mut App) {
                 Style::default().add_modifier(Modifier::BOLD),
             ),
             Span::raw(
-                "On a collapsible section's summary row (\u{25b8}/\u{25be}) in the PR description: expand or collapse it",
+                "On a collapsible section's summary row (\u{25b6}/\u{25bc}) in the PR description: expand or collapse it",
             ),
         ]),
         Line::from(""),
