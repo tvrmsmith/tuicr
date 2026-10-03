@@ -17,6 +17,23 @@ impl App {
         self.rebuild_annotations();
     }
 
+    /// Collapses one expanded `<details>` section from a row in its body.
+    /// That row disappears, so the cursor moves to the section's summary row.
+    pub(crate) fn collapse_pr_details(&mut self, id: usize) {
+        use crate::ui::pr_info_panel::{RowAction, pr_info_rows};
+        self.toggle_pr_details(id);
+        let summary = pr_info_rows(self)
+            .iter()
+            .position(|row| row.action == Some(RowAction::Details(id)));
+        let line = self.line_annotations.iter().position(|line| {
+            matches!(line, AnnotatedLine::PrInfoLine { line_idx } if Some(*line_idx) == summary)
+        });
+        if let Some(line) = line {
+            self.diff_state.cursor_line = line;
+            self.ensure_cursor_visible();
+        }
+    }
+
     /// Re-enter PR mode after we've already opened a PR via the selector.
     /// Used by the selector → PR open path and by `:reload` in PR mode.
     ///

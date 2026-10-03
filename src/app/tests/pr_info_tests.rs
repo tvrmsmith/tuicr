@@ -793,6 +793,55 @@ fn nested_sections_toggle_independently() {
     assert!(drawn(&mut app, 7).contains("Inner body"));
     assert!(drawn(&mut app, 1).contains("▼ Outer"));
     assert_panel_annotations_match_drawn_rows(&mut app);
+
+    // Enter in the inner body closes only the inner section.
+    press_enter_at(&mut app, 7);
+    assert_eq!(app.diff_state.cursor_line, 5);
+    assert!(drawn(&mut app, 5).contains("▶ Inner"));
+    assert!(!has(&mut app, "Inner body"));
+    assert!(drawn(&mut app, 1).contains("▼ Outer"));
+    assert_panel_annotations_match_drawn_rows(&mut app);
+
+    // Enter in the outer body closes the outer section.
+    press_enter_at(&mut app, 3);
+    assert_eq!(app.diff_state.cursor_line, 1);
+    assert!(drawn(&mut app, 1).contains("▶ Outer"));
+    assert!(!has(&mut app, "Outer body"));
+    assert_panel_annotations_match_drawn_rows(&mut app);
+}
+
+#[test]
+fn enter_inside_an_expanded_body_collapses_it_onto_the_summary_row() {
+    let mut app = coverage_app(false);
+    press_enter_at(&mut app, 3);
+    let panel = crate::ui::pr_info_panel::pr_info_render_height(&app);
+    let table_row = (0..panel)
+        .find(|&line| drawn_cursor_row(&mut app, line).contains("f39.rs"))
+        .expect("last table row");
+
+    press_enter_at(&mut app, table_row);
+
+    assert_eq!(app.diff_state.cursor_line, 3);
+    assert!(drawn_cursor_row(&mut app, 3).contains("▶ Coverage report"));
+    assert!(
+        !rows_of(&draw_app(&mut app))
+            .iter()
+            .any(|row| row.contains("f00.rs"))
+    );
+    assert!(drawn_cursor_row(&mut app, 5).contains("Outro"));
+    assert_panel_annotations_match_drawn_rows(&mut app);
+}
+
+#[test]
+fn enter_outside_every_section_does_nothing() {
+    let mut app = coverage_app(true);
+    app.diff_state.cursor_line = 1;
+    let before = rows_of(&draw_app(&mut app));
+
+    press_enter(&mut app);
+
+    assert_eq!(app.diff_state.cursor_line, 1);
+    assert_eq!(rows_of(&draw_app(&mut app)), before);
 }
 
 #[test]

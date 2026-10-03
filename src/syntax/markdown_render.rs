@@ -39,6 +39,9 @@ pub(crate) struct BlockRow {
     /// The `<details>` section this row is the summary of. `None` on every
     /// other row.
     pub details: Option<Details>,
+    /// The innermost expanded `<details>` section whose body holds this row:
+    /// for a summary row, the section around it. `None` outside every section.
+    pub inside: Option<usize>,
 }
 
 /// The `<details>` section a summary row stands for.
@@ -112,12 +115,14 @@ pub(crate) fn render_block(
             None if range.clone().all(|line| doc.folded[line]) => continue,
             None => rows.partition_point(|row| row.source.start < range.start),
         };
+        let inside = doc.inside(doc.line_starts[range.start]);
         rows.insert(
             at,
             BlockRow {
                 line: Line::default(),
                 source: range,
                 details: None,
+                inside,
             },
         );
     }
@@ -327,6 +332,9 @@ struct Doc<'a> {
     summaries: HashMap<usize, Vec<Summary>>,
     /// Body and closing lines of collapsed sections.
     folded: Vec<bool>,
+    /// The body bytes of each shown, expanded section, by section number:
+    /// the header's end to the `</details>`.
+    bodies: Vec<(usize, Range<usize>)>,
     /// Shown markup on header and closing lines, outside every header and
     /// `</details>`, one range per line keyed by start byte.
     beside_tags: BTreeMap<usize, Range<usize>>,
@@ -369,6 +377,7 @@ impl<'a> Doc<'a> {
             html_blocks: Vec::new(),
             summaries: HashMap::new(),
             folded: vec![false; lines],
+            bodies: Vec::new(),
             beside_tags: BTreeMap::new(),
         };
         doc.walk(hl);
@@ -915,6 +924,10 @@ impl<'a> Doc<'a> {
             if under_collapsed(section.parent) {
                 continue;
             }
+            if expanded {
+                self.bodies
+                    .push((section.id, section.header.end..section.close.start));
+            }
             let summary = Summary {
                 id: section.id,
                 lines: first..last + 1,
@@ -976,6 +989,7 @@ impl<'a> Doc<'a> {
                     id: summary.id,
                     header: summary.header.clone(),
                 }),
+                inside: self.inside(summary.header.start),
             })
             .collect()
     }
@@ -996,8 +1010,19 @@ impl<'a> Doc<'a> {
                 line: to_line(row),
                 source: source.clone(),
                 details: None,
+                inside: self.inside(tail.start),
             })
             .collect()
+    }
+
+    /// The innermost shown, expanded section whose body holds byte `at`.
+    /// A nested body starts after its parent's, so the latest start wins.
+    fn inside(&self, at: usize) -> Option<usize> {
+        self.bodies
+            .iter()
+            .filter(|(_, body)| body.contains(&at))
+            .max_by_key(|(_, body)| body.start)
+            .map(|&(id, _)| id)
     }
 
     /// `r` without its leading and trailing whitespace, or `None` when
@@ -1183,11 +1208,13 @@ impl<'a> Doc<'a> {
                 push_spaces(row, style, gap);
             }
             let source = apart[line].clone().unwrap_or(line..last + 1);
+            let inside = self.inside(self.line_starts[line]);
             for row in rows {
                 out.push(BlockRow {
                     line: to_line(row),
                     source: source.clone(),
                     details: None,
+                    inside,
                 });
             }
             line = last + 1;
@@ -2219,6 +2246,84 @@ mod tests {
             ["▼ Outer", "", "Outer body", "", "▼ Inner", "", "Inner body"]
         );
         assert_eq!(texts_trimmed(&render_toggled(&src, 40, &[1])), ["▶ Outer"]);
+    }
+
+    fn inside_of(rows: &[BlockRow]) -> Vec<(String, Option<usize>)> {
+        rows.iter()
+            .map(|r| (text(r).trim_end().to_string(), r.inside))
+            .collect()
+    }
+
+    #[test]
+    fn should_name_the_innermost_expanded_section_holding_each_row() {
+        let src = [
+            "Before",
+            "",
+            "<details>",
+            "<summary>Outer</summary>",
+            "",
+            "Outer body",
+            "",
+            "<details>",
+            "<summary>Inner</summary>",
+            "",
+            "Inner body",
+            "",
+            "</details>",
+            "",
+            "</details>",
+            "",
+            "After",
+        ]
+        .join("\n");
+
+        assert_eq!(
+            inside_of(&render_toggled(&src, 40, &[0, 1])),
+            [
+                ("Before", None),
+                ("", None),
+                ("▼ Outer", None),
+                ("", Some(0)),
+                ("Outer body", Some(0)),
+                ("", Some(0)),
+                ("▼ Inner", Some(0)),
+                ("", Some(1)),
+                ("Inner body", Some(1)),
+                // Blank runs keep their first row, the inner body's last line.
+                ("", Some(1)),
+                ("After", None),
+            ]
+            .map(|(text, inside)| (text.to_string(), inside))
+        );
+        assert_eq!(
+            inside_of(&render_toggled(&src, 40, &[])),
+            [
+                ("Before", None),
+                ("", None),
+                ("▶ Outer", None),
+                ("", None),
+                ("After", None)
+            ]
+            .map(|(text, inside)| (text.to_string(), inside))
+        );
+    }
+
+    #[test]
+    fn should_place_markup_after_a_header_inside_its_section() {
+        let src = "<details><summary>X</summary>tail\n\nBody\n\n</details>\n\nAfter";
+
+        assert_eq!(
+            inside_of(&render_toggled(src, 40, &[0])),
+            [
+                ("▼ X", None),
+                ("tail", Some(0)),
+                ("", Some(0)),
+                ("Body", Some(0)),
+                ("", Some(0)),
+                ("After", None),
+            ]
+            .map(|(text, inside)| (text.to_string(), inside))
+        );
     }
 
     #[test]

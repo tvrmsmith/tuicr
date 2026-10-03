@@ -27,6 +27,9 @@ pub(crate) enum RowAction {
     Media(usize),
     /// Toggle the `<details>` section with this number.
     Details(usize),
+    /// Collapse the expanded `<details>` section with this number, from a
+    /// row in its body.
+    Collapse(usize),
 }
 
 /// How the PR description renders.
@@ -528,7 +531,9 @@ fn push_body_rows(
         }
         rows.push(PrInfoRow {
             line: row.line,
-            action: summary.map(RowAction::Details),
+            action: summary
+                .map(RowAction::Details)
+                .or(row.inside.map(RowAction::Collapse)),
         });
         // A media block covering a header lands after its last summary row.
         if summary.is_some() && details_ids.get(at + 1) != Some(&summary) {
@@ -1202,7 +1207,7 @@ mod tests {
             vec![
                 row("▶ A", Some(RowAction::Details(0))),
                 row("▼ B", Some(RowAction::Details(1))),
-                row("b", None)
+                row("b", Some(RowAction::Collapse(1)))
             ]
         );
     }
@@ -1248,9 +1253,9 @@ mod tests {
             rendered_toggled(body, &[0]),
             vec![
                 row("▼ A", Some(RowAction::Details(0))),
-                row("", None),
-                row("body", None),
-                row("", None),
+                row("", Some(RowAction::Collapse(0))),
+                row("body", Some(RowAction::Collapse(0))),
+                row("", Some(RowAction::Collapse(0))),
                 row("[image: x]", Some(RowAction::Media(0))),
                 row("", None),
                 row("After", None)
@@ -1275,9 +1280,9 @@ mod tests {
             rendered_toggled(body, &[0]),
             vec![
                 row("▼ A", Some(RowAction::Details(0))),
-                row("", None),
-                row("body", None),
-                row("", None),
+                row("", Some(RowAction::Collapse(0))),
+                row("body", Some(RowAction::Collapse(0))),
+                row("", Some(RowAction::Collapse(0))),
                 row(after, None),
                 row("[image: x]", Some(RowAction::Media(0)))
             ]
@@ -1314,7 +1319,10 @@ mod tests {
             rendered_toggled(body, &[0]),
             vec![
                 row("▼ Shots", Some(RowAction::Details(0))),
-                row("See <img src=\"https://x.test/a.png\" alt=\"a\">", None),
+                row(
+                    "See <img src=\"https://x.test/a.png\" alt=\"a\">",
+                    Some(RowAction::Collapse(0))
+                ),
                 row("[image: a]", Some(RowAction::Media(0)))
             ]
         );
@@ -1359,8 +1367,8 @@ mod tests {
             vec![
                 row("[image: x]", Some(RowAction::Media(0))),
                 row("▼ A", Some(RowAction::Details(0))),
-                row("", None),
-                row("body", None)
+                row("", Some(RowAction::Collapse(0))),
+                row("body", Some(RowAction::Collapse(0)))
             ]
         );
     }

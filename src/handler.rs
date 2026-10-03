@@ -1804,6 +1804,7 @@ pub fn handle_diff_action(app: &mut App, action: Action) {
             match pr_info_action_at_cursor(app) {
                 Some(RowAction::Media(index)) => app.enter_media(index),
                 Some(RowAction::Details(id)) => app.toggle_pr_details(id),
+                Some(RowAction::Collapse(id)) => app.collapse_pr_details(id),
                 None => match app.get_gap_at_cursor() {
                     Some(GapCursorHit::Expander(gap_id, dir)) => {
                         let limit = if dir == ExpandDirection::Both {

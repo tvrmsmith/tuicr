@@ -471,6 +471,7 @@ pub(crate) fn markdown_body_line_groups(
                 line: Line::from(highlighted_window_spans(runs, text, seg_start, seg_end)),
                 source: idx..idx + 1,
                 details: None,
+                inside: None,
             });
             seg_start = seg_end;
         }
