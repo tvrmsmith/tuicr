@@ -169,6 +169,10 @@ fn vcs_info() -> VcsInfo {
 }
 
 fn build_app(files: Vec<DiffFile>) -> App {
+    build_app_with_vcs(Box::new(NoFetchVcs { info: vcs_info() }), files)
+}
+
+fn build_app_with_vcs(vcs: Box<dyn VcsBackend>, files: Vec<DiffFile>) -> App {
     let vcs_info = vcs_info();
     let session = ReviewSession::new(
         vcs_info.root_path.clone(),
@@ -177,9 +181,7 @@ fn build_app(files: Vec<DiffFile>) -> App {
         SessionDiffSource::WorkingTree,
     );
     let mut app = App::build(
-        Box::new(NoFetchVcs {
-            info: vcs_info.clone(),
-        }),
+        vcs,
         vcs_info,
         Theme::dark(),
         None,
@@ -1180,4 +1182,372 @@ fn should_paint_search_matches_on_rendered_cells() {
         .filter(|&x| buffer[(x, heading.y)].bg == match_style.bg.unwrap())
         .count();
     assert_eq!(outside, 0);
+}
+
+// Lines revealed by gap expansion.
+
+/// A VCS serving `lines` as the guide's working-tree text, so gap expansion
+/// reveals them the way the real backends slice a read file.
+struct ServingVcs {
+    info: VcsInfo,
+    lines: Vec<String>,
+}
+
+impl VcsBackend for ServingVcs {
+    fn info(&self) -> &VcsInfo {
+        &self.info
+    }
+
+    fn get_working_tree_diff(&self, _highlighter: &SyntaxHighlighter) -> Result<Vec<DiffFile>> {
+        unimplemented!("these tests never reload")
+    }
+
+    fn fetch_context_lines(
+        &self,
+        file_path: &Path,
+        _file_status: FileStatus,
+        _ref_commit: Option<&str>,
+        start_line: u32,
+        end_line: u32,
+    ) -> Result<Vec<DiffLine>> {
+        assert_eq!(file_path, Path::new(GUIDE), "only the guide has gaps");
+        Ok(crate::vcs::slice_context_lines(
+            &self.lines.join("\n"),
+            start_line,
+            end_line,
+        ))
+    }
+
+    fn file_line_count(
+        &self,
+        file_path: &Path,
+        _file_status: FileStatus,
+        _ref_commit: Option<&str>,
+    ) -> Result<u32> {
+        match file_path.to_str() {
+            Some(GUIDE) => Ok(self.lines.len() as u32),
+            _ => Ok(1),
+        }
+    }
+}
+
+/// An app over `files` whose VCS serves `served` for the guide, with
+/// markdown rendering on or off.
+fn serving_app(files: Vec<DiffFile>, served: Vec<String>, render: bool) -> App {
+    let vcs = ServingVcs {
+        info: vcs_info(),
+        lines: served,
+    };
+    let mut app = build_app_with_vcs(Box::new(vcs), files);
+    if render {
+        render_markdown_diffs(&mut app);
+    }
+    app
+}
+
+/// The guide app with its full text attached, serving the guide's new side.
+fn serving_guide_app(render: bool) -> App {
+    serving_app(guide_files(Some(guide_text())), owned(&GUIDE_NEW), render)
+}
+
+/// Reveals every hidden line of the guide's gap before hunk `hunk_idx`.
+fn expand_guide_gap(app: &mut App, hunk_idx: usize) {
+    let file_idx = app
+        .diff_files
+        .iter()
+        .position(|file| file.display_path() == Path::new(GUIDE))
+        .expect("guide in the diff");
+    app.expand_gap(GapId { file_idx, hunk_idx }, ExpandDirection::Both, None)
+        .expect("expand the guide gap");
+}
+
+fn table_separator() -> String {
+    format!("{}\u{253c}{}", "\u{2500}".repeat(5), "\u{2500}".repeat(6))
+}
+
+#[test]
+fn should_render_lines_expanded_above_the_first_hunk() {
+    let mut app = serving_guide_app(true);
+    expand_guide_gap(&mut app, 0);
+
+    let buffer = draw(&mut app);
+
+    assert_eq!(row_for_new(&buffer, 1).text, "Guide");
+    assert_eq!(row_for_new(&buffer, 3).text, "Name \u{2502} Notes");
+    assert_eq!(row_for_new(&buffer, 4).text, table_separator());
+    for n in 1..=4 {
+        let text = row_for_new(&buffer, n).text;
+        assert!(
+            !text.contains('#') && !text.contains('|'),
+            "new {n}: {text}"
+        );
+    }
+}
+
+#[test]
+fn should_draw_expanded_rendered_rows_in_the_dim_context_look() {
+    let theme = Theme::dark();
+    let mut on = serving_guide_app(true);
+    let mut off = serving_guide_app(false);
+    expand_guide_gap(&mut on, 0);
+    expand_guide_gap(&mut off, 0);
+
+    let on_buffer = draw(&mut on);
+    let off_buffer = draw(&mut off);
+
+    for n in 1..=4 {
+        let row = row_for_new(&on_buffer, n);
+        for (col, cell) in (row.text_x..).zip(row.text_cells(&on_buffer)) {
+            assert_eq!(cell.fg, theme.expanded_context_fg, "new {n}: {}", row.text);
+            assert_eq!(
+                cell.bg,
+                off_buffer[(col, row.y)].bg,
+                "new {n} column {col}: {}",
+                row.text
+            );
+        }
+    }
+    let g = row_for_new(&on_buffer, 1).cell_of(&on_buffer, "G").clone();
+    assert!(g.modifier.contains(Modifier::BOLD));
+    assert!(is_underlined(&g));
+    assert_eq!(g.underline_color, theme.expanded_context_fg);
+}
+
+#[test]
+fn should_render_an_expanded_opening_fence_between_hunks() {
+    let theme = Theme::dark();
+    let mut app = serving_guide_app(true);
+    expand_guide_gap(&mut app, 1);
+
+    let buffer = draw(&mut app);
+
+    let fence = row_for_new(&buffer, 8);
+    assert!(fence.text.contains("python"), "new 8: {}", fence.text);
+    assert!(!fence.text.contains("```"), "new 8: {}", fence.text);
+    assert_eq!(
+        fence.cell_of(&buffer, "python").fg,
+        theme.expanded_context_fg
+    );
+}
+
+#[test]
+fn should_render_expanded_lines_on_both_sides_in_side_by_side_view() {
+    let mut app = serving_guide_app(true);
+    app.diff_view_mode = DiffViewMode::SideBySide;
+    expand_guide_gap(&mut app, 0);
+
+    let buffer = draw(&mut app);
+
+    let panel_x = diff_panel_x(&buffer) as usize;
+    let header = "Name \u{2502} Notes";
+    let row = (2..buffer.area.height - 2)
+        .map(|y| cells_of_row(&buffer, y)[panel_x..].concat())
+        .find(|row| row.contains("  3  "))
+        .expect("row for line 3");
+    assert_eq!(row.matches(header).count(), 2, "row: {row}");
+    assert!(!row.contains('|'), "row: {row}");
+}
+
+#[test]
+fn should_keep_expanded_lines_as_source_when_markdown_diffs_are_off() {
+    let mut app = serving_guide_app(false);
+    expand_guide_gap(&mut app, 0);
+
+    let buffer = draw(&mut app);
+
+    assert_eq!(row_for_new(&buffer, 1).text, "# Guide");
+    assert_eq!(row_for_new(&buffer, 3).text, "| Name | Notes |");
+}
+
+#[test]
+fn should_keep_expanded_lines_as_source_when_the_full_text_is_missing() {
+    let mut app = serving_app(guide_files(None), owned(&GUIDE_NEW), true);
+    expand_guide_gap(&mut app, 0);
+
+    let buffer = draw(&mut app);
+
+    assert_eq!(row_for_new(&buffer, 1).text, "# Guide");
+    assert_eq!(row_for_new(&buffer, 3).text, "| Name | Notes |");
+}
+
+#[test]
+fn should_keep_an_expanded_line_as_source_when_it_disagrees_with_the_full_text() {
+    let mut served = owned(&GUIDE_NEW);
+    served[2] = "| Name | Other |".to_string();
+    let mut app = serving_app(guide_files(Some(guide_text())), served, true);
+    expand_guide_gap(&mut app, 0);
+
+    let buffer = draw(&mut app);
+
+    assert_eq!(row_for_new(&buffer, 3).text, "| Name | Other |");
+    assert_eq!(row_for_new(&buffer, 1).text, "Guide");
+    assert_eq!(row_for_new(&buffer, 4).text, table_separator());
+}
+
+#[test]
+fn should_paint_search_matches_on_expanded_rendered_cells() {
+    let mut app = serving_guide_app(true);
+    expand_guide_gap(&mut app, 0);
+    app.search_buffer = "Notes".to_string();
+    assert!(app.search_in_diff_from_cursor());
+    assert!(app.search_highlight_visible);
+    let match_bg = crate::ui::styles::search_match_style(&app.theme)
+        .bg
+        .expect("search match bg");
+
+    let buffer = draw(&mut app);
+
+    // The search scrolls the guide's header off screen.
+    let row = drawn_row_numbered(&buffer, 3);
+    assert_eq!(row.text, "Name \u{2502} Notes");
+    let notes_x = row.text_x + "Name \u{2502} ".chars().count() as u16;
+    let painted: Vec<u16> = (diff_panel_x(&buffer)..buffer.area.width - 1)
+        .filter(|&x| buffer[(x, row.y)].bg == match_bg)
+        .collect();
+    assert_eq!(painted, (notes_x..notes_x + 5).collect::<Vec<u16>>());
+}
+
+/// Unchanged lines after the guide's last hunk, on both sides: a link whose
+/// source wraps at 60 columns though its rendered text does not, then inline
+/// code.
+const GUIDE_TAIL: [&str; 4] = ["", LINK_LINE, "", "Build with `cargo` first."];
+
+/// New line number of `GUIDE_TAIL`'s link line.
+const TAIL_LINK: u32 = 17;
+
+/// The guide with `GUIDE_TAIL` after both sides, behind the end-of-file gap.
+fn tailed_guide_app(render: bool) -> App {
+    let tailed = |side: &[&str]| -> Vec<String> {
+        side.iter()
+            .chain(&GUIDE_TAIL)
+            .map(|line| line.to_string())
+            .collect()
+    };
+    let text = Arc::new(FullText {
+        old: Some(tailed(&GUIDE_OLD)),
+        new: Some(tailed(&GUIDE_NEW)),
+    });
+    let files = guide_files(Some(text));
+    let eof_gap = files[0].hunks.len();
+    assert_eq!(files[0].display_path(), Path::new(GUIDE));
+    let mut app = serving_app(files, tailed(&GUIDE_NEW), render);
+    expand_guide_gap(&mut app, eof_gap);
+    app
+}
+
+fn annotation_of_expanded_new_line(app: &App, new: u32) -> usize {
+    app.line_annotations
+        .iter()
+        .position(|annotation| match annotation {
+            AnnotatedLine::ExpandedContext { gap_id, line_idx } => app
+                .get_expanded_line(gap_id, *line_idx)
+                .is_some_and(|line| line.new_lineno == Some(new)),
+            _ => false,
+        })
+        .unwrap_or_else(|| panic!("no expanded annotation for new {new}"))
+}
+
+#[test]
+fn should_size_a_wrapped_expanded_row_by_its_rendered_text() {
+    let wrapped_height = |render: bool| {
+        let mut app = tailed_guide_app(render);
+        app.diff_state.wrap_lines = true;
+        let buffer = draw_sized(&mut app, 60, 60);
+        let idx = annotation_of_expanded_new_line(&app, TAIL_LINK);
+        let height = crate::ui::row_height::annotation_row_height(&app, idx);
+        (drawn_row_numbered(&buffer, TAIL_LINK).text, height)
+    };
+
+    assert_eq!(wrapped_height(true), ("See docs.".to_string(), 1));
+    let (_, raw_height) = wrapped_height(false);
+    assert!(
+        raw_height > 1,
+        "the raw source must wrap at this width for the test to mean anything"
+    );
+}
+
+#[test]
+fn should_size_a_wrapped_side_by_side_expanded_row_by_its_rendered_text() {
+    let wrapped_height = |render: bool| {
+        let mut app = tailed_guide_app(render);
+        app.diff_state.wrap_lines = true;
+        app.diff_view_mode = DiffViewMode::SideBySide;
+        app.rebuild_annotations();
+        draw_sized(&mut app, 100, 60);
+        let idx = annotation_of_expanded_new_line(&app, TAIL_LINK);
+        crate::ui::row_height::annotation_row_height(&app, idx)
+    };
+
+    assert_eq!(wrapped_height(true), 1);
+    assert!(
+        wrapped_height(false) > 1,
+        "the raw source must wrap at this width for the test to mean anything"
+    );
+}
+
+#[test]
+fn should_not_show_an_inline_code_background_on_an_expanded_row() {
+    let mut on = tailed_guide_app(true);
+    let mut off = tailed_guide_app(false);
+
+    let on_buffer = draw(&mut on);
+    let off_buffer = draw(&mut off);
+
+    let row = row_for_new(&on_buffer, TAIL_LINK + 2);
+    assert!(!row.text.contains('`'), "row: {}", row.text);
+    for (col, cell) in (row.text_x..).zip(row.text_cells(&on_buffer)) {
+        assert_eq!(
+            cell.bg,
+            off_buffer[(col, row.y)].bg,
+            "column {col}: {}",
+            row.text
+        );
+    }
+}
+
+#[test]
+fn should_keep_expanded_rows_rendered_and_dim_them_in_a_confirmed_theme() {
+    let light = Theme::light();
+    assert_ne!(
+        light.expanded_context_fg,
+        Theme::dark().expanded_context_fg,
+        "the themes must differ for this test"
+    );
+    let mut app = serving_guide_app(true);
+    expand_guide_gap(&mut app, 0);
+    draw(&mut app);
+
+    preview_in_picker(&mut app, OTHER_THEME);
+    app.confirm_theme_picker();
+
+    let buffer = draw(&mut app);
+    let row = row_for_new(&buffer, 1);
+    assert_eq!(row.text, "Guide");
+    assert_eq!(row.cell_of(&buffer, "G").fg, light.expanded_context_fg);
+}
+
+#[test]
+fn should_render_re_expanded_lines_from_their_own_rows_after_a_collapse() {
+    let mut app = serving_guide_app(true);
+    let gap = GapId {
+        file_idx: 0,
+        hunk_idx: 0,
+    };
+    assert_eq!(app.diff_files[0].display_path(), Path::new(GUIDE));
+    app.expand_gap(gap.clone(), ExpandDirection::Down, Some(2))
+        .expect("expand the first two lines");
+    app.collapse_gap(gap.clone());
+    app.expand_gap(gap, ExpandDirection::Up, Some(2))
+        .expect("expand the two lines above the hunk");
+
+    let buffer = draw(&mut app);
+
+    let numbers: Vec<u32> = guide_numbered_rows(&buffer)
+        .iter()
+        .filter_map(|row| row.number)
+        .filter(|n| *n < 5)
+        .collect();
+    assert_eq!(numbers, vec![3, 4]);
+    assert_eq!(row_for_new(&buffer, 3).text, "Name \u{2502} Notes");
+    assert_eq!(row_for_new(&buffer, 4).text, table_separator());
 }
