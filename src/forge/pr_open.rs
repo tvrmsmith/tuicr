@@ -817,6 +817,39 @@ rename to new_name.rs
     }
 
     #[test]
+    fn should_read_a_copied_markdown_file_at_the_head_sha() {
+        let copy = PathBuf::from("docs/copy.md");
+        let backend = ServingBackend {
+            patches: vec![FilePatch::new(
+                Some(PathBuf::from("docs/guide.md")),
+                Some(copy.clone()),
+                crate::model::FileStatus::Copied,
+                GUIDE_PATCH,
+            )],
+            content: [((details().head_sha, copy.clone()), GUIDE_HEAD.to_string())]
+                .into_iter()
+                .collect(),
+            ..ServingBackend::new()
+        };
+
+        let (opened, _) = open_serving(&backend, true);
+
+        assert_eq!(
+            *backend.content_requests.lock().unwrap(),
+            [(details().head_sha, copy)]
+        );
+        assert_eq!(
+            file_at(&opened.diff_files, "docs/copy.md")
+                .full_text
+                .as_deref(),
+            Some(&crate::model::FullText {
+                old: None,
+                new: lines(GUIDE_HEAD),
+            })
+        );
+    }
+
+    #[test]
     fn should_attach_each_markdown_file_its_own_head_text() {
         let page_head = |n: usize| format!("# Page {n}\n\n| a | new |\n");
         let paths: Vec<String> = (0..9).map(|n| format!("docs/page{n}.md")).collect();

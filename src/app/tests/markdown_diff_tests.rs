@@ -506,6 +506,44 @@ fn should_render_a_deleted_file_from_its_hunk() {
     assert_eq!(texts, ["Gone", "Text"]);
 }
 
+// A reload of the same Added or Deleted path with edited hunk text and the
+// same line count re-renders.
+fn assert_reload_re_renders_from_hunks(path: &str, status: FileStatus, before: &str, after: &str) {
+    let mut app = rendered_app(parse(vec![file_patch(path, status, before)]));
+    let texts = |buffer: &Buffer| -> Vec<String> {
+        numbered_rows(buffer, path)
+            .into_iter()
+            .map(|row| row.text)
+            .collect()
+    };
+    assert_eq!(texts(&draw(&mut app)), ["Intro", "After"]);
+
+    app.diff_files = parse(vec![file_patch(path, status, after)]);
+    app.rebuild_annotations();
+
+    assert_eq!(texts(&draw(&mut app)), ["Intro", "Later"]);
+}
+
+#[test]
+fn should_re_render_an_added_file_whose_hunk_text_changed() {
+    assert_reload_re_renders_from_hunks(
+        "docs/new.md",
+        FileStatus::Added,
+        "@@ -0,0 +1,2 @@\n+Intro\n+After\n",
+        "@@ -0,0 +1,2 @@\n+Intro\n+Later\n",
+    );
+}
+
+#[test]
+fn should_re_render_a_deleted_file_whose_hunk_text_changed() {
+    assert_reload_re_renders_from_hunks(
+        "docs/old.md",
+        FileStatus::Deleted,
+        "@@ -1,2 +0,0 @@\n-Intro\n-After\n",
+        "@@ -1,2 +0,0 @@\n-Intro\n-Later\n",
+    );
+}
+
 #[test]
 fn should_render_markdown_rows_on_both_sides_in_side_by_side_view() {
     let mut app = rendered_guide_app();

@@ -504,8 +504,22 @@ mod tests {
         added_line: &str,
         target_line: u32,
     ) -> DiffFile {
+        one_line_change(
+            &format!("Comp{idx}.vue"),
+            deleted_line,
+            added_line,
+            target_line,
+        )
+    }
+
+    fn one_line_change(
+        path: &str,
+        deleted_line: &str,
+        added_line: &str,
+        target_line: u32,
+    ) -> DiffFile {
         use crate::model::diff_types::{DiffHunk, DiffLine, FileStatus, LineOrigin};
-        let path = PathBuf::from(format!("Comp{idx}.vue"));
+        let path = PathBuf::from(path);
         let hunk = DiffHunk {
             header: format!("@@ -{target_line} +{target_line} @@"),
             lines: vec![
@@ -540,6 +554,77 @@ mod tests {
             content_hash: 0,
             full_text: None,
         }
+    }
+
+    const GUIDE_OLD: &str = "# Guide\n\n| a | old |\n";
+    const GUIDE_NEW: &str = "# Guide\n\n| a | new |\n";
+
+    fn lines(text: &str) -> Option<Vec<String>> {
+        Some(text.lines().map(str::to_string).collect())
+    }
+
+    /// Runs the hg/jj full-file pass over a modified markdown file and a
+    /// modified Rust file, with the new side read from a working tree that
+    /// holds `GUIDE_NEW`. Returns the files and every `(rev, paths)` batch
+    /// fetch.
+    fn container_pass(markdown_full_text: bool) -> (Vec<DiffFile>, Vec<(String, Vec<PathBuf>)>) {
+        let workdir = tempfile::tempdir().expect("temp dir");
+        std::fs::create_dir_all(workdir.path().join("docs")).expect("create docs");
+        std::fs::write(workdir.path().join("docs/guide.md"), GUIDE_NEW).expect("write guide");
+        let mut files = vec![
+            one_line_change("docs/guide.md", "| a | old |", "| a | new |", 3),
+            one_line_change("src/lib.rs", "fn a() {}", "fn b() {}", 1),
+        ];
+        let fetches = std::sync::Mutex::new(Vec::new());
+
+        apply_container_full_file_highlight(
+            workdir.path(),
+            "base",
+            None,
+            &mut files,
+            &SyntaxHighlighter::default(),
+            markdown_full_text,
+            |_, rev, paths| {
+                fetches
+                    .lock()
+                    .unwrap()
+                    .push((rev.to_string(), paths.to_vec()));
+                Ok(paths
+                    .iter()
+                    .filter(|path| path.as_path() == Path::new("docs/guide.md"))
+                    .map(|path| (path.clone(), GUIDE_OLD.to_string()))
+                    .collect())
+            },
+        )
+        .expect("full-file pass");
+
+        (files, fetches.into_inner().unwrap())
+    }
+
+    #[test]
+    fn container_pass_attaches_markdown_full_text_from_the_old_rev_and_workdir() {
+        let (files, fetches) = container_pass(true);
+
+        assert_eq!(
+            files[0].full_text.as_deref(),
+            Some(&FullText {
+                old: lines(GUIDE_OLD),
+                new: lines(GUIDE_NEW),
+            })
+        );
+        assert_eq!(files[1].full_text, None);
+        assert_eq!(
+            fetches,
+            [("base".to_string(), vec![PathBuf::from("docs/guide.md")])]
+        );
+    }
+
+    #[test]
+    fn container_pass_reads_nothing_for_markdown_when_full_text_is_off() {
+        let (files, fetches) = container_pass(false);
+
+        assert!(fetches.is_empty());
+        assert_eq!(files[0].full_text, None);
     }
 
     fn make_vue_file(idx: usize) -> (DiffFile, String, String) {

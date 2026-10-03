@@ -39,7 +39,7 @@ struct CachedFile {
 
 /// The two sides a file's rows were rendered from.
 enum Source {
-    /// A Modified or Renamed file's `full_text`. Held, so its address cannot
+    /// A Modified, Renamed, or Copied file's `full_text`. Held, so its address cannot
     /// be reused by a later load while this entry compares against it.
     /// `rebuilt_old` stands in for a missing old side.
     Full {
