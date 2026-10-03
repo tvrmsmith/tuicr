@@ -144,6 +144,25 @@ pub(super) fn expanded_context_lineno_field(dl: &DiffLine, lw: usize) -> String 
         .unwrap_or_else(|| " ".repeat(lw + 1))
 }
 
+/// `dl`'s rendered markdown row in the dim expanded-context look, or `None`
+/// when the expanded line draws as raw source.
+pub(super) fn expanded_context_rendered_row(
+    theme: &Theme,
+    dl: &DiffLine,
+) -> Option<Vec<(Style, String)>> {
+    let row = dl.highlighted_spans.as_ref()?;
+    Some(
+        row.iter()
+            .map(|(style, text)| {
+                (
+                    styles::expanded_context_span_style(theme, *style),
+                    text.clone(),
+                )
+            })
+            .collect(),
+    )
+}
+
 /// Shared empty map so we can borrow `line_comments` without cloning per file per frame.
 pub(super) static EMPTY_LINE_COMMENTS: std::sync::LazyLock<
     std::collections::HashMap<u32, Vec<Comment>>,

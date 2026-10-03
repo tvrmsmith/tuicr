@@ -53,6 +53,21 @@ pub fn expanded_context_style(theme: &Theme) -> Style {
     Style::default().fg(theme.expanded_context_fg)
 }
 
+/// A rendered span's `style` as drawn on an expanded-context row. Its
+/// modifiers stay, so the markdown structure shows. Its colours give way to
+/// the expanded-context fg, so the row still reads as context, and it sets
+/// no bg, so the row's own bg shows through as it does for raw source.
+pub fn expanded_context_span_style(theme: &Theme, style: Style) -> Style {
+    let dimmed = expanded_context_style(theme)
+        .add_modifier(style.add_modifier)
+        .remove_modifier(style.sub_modifier);
+    if style.add_modifier.contains(Modifier::UNDERLINED) {
+        dimmed.underline_color(theme.expanded_context_fg)
+    } else {
+        dimmed
+    }
+}
+
 pub fn diff_hunk_header_style(theme: &Theme) -> Style {
     Style::default()
         .fg(theme.fg_dim)

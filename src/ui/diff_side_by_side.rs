@@ -1236,12 +1236,12 @@ fn render_sbs_expanded_context_line(
         .map(|n| format!("{n:>lw$} "))
         .unwrap_or_else(|| " ".repeat(lw + 1));
     let ec_style = styles::expanded_context_style(theme);
-    let content_cell = plain_cell_spans(
-        &expanded_line.content,
-        ec_style,
-        content_width,
-        ctx.search_for(*line_idx),
-    );
+    let search = ctx.search_for(*line_idx);
+    let rendered = crate::ui::diff_view::expanded_context_rendered_row(theme, expanded_line);
+    let content_cell = match &rendered {
+        Some(pairs) => searched_cell_spans(pairs, content_width, ec_style, search),
+        None => plain_cell_spans(&expanded_line.content, ec_style, content_width, search),
+    };
     let mut line_spans = vec![
         Span::styled(indicator, styles::current_line_indicator_style(theme)),
         Span::styled(old_line_num.clone(), ec_style),
@@ -1267,8 +1267,14 @@ fn render_sbs_expanded_context_line(
         Span::styled(new_line_num, ec_style),
         Span::styled(" ", ec_style),
     ];
-    let mut content = vec![Span::styled(expanded_line.content.clone(), ec_style)];
-    if let Some((needle, hl)) = ctx.search_for(*line_idx) {
+    let mut content = match rendered {
+        Some(pairs) => pairs
+            .into_iter()
+            .map(|(style, text)| Span::styled(text, style))
+            .collect(),
+        None => vec![Span::styled(expanded_line.content.clone(), ec_style)],
+    };
+    if let Some((needle, hl)) = search {
         content = apply_search_highlight_spans(content, needle, hl);
     }
     ctx.sbs_meta.borrow_mut().insert(

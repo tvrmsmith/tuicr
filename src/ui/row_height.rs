@@ -104,7 +104,7 @@ pub(crate) fn annotation_row_height(app: &App, idx: usize) -> usize {
             gap_id,
             line_idx: li,
         } if app.diff_view_mode == DiffViewMode::SideBySide => {
-            let content = expanded_line_content(app, gap_id, *li).unwrap_or_default();
+            let content = expanded_line_drawn_text(app, gap_id, *li).unwrap_or_default();
             let content_width = sbs_content_width(app, viewport_width);
             wrap_side_max(&content, &content, content_width)
         }
@@ -191,17 +191,15 @@ fn drawn_text(line: &DiffLine) -> Cow<'_, str> {
     }
 }
 
-fn expanded_line_content(app: &App, gap_id: &crate::app::GapId, idx: usize) -> Option<String> {
+fn expanded_line_drawn_text(app: &App, gap_id: &crate::app::GapId, idx: usize) -> Option<String> {
     let top = app.expanded_top.get(gap_id);
     let top_len = top.map_or(0, |v| v.len());
-    if idx < top_len {
-        top?.get(idx).map(|dl| dl.content.clone())
+    let line = if idx < top_len {
+        top?.get(idx)
     } else {
-        app.expanded_bottom
-            .get(gap_id)?
-            .get(idx - top_len)
-            .map(|dl| dl.content.clone())
-    }
+        app.expanded_bottom.get(gap_id)?.get(idx - top_len)
+    };
+    line.map(|dl| drawn_text(dl).into_owned())
 }
 
 /// Reconstruct the concatenated text of a rendered logical line by calling
@@ -301,7 +299,7 @@ fn full_row_text(app: &App, annotation: &AnnotatedLine) -> String {
             let (lineno, content) = match dl {
                 Some(dl) => (
                     diff_view::expanded_context_lineno_field(&dl, lw),
-                    dl.content,
+                    drawn_text(&dl).into_owned(),
                 ),
                 None => (" ".repeat(lw + 1), String::new()),
             };

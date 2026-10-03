@@ -1,6 +1,7 @@
 //! Rendered `.md` diffs: replaces each markdown diff line's syntect spans with
-//! its row from `syntax::markdown_render::render_lines`. Reads only what the
-//! loaders left on the `DiffFile` (its hunks and `full_text`), never fetches.
+//! its row from `syntax::markdown_render::render_lines`, and gives each line
+//! revealed by gap expansion its new-side row. Reads only what the loaders
+//! left on the `DiffFile` (its hunks and `full_text`), never fetches.
 
 use super::*;
 use crate::model::FullText;
@@ -35,6 +36,21 @@ struct CachedFile {
     /// a freed one's address.
     highlighter: Arc<SyntaxHighlighter>,
     rows: RenderedSides,
+}
+
+impl CachedFile {
+    /// The rendered row of `line`, an unchanged line revealed by gap
+    /// expansion, by its new line number. Unchanged means the same text on
+    /// both sides, so the new side serves either. `None` unless `line` equals
+    /// the new side's text at that number.
+    fn unchanged_row(&self, line: &DiffLine) -> Option<Row> {
+        let idx = line.new_lineno?.checked_sub(1)? as usize;
+        let (_, new) = self.source.sides();
+        if new.get(idx)? != &line.content {
+            return None;
+        }
+        self.rows.new_rows.get(idx).cloned()
+    }
 }
 
 /// The two sides a file's rows were rendered from.
@@ -272,8 +288,10 @@ fn spans_for_hunks(file: &DiffFile, sides: &RenderedSides) -> Option<Vec<Vec<Row
 
 impl App {
     /// With `render_markdown_diffs` on, replaces each markdown diff line's
-    /// `highlighted_spans` with its rendered row. A file that cannot render
-    /// keeps its syntect spans. Drops cached rows of files no longer shown.
+    /// `highlighted_spans` with its rendered row, and sets each expanded
+    /// line's to its new-side row. A file that cannot render keeps its
+    /// syntect spans and raw expanded lines. Drops cached rows of files no
+    /// longer shown.
     pub(crate) fn apply_markdown_diff_renders(&mut self) {
         self.apply_markdown_diff_renders_to(|_| true);
         let shown: HashSet<&PathBuf> = self.diff_files.iter().map(DiffFile::display_path).collect();
@@ -297,12 +315,36 @@ impl App {
             .filter_map(|(idx, file)| Some((idx, self.render_markdown_file(&mut cache, file)?)))
             .collect();
         self.markdown_diff_cache = cache;
+        let rendered_files: HashSet<usize> = rendered.iter().map(|(idx, _)| *idx).collect();
         for (idx, spans) in rendered {
             let hunks = &mut self.diff_files[idx].hunks;
             for (hunk, hunk_spans) in hunks.iter_mut().zip(spans) {
                 for (line, row) in hunk.lines.iter_mut().zip(hunk_spans) {
                     line.highlighted_spans = Some(row);
                 }
+            }
+        }
+
+        // An included markdown file that did not render clears its expanded
+        // lines too, so no row from an earlier render outlives its source.
+        let expanded = self
+            .expanded_top
+            .iter_mut()
+            .chain(self.expanded_bottom.iter_mut());
+        for (gap_id, lines) in expanded {
+            let idx = gap_id.file_idx;
+            let renderable = self.diff_files.get(idx).is_some_and(is_renderable_markdown);
+            if !include(idx) || !renderable {
+                continue;
+            }
+            let cached = if rendered_files.contains(&idx) {
+                let path = self.diff_files[idx].display_path();
+                self.markdown_diff_cache.files.get(path)
+            } else {
+                None
+            };
+            for line in lines {
+                line.highlighted_spans = cached.and_then(|file| file.unchanged_row(line));
             }
         }
     }
