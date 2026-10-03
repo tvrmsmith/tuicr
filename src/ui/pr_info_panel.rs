@@ -1132,7 +1132,7 @@ mod tests {
                 "<details>\n<summary>Shots</summary>\n\n![one](https://x.test/1.png)\n\n</details>\n\nAfter"
             ),
             vec![
-                row("▸ Shots", Some(RowAction::Details(0))),
+                row("▶ Shots", Some(RowAction::Details(0))),
                 row("", None),
                 row("After", None)
             ]
@@ -1148,7 +1148,7 @@ mod tests {
         assert_eq!(
             rows,
             vec![
-                row("▸ Details", Some(RowAction::Details(0))),
+                row("▶ Details", Some(RowAction::Details(0))),
                 row("[image: s.png]", Some(RowAction::Media(0)))
             ]
         );
@@ -1163,7 +1163,7 @@ mod tests {
         assert_eq!(
             rows,
             vec![
-                row("▸ Shot", Some(RowAction::Details(0))),
+                row("▶ Shot", Some(RowAction::Details(0))),
                 row("[image: x]", Some(RowAction::Media(0)))
             ]
         );
@@ -1175,12 +1175,12 @@ mod tests {
 
         assert_eq!(
             rendered(body),
-            vec![row("▸ Before", Some(RowAction::Details(0)))]
+            vec![row("▶ Before", Some(RowAction::Details(0)))]
         );
         assert_eq!(
             rendered_toggled(body, &[0]),
             vec![
-                row("▾ Before", Some(RowAction::Details(0))),
+                row("▼ Before", Some(RowAction::Details(0))),
                 row("[image: x]", Some(RowAction::Media(0)))
             ]
         );
@@ -1193,15 +1193,15 @@ mod tests {
         assert_eq!(
             rendered(body),
             vec![
-                row("▸ A", Some(RowAction::Details(0))),
-                row("▸ B", Some(RowAction::Details(1)))
+                row("▶ A", Some(RowAction::Details(0))),
+                row("▶ B", Some(RowAction::Details(1)))
             ]
         );
         assert_eq!(
             rendered_toggled(body, &[1]),
             vec![
-                row("▸ A", Some(RowAction::Details(0))),
-                row("▾ B", Some(RowAction::Details(1))),
+                row("▶ A", Some(RowAction::Details(0))),
+                row("▼ B", Some(RowAction::Details(1))),
                 row("b", None)
             ]
         );
@@ -1217,13 +1217,13 @@ mod tests {
         ] {
             assert_eq!(
                 rendered(&body),
-                vec![row("▸ Details", Some(RowAction::Details(0)))],
+                vec![row("▶ Details", Some(RowAction::Details(0)))],
                 "{body}"
             );
             assert_eq!(
                 rendered_toggled(&body, &[0]),
                 vec![
-                    row("▾ Details", Some(RowAction::Details(0))),
+                    row("▼ Details", Some(RowAction::Details(0))),
                     row("[image: x]", Some(RowAction::Media(0)))
                 ],
                 "{body}"
@@ -1238,7 +1238,7 @@ mod tests {
         assert_eq!(
             rendered(body),
             vec![
-                row("▸ A", Some(RowAction::Details(0))),
+                row("▶ A", Some(RowAction::Details(0))),
                 row("[image: x]", Some(RowAction::Media(0))),
                 row("", None),
                 row("After", None)
@@ -1247,7 +1247,7 @@ mod tests {
         assert_eq!(
             rendered_toggled(body, &[0]),
             vec![
-                row("▾ A", Some(RowAction::Details(0))),
+                row("▼ A", Some(RowAction::Details(0))),
                 row("", None),
                 row("body", None),
                 row("", None),
@@ -1266,7 +1266,7 @@ mod tests {
         assert_eq!(
             rendered(body),
             vec![
-                row("▸ A", Some(RowAction::Details(0))),
+                row("▶ A", Some(RowAction::Details(0))),
                 row(after, None),
                 row("[image: x]", Some(RowAction::Media(0)))
             ]
@@ -1274,7 +1274,7 @@ mod tests {
         assert_eq!(
             rendered_toggled(body, &[0]),
             vec![
-                row("▾ A", Some(RowAction::Details(0))),
+                row("▼ A", Some(RowAction::Details(0))),
                 row("", None),
                 row("body", None),
                 row("", None),
@@ -1290,14 +1290,14 @@ mod tests {
 
         assert_eq!(
             rendered(body),
-            vec![row("▸ A", Some(RowAction::Details(0)))]
+            vec![row("▶ A", Some(RowAction::Details(0)))]
         );
         assert_eq!(
             rendered_toggled(body, &[0]),
             vec![
-                row("▾ A", Some(RowAction::Details(0))),
+                row("▼ A", Some(RowAction::Details(0))),
                 row("[image: a]", Some(RowAction::Media(0))),
-                row("▸ B", Some(RowAction::Details(1)))
+                row("▶ B", Some(RowAction::Details(1)))
             ]
         );
     }
@@ -1308,12 +1308,12 @@ mod tests {
 
         assert_eq!(
             rendered(body),
-            vec![row("▸ Shots", Some(RowAction::Details(0)))]
+            vec![row("▶ Shots", Some(RowAction::Details(0)))]
         );
         assert_eq!(
             rendered_toggled(body, &[0]),
             vec![
-                row("▾ Shots", Some(RowAction::Details(0))),
+                row("▼ Shots", Some(RowAction::Details(0))),
                 row("See <img src=\"https://x.test/a.png\" alt=\"a\">", None),
                 row("[image: a]", Some(RowAction::Media(0)))
             ]
@@ -1327,7 +1327,7 @@ mod tests {
         assert_eq!(
             rendered(body),
             vec![
-                row("▸ A", Some(RowAction::Details(0))),
+                row("▶ A", Some(RowAction::Details(0))),
                 row("", None),
                 row("After", None)
             ]
@@ -1335,7 +1335,7 @@ mod tests {
         assert_eq!(
             rendered_toggled(body, &[0]),
             vec![
-                row("▾ A", Some(RowAction::Details(0))),
+                row("▼ A", Some(RowAction::Details(0))),
                 row("[image: x]", Some(RowAction::Media(0))),
                 row("", None),
                 row("After", None)
@@ -1351,14 +1351,14 @@ mod tests {
             rendered(body),
             vec![
                 row("[image: x]", Some(RowAction::Media(0))),
-                row("▸ A", Some(RowAction::Details(0)))
+                row("▶ A", Some(RowAction::Details(0)))
             ]
         );
         assert_eq!(
             rendered_toggled(body, &[0]),
             vec![
                 row("[image: x]", Some(RowAction::Media(0))),
-                row("▾ A", Some(RowAction::Details(0))),
+                row("▼ A", Some(RowAction::Details(0))),
                 row("", None),
                 row("body", None)
             ]
@@ -1372,7 +1372,7 @@ mod tests {
         assert_eq!(
             rendered(body),
             vec![
-                row("▸ A", Some(RowAction::Details(0))),
+                row("▶ A", Some(RowAction::Details(0))),
                 row("", None),
                 row("[image: b]", Some(RowAction::Media(1)))
             ]

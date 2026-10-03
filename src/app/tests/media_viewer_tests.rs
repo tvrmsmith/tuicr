@@ -1376,7 +1376,7 @@ fn media_inside_an_expanded_section_opens() {
 
     assert_eq!(row_text(&app, 1), "[image: zero]");
     assert_eq!(row_text(&app, 2), "");
-    assert_eq!(row_text(&app, 3), "▸ Shots");
+    assert_eq!(row_text(&app, 3), "▶ Shots");
     assert!(
         !pr_info_rows(&app)
             .iter()

@@ -146,7 +146,7 @@ Shown below the file tree when local comments or visible remote PR threads exist
 | `y` | Copy review to clipboard |
 | `Y` | Copy the comment at cursor to clipboard |
 | `Enter` | On a media placeholder in the PR description: open the media viewer, or the OS viewer when the terminal cannot draw images |
-| `Enter` | On a collapsible section's summary row (`▸`/`▾`) in the PR description: expand or collapse it |
+| `Enter` | On a collapsible section's summary row (`▶`/`▼`) in the PR description: expand or collapse it |
 
 `e` opens the file at the cursor's line. Terminal editors (`vim`, `nvim`, `nano`, …)
 take over the screen and tuicr reloads the diff once they exit. Windowed editors

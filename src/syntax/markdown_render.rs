@@ -56,7 +56,7 @@ pub(crate) struct Details {
 /// table wider than `width` wraps text inside its columns).
 ///
 /// A block-level `<details>` section with a matching `</details>` renders as
-/// one summary row, `▸ label` collapsed or `▾ label` expanded, in place of its
+/// one summary row, `▶ label` collapsed or `▼ label` expanded, in place of its
 /// header (the `<details>` tag through its `</summary>`). Its body renders
 /// only while it is expanded, and its `</details>` renders nothing. Other
 /// markup on a header's or a `</details>`'s lines renders as its own rows in
@@ -957,12 +957,12 @@ impl<'a> Doc<'a> {
         }
     }
 
-    /// `▸ label` collapsed or `▾ label` expanded, wrapped under the label's start.
+    /// `▶ label` collapsed or `▼ label` expanded, wrapped under the label's start.
     fn summary_rows(&self, summary: &Summary, width: usize) -> Vec<BlockRow> {
         let runs = vec![
             (
                 self.look.bullet,
-                if summary.expanded { "▾" } else { "▸" }.to_string(),
+                if summary.expanded { "▼" } else { "▶" }.to_string(),
             ),
             (self.look.base, format!(" {}", summary.label)),
         ];
@@ -2136,7 +2136,7 @@ mod tests {
 
         assert_eq!(
             texts_trimmed(&rows),
-            ["Intro", "", "▸ Coverage report", "", "Outro"]
+            ["Intro", "", "▶ Coverage report", "", "Outro"]
         );
         assert_eq!(details_of(&rows), [None, None, Some(0), None, None]);
         assert_eq!(rows[2].source, 2..4);
@@ -2146,7 +2146,7 @@ mod tests {
     fn assert_coverage_expanded(rows: &[BlockRow]) {
         let table_rows = texts_trimmed(&render_toggled(&table(), 40, &[]));
         assert!(table_rows.len() >= 41, "table rows: {table_rows:?}");
-        let mut expected: Vec<String> = ["Intro", "", "▾ Coverage report", ""]
+        let mut expected: Vec<String> = ["Intro", "", "▼ Coverage report", ""]
             .map(String::from)
             .to_vec();
         expected.extend(table_rows);
@@ -2167,7 +2167,7 @@ mod tests {
         let open = coverage_with("<details open>");
 
         let rows = render_toggled(&open, 40, &[]);
-        assert_eq!(text(&rows[2]).trim_end(), "▾ Coverage report");
+        assert_eq!(text(&rows[2]).trim_end(), "▼ Coverage report");
         assert_eq!(
             texts_trimmed(&rows),
             texts_trimmed(&render_toggled(&coverage(), 40, &[0]))
@@ -2183,7 +2183,7 @@ mod tests {
     fn should_read_open_as_an_attribute_not_a_substring() {
         let rows = render_toggled(&coverage_with(r#"<details class="opener">"#), 40, &[]);
 
-        assert_eq!(text(&rows[2]).trim_end(), "▸ Coverage report");
+        assert_eq!(text(&rows[2]).trim_end(), "▶ Coverage report");
     }
 
     #[test]
@@ -2205,27 +2205,27 @@ mod tests {
         ]
         .join("\n");
 
-        assert_eq!(texts_trimmed(&render_toggled(&src, 40, &[])), ["▸ Outer"]);
+        assert_eq!(texts_trimmed(&render_toggled(&src, 40, &[])), ["▶ Outer"]);
 
         let rows = render_toggled(&src, 40, &[0]);
         assert_eq!(
             texts_trimmed(&rows),
-            ["▾ Outer", "", "Outer body", "", "▸ Inner"]
+            ["▼ Outer", "", "Outer body", "", "▶ Inner"]
         );
         assert_eq!(rows[4].details.as_ref().map(|d| d.id), Some(1));
 
         assert_eq!(
             texts_trimmed(&render_toggled(&src, 40, &[0, 1])),
-            ["▾ Outer", "", "Outer body", "", "▾ Inner", "", "Inner body"]
+            ["▼ Outer", "", "Outer body", "", "▼ Inner", "", "Inner body"]
         );
-        assert_eq!(texts_trimmed(&render_toggled(&src, 40, &[1])), ["▸ Outer"]);
+        assert_eq!(texts_trimmed(&render_toggled(&src, 40, &[1])), ["▶ Outer"]);
     }
 
     #[test]
     fn should_label_a_section_without_a_summary_details() {
         let rows = render_toggled("<details>\n\nBody\n\n</details>", 40, &[]);
 
-        assert_eq!(texts_trimmed(&rows), ["▸ Details"]);
+        assert_eq!(texts_trimmed(&rows), ["▶ Details"]);
     }
 
     #[test]
@@ -2234,7 +2234,7 @@ mod tests {
 
         assert_eq!(
             texts_trimmed(&render_toggled(src, 40, &[])),
-            ["▸ Logs for run"]
+            ["▶ Logs for run"]
         );
     }
 
@@ -2242,7 +2242,7 @@ mod tests {
     fn should_label_a_section_with_an_empty_summary_details() {
         let src = "<details><summary> </summary>\n\nBody\n\n</details>";
 
-        assert_eq!(texts_trimmed(&render_toggled(src, 40, &[])), ["▸ Details"]);
+        assert_eq!(texts_trimmed(&render_toggled(src, 40, &[])), ["▶ Details"]);
     }
 
     #[test]
@@ -2251,11 +2251,11 @@ mod tests {
 
         assert_eq!(
             texts_trimmed(&render_toggled(src, 40, &[])),
-            ["▸ X", "", "After"]
+            ["▶ X", "", "After"]
         );
         assert_eq!(
             texts_trimmed(&render_toggled(src, 40, &[0])),
-            ["▾ X", "shown", "", "After"]
+            ["▼ X", "shown", "", "After"]
         );
     }
 
@@ -2263,11 +2263,11 @@ mod tests {
     fn should_show_body_text_after_the_summary_on_the_header_line_only_while_expanded() {
         let src = "<details><summary>Before</summary>First body line\nsecond\n\nBody\n\n</details>";
 
-        assert_eq!(texts_trimmed(&render_toggled(src, 40, &[])), ["▸ Before"]);
+        assert_eq!(texts_trimmed(&render_toggled(src, 40, &[])), ["▶ Before"]);
         let rows = render_toggled(src, 40, &[0]);
         assert_eq!(
             texts_trimmed(&rows),
-            ["▾ Before", "First body line", "second", "", "Body"]
+            ["▼ Before", "First body line", "second", "", "Body"]
         );
         assert_eq!(details_of(&rows), [Some(0), None, None, None, None]);
     }
@@ -2280,17 +2280,17 @@ mod tests {
         ] {
             assert_eq!(
                 texts_trimmed(&render_toggled(src, 40, &[])),
-                ["▸ A"],
+                ["▶ A"],
                 "{src:?}"
             );
 
             let rows = render_toggled(src, 40, &[0]);
-            assert_eq!(texts_trimmed(&rows), ["▾ A", "▸ B"], "{src:?}");
+            assert_eq!(texts_trimmed(&rows), ["▼ A", "▶ B"], "{src:?}");
             assert_eq!(details_of(&rows), [Some(0), Some(1)], "{src:?}");
 
             assert_eq!(
                 texts_trimmed(&render_toggled(src, 40, &[0, 1])),
-                ["▾ A", "▾ B", "body"],
+                ["▼ A", "▼ B", "body"],
                 "{src:?}"
             );
         }
@@ -2302,7 +2302,7 @@ mod tests {
 
         let rows = render_toggled(src, 40, &[0]);
 
-        assert_eq!(texts_trimmed(&rows), ["▾ A", "mid", "▸ B"]);
+        assert_eq!(texts_trimmed(&rows), ["▼ A", "mid", "▶ B"]);
         assert_eq!(details_of(&rows), [Some(0), None, Some(1)]);
     }
 
@@ -2314,7 +2314,7 @@ mod tests {
         ] {
             let rows = render_toggled(src, 40, &[0, 1]);
 
-            assert_eq!(texts_trimmed(&rows), ["▾ A", "▾ B", "▸ C"], "{src:?}");
+            assert_eq!(texts_trimmed(&rows), ["▼ A", "▼ B", "▶ C"], "{src:?}");
             assert_eq!(details_of(&rows), [Some(0), Some(1), Some(2)], "{src:?}");
         }
     }
@@ -2323,9 +2323,9 @@ mod tests {
     fn should_label_a_section_details_when_a_nested_section_opens_inside_its_summary() {
         let src = "<details>\n<summary>A\n<details>\n<summary>B</summary>\n\nInner\n\n</details>\n\n</details>";
 
-        assert_eq!(texts_trimmed(&render_toggled(src, 40, &[])), ["▸ Details"]);
+        assert_eq!(texts_trimmed(&render_toggled(src, 40, &[])), ["▶ Details"]);
         let rows = render_toggled(src, 40, &[0]);
-        assert_eq!(texts_trimmed(&rows), ["▾ Details", "<summary>A", "▸ B"]);
+        assert_eq!(texts_trimmed(&rows), ["▼ Details", "<summary>A", "▶ B"]);
         assert_eq!(details_of(&rows), [Some(0), None, Some(1)]);
     }
 
@@ -2333,10 +2333,10 @@ mod tests {
     fn should_not_take_a_summary_after_text_as_the_header() {
         let src = "<details>\ntext <summary>X</summary>\n\nBody\n\n</details>";
 
-        assert_eq!(texts_trimmed(&render_toggled(src, 40, &[])), ["▸ Details"]);
+        assert_eq!(texts_trimmed(&render_toggled(src, 40, &[])), ["▶ Details"]);
         assert_eq!(
             texts_trimmed(&render_toggled(src, 40, &[0])),
-            ["▾ Details", "text <summary>X</summary>", "", "Body"]
+            ["▼ Details", "text <summary>X</summary>", "", "Body"]
         );
     }
 
@@ -2345,7 +2345,7 @@ mod tests {
         let src = "</details>\n\n<details><summary>X</summary>\n\nBody\n\n</details>";
 
         let rows = render_toggled(src, 40, &[]);
-        assert_eq!(texts_trimmed(&rows), ["</details>", "", "▸ X"]);
+        assert_eq!(texts_trimmed(&rows), ["</details>", "", "▶ X"]);
         assert_eq!(details_of(&rows), [None, None, Some(0)]);
     }
 
@@ -2356,7 +2356,7 @@ mod tests {
         let rows = render_toggled(src, 40, &[]);
         assert_eq!(
             texts_trimmed(&rows),
-            ["<details><summary>Outer</summary>", "", "▸ Inner"]
+            ["<details><summary>Outer</summary>", "", "▶ Inner"]
         );
         assert_eq!(details_of(&rows), [None, None, Some(1)]);
     }
@@ -2366,12 +2366,12 @@ mod tests {
         let src = "<details><summary>A</summary>\n\na body\n\n</details><details><summary>B</summary>\n\nb body\n\n</details>";
 
         let rows = render_toggled(src, 40, &[]);
-        assert_eq!(texts_trimmed(&rows), ["▸ A", "▸ B"]);
+        assert_eq!(texts_trimmed(&rows), ["▶ A", "▶ B"]);
         assert_eq!(details_of(&rows), [Some(0), Some(1)]);
 
         assert_eq!(
             texts_trimmed(&render_toggled(src, 40, &[1])),
-            ["▸ A", "▾ B", "", "b body"]
+            ["▶ A", "▼ B", "", "b body"]
         );
     }
 
@@ -2381,11 +2381,11 @@ mod tests {
 
         assert_eq!(
             texts_trimmed(&render_toggled(src, 40, &[])),
-            ["▸ A", "After", "", "Next"]
+            ["▶ A", "After", "", "Next"]
         );
         assert_eq!(
             texts_trimmed(&render_toggled(src, 40, &[0])),
-            ["▾ A", "", "body", "", "After", "", "Next"]
+            ["▼ A", "", "body", "", "After", "", "Next"]
         );
     }
 
@@ -2395,11 +2395,11 @@ mod tests {
 
         assert_eq!(
             texts_trimmed(&render_toggled(src, 40, &[])),
-            ["▸ X", "after"]
+            ["▶ X", "after"]
         );
         assert_eq!(
             texts_trimmed(&render_toggled(src, 40, &[0])),
-            ["▾ X", "shown", "after"]
+            ["▼ X", "shown", "after"]
         );
     }
 
@@ -2408,7 +2408,7 @@ mod tests {
         let src = "<details><summary>A</summary>\n\na body\n\n</details>mid<details><summary>B</summary>\n\nb body\n\n</details>";
 
         let rows = render_toggled(src, 40, &[]);
-        assert_eq!(texts_trimmed(&rows), ["▸ A", "mid", "▸ B"]);
+        assert_eq!(texts_trimmed(&rows), ["▶ A", "mid", "▶ B"]);
         assert_eq!(details_of(&rows), [Some(0), None, Some(1)]);
     }
 
@@ -2416,10 +2416,10 @@ mod tests {
     fn should_end_text_after_a_nested_close_at_its_parents_close() {
         let src = "<details><summary>O</summary>\n\n<details><summary>I</summary>\n\ni\n\n</details>in</details>out";
 
-        assert_eq!(texts_trimmed(&render_toggled(src, 40, &[])), ["▸ O", "out"]);
+        assert_eq!(texts_trimmed(&render_toggled(src, 40, &[])), ["▶ O", "out"]);
         assert_eq!(
             texts_trimmed(&render_toggled(src, 40, &[0])),
-            ["▾ O", "", "▸ I", "in", "out"]
+            ["▼ O", "", "▶ I", "in", "out"]
         );
     }
 
@@ -2427,10 +2427,10 @@ mod tests {
     fn should_take_a_summary_block_separated_by_blank_lines_as_the_header() {
         let src = "<details>\n\n<summary>X</summary>\n\nBody\n\n</details>";
 
-        assert_eq!(texts_trimmed(&render_toggled(src, 40, &[])), ["▸ X"]);
+        assert_eq!(texts_trimmed(&render_toggled(src, 40, &[])), ["▶ X"]);
         assert_eq!(
             texts_trimmed(&render_toggled(src, 40, &[0])),
-            ["▾ X", "", "Body"]
+            ["▼ X", "", "Body"]
         );
     }
 
@@ -2474,7 +2474,7 @@ mod tests {
 
         assert_eq!(
             texts_trimmed(&rows),
-            ["<pre>", "▸ Log", "</pre>", "", "After"]
+            ["<pre>", "▶ Log", "</pre>", "", "After"]
         );
         assert_eq!(details_of(&rows), [None, Some(0), None, None, None]);
     }
@@ -2485,11 +2485,11 @@ mod tests {
 
         assert_eq!(
             texts_trimmed(&render_toggled(src, 40, &[])),
-            ["▸ Logs", "", "After"]
+            ["▶ Logs", "", "After"]
         );
         assert_eq!(
             texts_trimmed(&render_toggled(src, 40, &[0])),
-            ["▾ Logs", "last line", "", "After"]
+            ["▼ Logs", "last line", "", "After"]
         );
     }
 
@@ -2497,10 +2497,10 @@ mod tests {
     fn should_render_markup_before_a_close_ahead_of_the_next_header_on_its_line() {
         let src = "<details><summary>A</summary>\nbody\nx</details><details><summary>B</summary>\nb\n</details>";
 
-        assert_eq!(texts_trimmed(&render_toggled(src, 40, &[])), ["▸ A", "▸ B"]);
+        assert_eq!(texts_trimmed(&render_toggled(src, 40, &[])), ["▶ A", "▶ B"]);
         assert_eq!(
             texts_trimmed(&render_toggled(src, 40, &[0])),
-            ["▾ A", "body", "x", "▸ B"]
+            ["▼ A", "body", "x", "▶ B"]
         );
     }
 
@@ -2508,14 +2508,14 @@ mod tests {
     fn should_render_markup_before_a_nested_header_as_the_parent_body() {
         let src = "<details><summary>A</summary>\ntext <details><summary>B</summary>\ninner\n</details>\n</details>";
 
-        assert_eq!(texts_trimmed(&render_toggled(src, 40, &[])), ["▸ A"]);
+        assert_eq!(texts_trimmed(&render_toggled(src, 40, &[])), ["▶ A"]);
         assert_eq!(
             texts_trimmed(&render_toggled(src, 40, &[0])),
-            ["▾ A", "text", "▸ B"]
+            ["▼ A", "text", "▶ B"]
         );
         assert_eq!(
             texts_trimmed(&render_toggled(src, 40, &[0, 1])),
-            ["▾ A", "text", "▾ B", "inner"]
+            ["▼ A", "text", "▼ B", "inner"]
         );
     }
 
@@ -2525,11 +2525,11 @@ mod tests {
 
         assert_eq!(
             texts_trimmed(&render_toggled(src, 40, &[])),
-            ["<p>Notes</p>", "▸ Logs"]
+            ["<p>Notes</p>", "▶ Logs"]
         );
         assert_eq!(
             texts_trimmed(&render_toggled(src, 40, &[0])),
-            ["<p>Notes</p>", "▾ Logs", "", "body"]
+            ["<p>Notes</p>", "▼ Logs", "", "body"]
         );
     }
 
@@ -2539,7 +2539,7 @@ mod tests {
 
         let rows = render_toggled(src, 40, &[]);
 
-        assert_eq!(texts_trimmed(&rows), ["▸ Log", "", "Body"]);
+        assert_eq!(texts_trimmed(&rows), ["▶ Log", "", "Body"]);
         assert_eq!(details_of(&rows), [Some(0), None, None]);
     }
 
@@ -2561,7 +2561,7 @@ mod tests {
         let src = "<details><summary>alpha beta gamma</summary>\n\nBody\n\n</details>";
 
         let rows = render_toggled(src, 12, &[]);
-        assert_eq!(texts_trimmed(&rows), ["▸ alpha beta", "  gamma"]);
+        assert_eq!(texts_trimmed(&rows), ["▶ alpha beta", "  gamma"]);
         assert_eq!(details_of(&rows), [Some(0), Some(0)]);
         assert_eq!(rows[0].source, rows[1].source);
     }
@@ -2572,7 +2572,7 @@ mod tests {
         let look = Look::new(&theme);
         let rows = render_block(&theme, &coverage(), 40, &[], &BTreeSet::new());
 
-        assert_eq!(styles_of(&rows[2], "▸"), [look.bullet]);
+        assert_eq!(styles_of(&rows[2], "▶"), [look.bullet]);
         assert!(
             styles_of(&rows[2], "Coverage report")
                 .iter()
@@ -2587,7 +2587,7 @@ mod tests {
         let keep_apart = std::slice::from_ref(&(3..4));
 
         let rows = render_block(&theme, src, 40, keep_apart, &BTreeSet::new());
-        assert_eq!(texts_trimmed(&rows), ["▸ S"]);
+        assert_eq!(texts_trimmed(&rows), ["▶ S"]);
         assert!(rows.iter().all(|r| r.source != (3..4)));
 
         let rows = render_block(&theme, src, 40, keep_apart, &BTreeSet::from([0]));
@@ -2621,7 +2621,7 @@ mod tests {
 
         assert_eq!(
             text_and_source(&rows),
-            [("▸ Shot".to_string(), 0..2), (String::new(), 0..1)]
+            [("▶ Shot".to_string(), 0..2), (String::new(), 0..1)]
         );
     }
 
@@ -2629,10 +2629,10 @@ mod tests {
     fn should_fold_a_section_in_a_crlf_body() {
         let src = "<details>\r\n<summary>X</summary>\r\n\r\nBody\r\n\r\n</details>";
 
-        assert_eq!(texts_trimmed(&render_toggled(src, 40, &[])), ["▸ X"]);
+        assert_eq!(texts_trimmed(&render_toggled(src, 40, &[])), ["▶ X"]);
         assert_eq!(
             texts_trimmed(&render_toggled(src, 40, &[0])),
-            ["▾ X", "", "Body"]
+            ["▼ X", "", "Body"]
         );
     }
 
@@ -2642,7 +2642,7 @@ mod tests {
 
         assert_eq!(
             texts_trimmed(&rows),
-            ["Intro", "", "▸ Coverage report", "", "Outro"]
+            ["Intro", "", "▶ Coverage report", "", "Outro"]
         );
         assert_eq!(details_of(&rows), [None, None, Some(0), None, None]);
     }

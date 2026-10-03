@@ -702,7 +702,7 @@ fn enter_on_the_summary_row_rebuilds_annotations_before_the_next_frame() {
 fn details_section_is_collapsed_by_default() {
     let mut app = coverage_app(false);
 
-    assert!(drawn_cursor_row(&mut app, 3).contains("▸ Coverage report"));
+    assert!(drawn_cursor_row(&mut app, 3).contains("▶ Coverage report"));
     assert!(
         !rows_of(&draw_app(&mut app))
             .iter()
@@ -718,7 +718,7 @@ fn enter_on_the_summary_row_expands_the_section() {
     press_enter_at(&mut app, 3);
 
     assert_eq!(app.diff_state.cursor_line, 3);
-    assert!(drawn_cursor_row(&mut app, 3).contains("▾ Coverage report"));
+    assert!(drawn_cursor_row(&mut app, 3).contains("▼ Coverage report"));
     let rows = rows_of(&draw_app(&mut app));
     let table_row = rows
         .iter()
@@ -745,7 +745,7 @@ fn enter_on_an_expanded_summary_row_collapses_the_section() {
     press_enter_at(&mut app, 3);
 
     assert_eq!(app.diff_state.cursor_line, 3);
-    assert!(drawn_cursor_row(&mut app, 3).contains("▸ Coverage report"));
+    assert!(drawn_cursor_row(&mut app, 3).contains("▶ Coverage report"));
     assert!(
         !rows_of(&draw_app(&mut app))
             .iter()
@@ -759,7 +759,7 @@ fn enter_on_an_expanded_summary_row_collapses_the_section() {
 fn details_open_section_starts_expanded() {
     let mut app = coverage_app(true);
 
-    assert!(drawn_cursor_row(&mut app, 3).contains("▾ Coverage report"));
+    assert!(drawn_cursor_row(&mut app, 3).contains("▼ Coverage report"));
     assert!(
         rows_of(&draw_app(&mut app))
             .iter()
@@ -779,19 +779,19 @@ fn nested_sections_toggle_independently() {
     let has =
         |app: &mut App, needle: &str| rows_of(&draw_app(app)).iter().any(|r| r.contains(needle));
 
-    assert!(drawn(&mut app, 1).contains("▸ Outer"));
+    assert!(drawn(&mut app, 1).contains("▶ Outer"));
 
     press_enter_at(&mut app, 1);
-    assert!(drawn(&mut app, 1).contains("▾ Outer"));
+    assert!(drawn(&mut app, 1).contains("▼ Outer"));
     assert!(drawn(&mut app, 3).contains("Outer body"));
-    assert!(drawn(&mut app, 5).contains("▸ Inner"));
+    assert!(drawn(&mut app, 5).contains("▶ Inner"));
     assert!(!has(&mut app, "Inner body"));
     assert_panel_annotations_match_drawn_rows(&mut app);
 
     press_enter_at(&mut app, 5);
-    assert!(drawn(&mut app, 5).contains("▾ Inner"));
+    assert!(drawn(&mut app, 5).contains("▼ Inner"));
     assert!(drawn(&mut app, 7).contains("Inner body"));
-    assert!(drawn(&mut app, 1).contains("▾ Outer"));
+    assert!(drawn(&mut app, 1).contains("▼ Outer"));
     assert_panel_annotations_match_drawn_rows(&mut app);
 }
 
@@ -803,10 +803,11 @@ fn rendering_off_shows_details_source_and_ignores_enter() {
     for needle in ["<details>", "<summary>Coverage report</summary>", "f00.rs"] {
         assert!(drawn.iter().any(|row| row.contains(needle)), "{needle}");
     }
+    // The gutter cursor also draws `▶`, so look for the marker with its label.
     assert!(
         !drawn
             .iter()
-            .any(|row| row.contains('▸') || row.contains('▾'))
+            .any(|row| row.contains("▶ Coverage report") || row.contains("▼ Coverage report"))
     );
 
     let panel = crate::ui::pr_info_panel::pr_info_render_height(&app);
@@ -894,20 +895,20 @@ fn toggled_sections_reset_on_reload_but_not_on_gap_clearing() {
     press_enter_at(&mut app, 3);
     app.clear_expanded_gaps();
     app.rebuild_annotations();
-    assert!(summary(&mut app).contains("▾ Coverage report"));
+    assert!(summary(&mut app).contains("▼ Coverage report"));
 
     app.reload_pull_request_with_backend(forge(), None).unwrap();
-    assert!(summary(&mut app).contains("▸ Coverage report"));
+    assert!(summary(&mut app).contains("▶ Coverage report"));
 
     // A background reload lands on the same head, then on a new one.
     for head in [details.head_sha.as_str(), "bbbbbbbbbbbbbbbb"] {
         press_enter_at(&mut app, 3);
-        assert!(summary(&mut app).contains("▾ Coverage report"), "{head}");
+        assert!(summary(&mut app).contains("▼ Coverage report"), "{head}");
         let mut fetched = details.clone();
         fetched.head_sha = head.to_string();
         queue_pr_reload(&mut app, fetched, &details.head_sha);
         app.poll_pr_reload_events();
-        assert!(summary(&mut app).contains("▸ Coverage report"), "{head}");
+        assert!(summary(&mut app).contains("▶ Coverage report"), "{head}");
     }
 }
 
@@ -922,8 +923,8 @@ fn toggling_a_section_rebuilds_the_cached_rows() {
         Some(row.line.spans.iter().map(|s| s.content.as_ref()).collect())
     };
     let mut app = coverage_app(false);
-    assert_eq!(summary(&app).as_deref(), Some("▸ Coverage report"));
+    assert_eq!(summary(&app).as_deref(), Some("▶ Coverage report"));
 
     app.toggle_pr_details(0);
-    assert_eq!(summary(&app).as_deref(), Some("▾ Coverage report"));
+    assert_eq!(summary(&app).as_deref(), Some("▼ Coverage report"));
 }
