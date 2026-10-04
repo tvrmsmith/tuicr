@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use std::ops::Range;
 use std::rc::Rc;
 use std::sync::Arc;
@@ -19,12 +20,33 @@ use crate::ui::comment_panel::{self, CommentTypePresentation};
 use crate::ui::diff_view::{HEADER_RULE, cursor_indicator, cursor_indicator_spaced};
 use crate::ui::styles;
 
-/// One rendered row of the PR-info panel body, carrying the index into
-/// [`pr_body_media`] when the row is a media placeholder.
+/// What Enter does on a PR-info row.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RowAction {
+    /// Open the media at this index into [`pr_body_media`].
+    Media(usize),
+    /// Toggle the `<details>` section with this number.
+    Details(usize),
+    /// Collapse the expanded `<details>` section with this number, from a
+    /// row in its body.
+    Collapse(usize),
+}
+
+/// How the PR description renders.
+#[derive(Clone, Copy)]
+pub(crate) enum BodyRender<'a> {
+    /// Highlighted markdown source.
+    Source,
+    /// Rendered markdown; `toggled` lists the `<details>` sections shown
+    /// opposite to their default.
+    Markdown { toggled: &'a BTreeSet<usize> },
+}
+
+/// One rendered row of the PR-info panel body.
 pub(crate) struct PrInfoRow {
     pub line: Line<'static>,
-    /// Read by `pr_info_media_at_cursor`, the Enter handler's lookup.
-    pub media: Option<usize>,
+    /// Read by `pr_info_action_at_cursor`, the Enter handler's lookup.
+    pub action: Option<RowAction>,
 }
 
 /// Every rendered PR-info line is prefixed with a two-column cursor indicator
@@ -50,9 +72,35 @@ pub(crate) fn pr_info_content_width(viewport_width: usize) -> usize {
 pub(crate) struct PrInfoRowsCache {
     info: PullRequestInfo,
     width: usize,
-    render_markdown: bool,
+    render: CachedRender,
     highlighter: Arc<SyntaxHighlighter>,
     rows: Rc<Vec<PrInfoRow>>,
+}
+
+/// Owned [`BodyRender`] for the cache key.
+#[derive(Clone, PartialEq, Eq)]
+enum CachedRender {
+    Source,
+    Markdown { toggled: BTreeSet<usize> },
+}
+
+impl CachedRender {
+    fn of(app: &App) -> Self {
+        if app.render_markdown {
+            Self::Markdown {
+                toggled: app.pr_details_toggled.clone(),
+            }
+        } else {
+            Self::Source
+        }
+    }
+
+    fn as_body_render(&self) -> BodyRender<'_> {
+        match self {
+            Self::Source => BodyRender::Source,
+            Self::Markdown { toggled } => BodyRender::Markdown { toggled },
+        }
+    }
 }
 
 /// The one place the panel's rows are built from `App` state, so height,
@@ -64,10 +112,11 @@ pub(crate) fn pr_info_rows(app: &App) -> Rc<Vec<PrInfoRow>> {
     };
     let width = pr_info_content_width(app.diff_state.viewport_width);
     let highlighter = app.theme.syntax_highlighter_arc();
+    let render = CachedRender::of(app);
     let mut cache = app.pr_info_rows_cache.borrow_mut();
     if let Some(hit) = cache.as_ref().filter(|hit| {
         hit.width == width
-            && hit.render_markdown == app.render_markdown
+            && hit.render == render
             && Arc::ptr_eq(&hit.highlighter, &highlighter)
             && hit.info == *info
     }) {
@@ -77,12 +126,12 @@ pub(crate) fn pr_info_rows(app: &App) -> Rc<Vec<PrInfoRow>> {
         info,
         width,
         &app.theme,
-        app.render_markdown,
+        render.as_body_render(),
     ));
     *cache = Some(PrInfoRowsCache {
         info: info.clone(),
         width,
-        render_markdown: app.render_markdown,
+        render,
         highlighter,
         rows: Rc::clone(&rows),
     });
@@ -200,17 +249,26 @@ pub fn append_issue_comments_section(
 }
 
 /// The media referenced from the PR body, in document order. The one list
-/// both [`PrInfoRow::media`] and the media viewer index into, so repeated
+/// both [`RowAction::Media`] and the media viewer index into, so repeated
 /// URLs (e.g. badges) stay distinct entries.
 pub(crate) fn pr_body_media(info: &PullRequestInfo) -> Vec<MediaLine> {
-    find_media(&info.details.body, Some(&info.details.repository.host))
+    body_media(info, &[])
+}
+
+/// [`pr_body_media`], judging `media_only` without the bytes in `replaced`.
+fn body_media(info: &PullRequestInfo, replaced: &[Range<usize>]) -> Vec<MediaLine> {
+    find_media(
+        &info.details.body,
+        Some(&info.details.repository.host),
+        replaced,
+    )
 }
 
 pub(crate) fn build_pr_info_rows(
     info: &PullRequestInfo,
     width: usize,
     theme: &Theme,
-    render_markdown: bool,
+    render: BodyRender,
 ) -> Vec<PrInfoRow> {
     let mut rows = Vec::new();
     let content_width = width.max(1);
@@ -227,14 +285,7 @@ pub(crate) fn build_pr_info_rows(
     } else {
         details.body.clone()
     };
-    push_body_rows(
-        &mut rows,
-        info,
-        theme,
-        &body,
-        content_width,
-        render_markdown,
-    );
+    push_body_rows(&mut rows, info, theme, &body, content_width, render);
 
     push_blank(&mut rows);
     push_section_header(
@@ -329,10 +380,9 @@ pub(crate) fn build_pr_info_rows(
     rows
 }
 
-/// Index into [`pr_body_media`] of the media on the cursor row, when the
-/// cursor is on a rendered PR-info line. `handle_diff_action`'s `SelectFile`
-/// arm calls this and hands the index to `App::enter_media`.
-pub(crate) fn pr_info_media_at_cursor(app: &App) -> Option<usize> {
+/// The Enter action of the cursor row, when the cursor is on a rendered
+/// PR-info line. `handle_diff_action`'s `SelectFile` arm dispatches on it.
+pub(crate) fn pr_info_action_at_cursor(app: &App) -> Option<RowAction> {
     if !is_cursor_in_pr_info(app) {
         return None;
     }
@@ -341,7 +391,7 @@ pub(crate) fn pr_info_media_at_cursor(app: &App) -> Option<usize> {
     else {
         return None;
     };
-    pr_info_rows(app).get(line_idx)?.media
+    pr_info_rows(app).get(line_idx)?.action
 }
 
 /// One merged run of media-only source lines, replaced by one placeholder
@@ -356,7 +406,7 @@ struct MediaBlock {
 /// starting inside a block's covered lines (an `<img>` within a multi-line
 /// `<video>`) joins the block, and inline media on a media-only line joins it
 /// too; skipping either would stall every later entry.
-fn plan_media(media: &[MediaLine]) -> (Vec<MediaBlock>, Vec<(usize, usize)>) {
+fn plan_media(media: &[&MediaLine]) -> (Vec<MediaBlock>, Vec<(usize, usize)>) {
     let mut blocks = Vec::new();
     let mut inline = Vec::new();
     let mut idx = 0usize;
@@ -396,65 +446,100 @@ fn plan_media(media: &[MediaLine]) -> (Vec<MediaBlock>, Vec<(usize, usize)>) {
 /// row per media entry and following each inline media line's last row with
 /// its placeholders. Both render paths produce [`BlockRow`]s, so one walk
 /// keyed on source position serves them.
+///
+/// `<details>` sections change three things. Media starting in a collapsed
+/// section's body gets no placeholder. A summary row anchors only the inline
+/// media inside its own header, so media after `</summary>` follows the body
+/// row it renders in. A media block covering a header lands after the
+/// header's last summary row instead of replacing it.
 fn push_body_rows(
     rows: &mut Vec<PrInfoRow>,
     info: &PullRequestInfo,
     theme: &Theme,
     body: &str,
     content_width: usize,
-    render_markdown: bool,
+    render: BodyRender,
 ) {
-    let media = pr_body_media(info);
-    let (blocks, inline) = plan_media(&media);
-    let body_rows = if render_markdown {
+    // Summary rows stand in for headers, so media sharing a line only with
+    // headers and tags is media-only.
+    let (media, collapsed) = match render {
+        BodyRender::Markdown { toggled } => (
+            body_media(info, &markdown_render::details_headers(body)),
+            markdown_render::collapsed_details(body, toggled),
+        ),
+        BodyRender::Source => (pr_body_media(info), Vec::new()),
+    };
+    // Each shown entry keeps its index into `pr_body_media`, the list the
+    // media viewer opens by.
+    let shown: Vec<(usize, &MediaLine)> = media
+        .iter()
+        .enumerate()
+        .filter(|(_, entry)| !collapsed.iter().any(|body| body.contains(&entry.start)))
+        .collect();
+    let placeholder = |pos: usize| {
+        let (idx, entry) = shown[pos];
+        placeholder_row(theme, idx, &entry.media, content_width)
+    };
+    let (blocks, inline) = plan_media(&shown.iter().map(|&(_, entry)| entry).collect::<Vec<_>>());
+    let body_rows = if let BodyRender::Markdown { toggled } = render {
         let apart: Vec<Range<usize>> = blocks.iter().map(|block| block.lines.clone()).collect();
-        markdown_render::render_block(theme, body, content_width, &apart)
+        markdown_render::render_block(theme, body, content_width, &apart, toggled)
     } else {
         comment_panel::markdown_body_line_groups(theme, body, content_width)
     };
 
     let mut inline_after: Vec<Vec<usize>> = vec![Vec::new(); body_rows.len()];
-    for (line, media_idx) in inline {
-        if let Some(anchor) = body_rows.iter().rposition(|row| row.source.contains(&line)) {
-            inline_after[anchor].push(media_idx);
+    for (line, pos) in inline {
+        let start = shown[pos].1.start;
+        // A summary row stands only for its header, so media elsewhere on
+        // the header's lines follows the row of the body it sits in.
+        let anchor = body_rows.iter().rposition(|row| {
+            row.source.contains(&line)
+                && row
+                    .details
+                    .as_ref()
+                    .is_none_or(|details| details.header.contains(&start))
+        });
+        if let Some(anchor) = anchor {
+            inline_after[anchor].push(pos);
         }
     }
 
     let mut pending = blocks.iter().peekable();
-    let push_block = |rows: &mut Vec<PrInfoRow>, block: &MediaBlock| {
-        for idx in block.media.clone() {
-            rows.push(placeholder_row(
-                theme,
-                idx,
-                &media[idx].media,
-                content_width,
-            ));
+    // Pushes the placeholders of the blocks starting at or before `line`
+    // and returns the end of the last one.
+    let mut drain_blocks = |rows: &mut Vec<PrInfoRow>, line: usize| {
+        let mut end = None;
+        while let Some(block) = pending.next_if(|block| block.lines.start <= line) {
+            rows.extend(block.media.clone().map(&placeholder));
+            end = Some(block.lines.end);
         }
+        end
     };
+    let details_ids: Vec<Option<usize>> = body_rows
+        .iter()
+        .map(|row| row.details.as_ref().map(|details| details.id))
+        .collect();
     let mut skip_until = 0usize;
-    for (row, after) in body_rows.into_iter().zip(inline_after) {
-        while let Some(block) = pending.next_if(|block| block.lines.start <= row.source.start) {
-            push_block(rows, block);
-            skip_until = block.lines.end;
-        }
-        if row.source.start < skip_until {
-            continue;
+    for (at, (row, after)) in body_rows.into_iter().zip(inline_after).enumerate() {
+        let summary = details_ids[at];
+        if summary.is_none() {
+            skip_until = drain_blocks(rows, row.source.start).unwrap_or(skip_until);
+            if row.source.start < skip_until {
+                continue;
+            }
         }
         rows.push(PrInfoRow {
             line: row.line,
-            media: None,
+            action: summary
+                .map(RowAction::Details)
+                .or(row.inside.map(RowAction::Collapse)),
         });
-        for idx in after {
-            rows.push(placeholder_row(
-                theme,
-                idx,
-                &media[idx].media,
-                content_width,
-            ));
+        // A media block covering a header lands after its last summary row.
+        if summary.is_some() && details_ids.get(at + 1) != Some(&summary) {
+            skip_until = drain_blocks(rows, row.source.start).unwrap_or(skip_until);
         }
-    }
-    for block in pending {
-        push_block(rows, block);
+        rows.extend(after.into_iter().map(&placeholder));
     }
 }
 
@@ -463,7 +548,7 @@ fn placeholder_row(theme: &Theme, media_idx: usize, media: &MediaRef, width: usi
     let text = truncate_placeholder(&label, width);
     PrInfoRow {
         line: Line::from(Span::styled(text, styles::branch_style(theme))),
-        media: Some(media_idx),
+        action: Some(RowAction::Media(media_idx)),
     }
 }
 
@@ -498,7 +583,7 @@ fn truncate_placeholder(text: &str, width: usize) -> String {
 }
 
 fn push_row(rows: &mut Vec<PrInfoRow>, line: Line<'static>) {
-    rows.push(PrInfoRow { line, media: None });
+    rows.push(PrInfoRow { line, action: None });
 }
 
 fn push_section_header(rows: &mut Vec<PrInfoRow>, theme: &Theme, title: String) {
@@ -684,25 +769,25 @@ mod tests {
 
     /// Row text/media from row 1 (row 0 is the header) up to but excluding
     /// the blank row that precedes the Status header.
-    fn body_rows(body: &str, width: usize) -> Vec<(String, Option<usize>)> {
-        body_rows_with(body, width, false)
+    fn body_rows(body: &str, width: usize) -> Vec<(String, Option<RowAction>)> {
+        body_rows_with(body, width, BodyRender::Source)
     }
 
     fn body_rows_with(
         body: &str,
         width: usize,
-        render_markdown: bool,
-    ) -> Vec<(String, Option<usize>)> {
+        render: BodyRender,
+    ) -> Vec<(String, Option<RowAction>)> {
         let mut info = sample_info();
         info.details.body = body.to_string();
-        let rows = build_pr_info_rows(&info, width, &Theme::dark(), render_markdown);
+        let rows = build_pr_info_rows(&info, width, &Theme::dark(), render);
         let status_header = rows
             .iter()
             .position(|row| row_text(row).starts_with(&format!("═══ PR #{} Status ", 42)))
             .expect("status header row");
         rows[1..status_header - 1]
             .iter()
-            .map(|row| (row_text(row), row.media))
+            .map(|row| (row_text(row), row.action))
             .collect()
     }
 
@@ -720,7 +805,7 @@ mod tests {
             body_rows("Intro\n![shot](https://x.test/a.png)\nOutro", 80),
             vec![
                 ("Intro".to_string(), None),
-                ("[image: shot]".to_string(), Some(0)),
+                ("[image: shot]".to_string(), Some(RowAction::Media(0))),
                 ("Outro".to_string(), None),
             ]
         );
@@ -728,10 +813,12 @@ mod tests {
 
     #[test]
     fn inline_image_placeholder_follows_the_last_row_of_a_wrapped_line() {
-        let rows: Vec<(String, Option<usize>)> = body_rows_with(
+        let rows: Vec<(String, Option<RowAction>)> = body_rows_with(
             "aaaa bbbb cccc dddd eeee ![a](https://x.test/1.png) ffff",
             20,
-            true,
+            BodyRender::Markdown {
+                toggled: &BTreeSet::new(),
+            },
         )
         .into_iter()
         .map(|(text, media)| (text.trim_end().to_string(), media))
@@ -742,7 +829,7 @@ mod tests {
             vec![
                 ("aaaa bbbb cccc dddd".to_string(), None),
                 ("eeee ▣ a ffff".to_string(), None),
-                ("[image: a]".to_string(), Some(0)),
+                ("[image: a]".to_string(), Some(RowAction::Media(0))),
             ]
         );
     }
@@ -753,7 +840,7 @@ mod tests {
             body_rows("see ![a](https://x.test/1.png) end", 80),
             vec![
                 ("see ![a](https://x.test/1.png) end".to_string(), None),
-                ("[image: a]".to_string(), Some(0)),
+                ("[image: a]".to_string(), Some(RowAction::Media(0))),
             ]
         );
     }
@@ -765,7 +852,7 @@ mod tests {
             body_rows(body, 80),
             vec![
                 ("<p align=\"center\">".to_string(), None),
-                ("[image: Login page]".to_string(), Some(0)),
+                ("[image: Login page]".to_string(), Some(RowAction::Media(0))),
                 ("</p>".to_string(), None),
             ]
         );
@@ -776,8 +863,8 @@ mod tests {
         assert_eq!(
             body_rows("![a](https://x.test/1.png) ![b](https://x.test/2.png)", 80),
             vec![
-                ("[image: a]".to_string(), Some(0)),
-                ("[image: b]".to_string(), Some(1)),
+                ("[image: a]".to_string(), Some(RowAction::Media(0))),
+                ("[image: b]".to_string(), Some(RowAction::Media(1))),
             ]
         );
     }
@@ -788,9 +875,9 @@ mod tests {
         assert_eq!(
             body_rows(body, 80),
             vec![
-                ("[video: demo.mp4]".to_string(), Some(0)),
+                ("[video: demo.mp4]".to_string(), Some(RowAction::Media(0))),
                 (String::new(), None),
-                ("[attachment: abc]".to_string(), Some(1)),
+                ("[attachment: abc]".to_string(), Some(RowAction::Media(1))),
             ]
         );
 
@@ -813,10 +900,10 @@ mod tests {
         assert_eq!(
             body_rows(body, 80),
             vec![
-                ("[video: v.mp4]".to_string(), Some(0)),
-                ("[image: i.png]".to_string(), Some(1)),
+                ("[video: v.mp4]".to_string(), Some(RowAction::Media(0))),
+                ("[image: i.png]".to_string(), Some(RowAction::Media(1))),
                 (String::new(), None),
-                ("[image: after]".to_string(), Some(2)),
+                ("[image: after]".to_string(), Some(RowAction::Media(2))),
             ]
         );
     }
@@ -827,8 +914,8 @@ mod tests {
         assert_eq!(
             body_rows(body, 80),
             vec![
-                ("[image: a.png]".to_string(), Some(0)),
-                ("[video: b.mp4]".to_string(), Some(1)),
+                ("[image: a.png]".to_string(), Some(RowAction::Media(0))),
+                ("[video: b.mp4]".to_string(), Some(RowAction::Media(1))),
                 ("</video> more".to_string(), None),
             ]
         );
@@ -838,7 +925,7 @@ mod tests {
     fn placeholder_text_truncates_by_display_width_with_an_ellipsis() {
         assert_eq!(
             body_rows("![abcdefghijklmnopqrstuvwxyz](https://x.test/z.png)", 12),
-            vec![("[image: abc…".to_string(), Some(0))]
+            vec![("[image: abc…".to_string(), Some(RowAction::Media(0)))]
         );
     }
 
@@ -859,10 +946,10 @@ mod tests {
 
         let mut info = sample_info();
         info.details.body = "Intro\n![shot](https://x.test/a.png)\nOutro".to_string();
-        let full_rows = build_pr_info_rows(&info, 80, &Theme::dark(), false);
+        let full_rows = build_pr_info_rows(&info, 80, &Theme::dark(), BodyRender::Source);
         let intro_row = &full_rows[1];
         let placeholder_row = &full_rows[2];
-        assert_eq!(placeholder_row.media, Some(0));
+        assert_eq!(placeholder_row.action, Some(RowAction::Media(0)));
         assert_ne!(
             intro_row.line.spans[0].style, placeholder_row.line.spans[0].style,
             "placeholder style must differ from prose style"
@@ -871,20 +958,20 @@ mod tests {
 
     #[test]
     fn header_status_and_checks_rows_carry_no_media() {
-        let rows = build_pr_info_rows(&sample_info(), 80, &Theme::dark(), false);
-        assert!(rows[0].media.is_none());
+        let rows = build_pr_info_rows(&sample_info(), 80, &Theme::dark(), BodyRender::Source);
+        assert!(rows[0].action.is_none());
         for row in &rows {
             let text = row_text(row);
             if text.starts_with("═══") || text.starts_with("Status:") || text.starts_with('✓')
             {
-                assert!(row.media.is_none(), "unexpected media on {text:?}");
+                assert!(row.action.is_none(), "unexpected media on {text:?}");
             }
         }
     }
 
     #[test]
     fn should_build_title_and_status_sections() {
-        let rows = build_pr_info_rows(&sample_info(), 80, &Theme::dark(), false);
+        let rows = build_pr_info_rows(&sample_info(), 80, &Theme::dark(), BodyRender::Source);
         let rendered = rows.iter().map(row_text).collect::<Vec<_>>();
         assert!(
             rendered
@@ -904,7 +991,7 @@ mod tests {
     fn should_highlight_pr_description_source_when_rendering_is_off() {
         let mut info = sample_info();
         info.details.body = "plain `code` plain".to_string();
-        let lines = build_pr_info_rows(&info, 80, &Theme::dark(), false);
+        let lines = build_pr_info_rows(&info, 80, &Theme::dark(), BodyRender::Source);
         let description = &lines[1].line;
 
         assert_eq!(
@@ -921,7 +1008,7 @@ mod tests {
         );
 
         info.details.body = "plain description".to_string();
-        let lines = build_pr_info_rows(&info, 80, &Theme::dark(), false);
+        let lines = build_pr_info_rows(&info, 80, &Theme::dark(), BodyRender::Source);
         let description = &lines[1].line;
 
         assert_eq!(
@@ -940,7 +1027,14 @@ mod tests {
         let mut info = sample_info();
         info.details.body = "plain `code` plain".to_string();
         let theme = Theme::dark();
-        let rows = build_pr_info_rows(&info, 80, &theme, true);
+        let rows = build_pr_info_rows(
+            &info,
+            80,
+            &theme,
+            BodyRender::Markdown {
+                toggled: &BTreeSet::new(),
+            },
+        );
 
         assert_eq!(row_text(&rows[1]), "plain  code  plain");
         let chip = rows[1]
@@ -952,11 +1046,16 @@ mod tests {
         assert_eq!(chip.style.bg, Some(markdown_render::GLOW_CHIP_BG));
     }
 
-    fn rendered(body: &str) -> Vec<(String, Option<usize>)> {
-        body_rows_with(body, 80, true)
+    fn rendered(body: &str) -> Vec<(String, Option<RowAction>)> {
+        rendered_toggled(body, &[])
     }
 
-    fn row(text: &str, media: Option<usize>) -> (String, Option<usize>) {
+    fn rendered_toggled(body: &str, toggled: &[usize]) -> Vec<(String, Option<RowAction>)> {
+        let toggled: BTreeSet<usize> = toggled.iter().copied().collect();
+        body_rows_with(body, 80, BodyRender::Markdown { toggled: &toggled })
+    }
+
+    fn row(text: &str, media: Option<RowAction>) -> (String, Option<RowAction>) {
         (text.to_string(), media)
     }
 
@@ -966,7 +1065,7 @@ mod tests {
             rendered("Intro\n![shot](https://x.test/a.png)\nOutro"),
             vec![
                 row("Intro", None),
-                row("[image: shot]", Some(0)),
+                row("[image: shot]", Some(RowAction::Media(0))),
                 row("Outro", None)
             ]
         );
@@ -976,7 +1075,10 @@ mod tests {
     fn rendered_inline_image_shows_a_glyph_and_appends_a_placeholder() {
         assert_eq!(
             rendered("see ![a](https://x.test/1.png) end"),
-            vec![row("see ▣ a end", None), row("[image: a]", Some(0))]
+            vec![
+                row("see ▣ a end", None),
+                row("[image: a]", Some(RowAction::Media(0)))
+            ]
         );
     }
 
@@ -984,7 +1086,10 @@ mod tests {
     fn rendered_inline_image_placeholder_follows_the_reflowed_paragraph() {
         assert_eq!(
             rendered("one\ntwo ![a](https://x.test/1.png)\nthree"),
-            vec![row("one two ▣ a three", None), row("[image: a]", Some(0))]
+            vec![
+                row("one two ▣ a three", None),
+                row("[image: a]", Some(RowAction::Media(0)))
+            ]
         );
     }
 
@@ -1013,7 +1118,7 @@ mod tests {
             vec![
                 row("A", None),
                 row("", None),
-                row("[image: x]", Some(0)),
+                row("[image: x]", Some(RowAction::Media(0))),
                 row("", None),
                 row("B", None)
             ]
@@ -1023,5 +1128,262 @@ mod tests {
     #[test]
     fn rendered_body_has_no_trailing_blank_rows() {
         assert_eq!(rendered("Body\n\n\n"), vec![row("Body", None)]);
+    }
+
+    #[test]
+    fn media_in_a_collapsed_section_emits_nothing() {
+        assert_eq!(
+            rendered(
+                "<details>\n<summary>Shots</summary>\n\n![one](https://x.test/1.png)\n\n</details>\n\nAfter"
+            ),
+            vec![
+                row("▶ Shots", Some(RowAction::Details(0))),
+                row("", None),
+                row("After", None)
+            ]
+        );
+    }
+
+    #[test]
+    fn media_in_the_summary_follows_the_summary_row() {
+        let rows = rendered(
+            "<details><summary><img src=\"https://x.test/s.png\"></summary>\n\nBody\n\n</details>",
+        );
+
+        assert_eq!(
+            rows,
+            vec![
+                row("▶ Details", Some(RowAction::Details(0))),
+                row("[image: s.png]", Some(RowAction::Media(0)))
+            ]
+        );
+    }
+
+    #[test]
+    fn inline_media_in_the_summary_follows_the_summary_row() {
+        let rows = rendered(
+            "<details><summary>Shot <img src=\"https://x.test/x.png\" alt=\"x\"></summary>\n\nBody\n\n</details>",
+        );
+
+        assert_eq!(
+            rows,
+            vec![
+                row("▶ Shot", Some(RowAction::Details(0))),
+                row("[image: x]", Some(RowAction::Media(0)))
+            ]
+        );
+    }
+
+    #[test]
+    fn media_after_the_summary_on_a_one_line_section_shows_only_while_expanded() {
+        let body = "<details><summary>Before</summary><img src=\"https://x.test/x.png\" alt=\"x\"></details>";
+
+        assert_eq!(
+            rendered(body),
+            vec![row("▶ Before", Some(RowAction::Details(0)))]
+        );
+        assert_eq!(
+            rendered_toggled(body, &[0]),
+            vec![
+                row("▼ Before", Some(RowAction::Details(0))),
+                row("[image: x]", Some(RowAction::Media(0)))
+            ]
+        );
+    }
+
+    #[test]
+    fn media_after_a_collapsed_summary_stays_hidden_beside_a_sibling_on_its_line() {
+        let body = "<details><summary>A</summary><img src=\"https://x.test/a.png\" alt=\"a\"></details><details><summary>B</summary>\nb\n</details>";
+
+        assert_eq!(
+            rendered(body),
+            vec![
+                row("▶ A", Some(RowAction::Details(0))),
+                row("▶ B", Some(RowAction::Details(1)))
+            ]
+        );
+        assert_eq!(
+            rendered_toggled(body, &[1]),
+            vec![
+                row("▶ A", Some(RowAction::Details(0))),
+                row("▼ B", Some(RowAction::Details(1))),
+                row("b", Some(RowAction::Collapse(1)))
+            ]
+        );
+    }
+
+    #[test]
+    fn media_only_header_line_shows_its_placeholder_only_while_expanded() {
+        let img = "<img src=\"https://x.test/x.png\" alt=\"x\">";
+        for body in [
+            format!("<details>{img}</details>"),
+            format!("<details><summary></summary>{img}</details>"),
+            format!("<details>\n<summary></summary>{img}\n</details>"),
+        ] {
+            assert_eq!(
+                rendered(&body),
+                vec![row("▶ Details", Some(RowAction::Details(0)))],
+                "{body}"
+            );
+            assert_eq!(
+                rendered_toggled(&body, &[0]),
+                vec![
+                    row("▼ Details", Some(RowAction::Details(0))),
+                    row("[image: x]", Some(RowAction::Media(0)))
+                ],
+                "{body}"
+            );
+        }
+    }
+
+    #[test]
+    fn media_after_a_close_on_its_line_shows_in_both_states() {
+        let body = "<details><summary>A</summary>\n\nbody\n\n</details><img src=\"https://x.test/x.png\" alt=\"x\">\n\nAfter";
+
+        assert_eq!(
+            rendered(body),
+            vec![
+                row("▶ A", Some(RowAction::Details(0))),
+                row("[image: x]", Some(RowAction::Media(0))),
+                row("", None),
+                row("After", None)
+            ]
+        );
+        assert_eq!(
+            rendered_toggled(body, &[0]),
+            vec![
+                row("▼ A", Some(RowAction::Details(0))),
+                row("", Some(RowAction::Collapse(0))),
+                row("body", Some(RowAction::Collapse(0))),
+                row("", Some(RowAction::Collapse(0))),
+                row("[image: x]", Some(RowAction::Media(0))),
+                row("", None),
+                row("After", None)
+            ]
+        );
+    }
+
+    #[test]
+    fn inline_media_after_a_close_on_its_line_follows_its_row_in_both_states() {
+        let body = "<details><summary>A</summary>\n\nbody\n\n</details>see <img src=\"https://x.test/x.png\" alt=\"x\"> end";
+        let after = "see <img src=\"https://x.test/x.png\" alt=\"x\"> end";
+
+        assert_eq!(
+            rendered(body),
+            vec![
+                row("▶ A", Some(RowAction::Details(0))),
+                row(after, None),
+                row("[image: x]", Some(RowAction::Media(0)))
+            ]
+        );
+        assert_eq!(
+            rendered_toggled(body, &[0]),
+            vec![
+                row("▼ A", Some(RowAction::Details(0))),
+                row("", Some(RowAction::Collapse(0))),
+                row("body", Some(RowAction::Collapse(0))),
+                row("", Some(RowAction::Collapse(0))),
+                row(after, None),
+                row("[image: x]", Some(RowAction::Media(0)))
+            ]
+        );
+    }
+
+    #[test]
+    fn media_in_a_parent_tail_follows_the_tail_not_a_nested_summary() {
+        let body = "<details><summary>A</summary><img src=\"https://x.test/a.png\" alt=\"a\"><details><summary>B</summary>\nbody\n</details>\n</details>";
+
+        assert_eq!(
+            rendered(body),
+            vec![row("▶ A", Some(RowAction::Details(0)))]
+        );
+        assert_eq!(
+            rendered_toggled(body, &[0]),
+            vec![
+                row("▼ A", Some(RowAction::Details(0))),
+                row("[image: a]", Some(RowAction::Media(0))),
+                row("▶ B", Some(RowAction::Details(1)))
+            ]
+        );
+    }
+
+    #[test]
+    fn inline_media_before_a_close_on_its_line_shows_only_while_expanded() {
+        let body = "<details>\n<summary>Shots</summary>\nSee <img src=\"https://x.test/a.png\" alt=\"a\"></details>";
+
+        assert_eq!(
+            rendered(body),
+            vec![row("▶ Shots", Some(RowAction::Details(0)))]
+        );
+        assert_eq!(
+            rendered_toggled(body, &[0]),
+            vec![
+                row("▼ Shots", Some(RowAction::Details(0))),
+                row(
+                    "See <img src=\"https://x.test/a.png\" alt=\"a\">",
+                    Some(RowAction::Collapse(0))
+                ),
+                row("[image: a]", Some(RowAction::Media(0)))
+            ]
+        );
+    }
+
+    #[test]
+    fn media_only_close_line_shows_its_placeholder_only_while_expanded() {
+        let body = "<details><summary>A</summary>\n<img src=\"https://x.test/x.png\" alt=\"x\"></details>\n\nAfter";
+
+        assert_eq!(
+            rendered(body),
+            vec![
+                row("▶ A", Some(RowAction::Details(0))),
+                row("", None),
+                row("After", None)
+            ]
+        );
+        assert_eq!(
+            rendered_toggled(body, &[0]),
+            vec![
+                row("▼ A", Some(RowAction::Details(0))),
+                row("[image: x]", Some(RowAction::Media(0))),
+                row("", None),
+                row("After", None)
+            ]
+        );
+    }
+
+    #[test]
+    fn media_before_a_header_on_its_line_shows_in_both_states() {
+        let body = "<p><img src=\"https://x.test/x.png\" alt=\"x\"></p><details><summary>A</summary>\n\nbody\n\n</details>";
+
+        assert_eq!(
+            rendered(body),
+            vec![
+                row("[image: x]", Some(RowAction::Media(0))),
+                row("▶ A", Some(RowAction::Details(0)))
+            ]
+        );
+        assert_eq!(
+            rendered_toggled(body, &[0]),
+            vec![
+                row("[image: x]", Some(RowAction::Media(0))),
+                row("▼ A", Some(RowAction::Details(0))),
+                row("", Some(RowAction::Collapse(0))),
+                row("body", Some(RowAction::Collapse(0)))
+            ]
+        );
+    }
+
+    #[test]
+    fn media_after_a_collapsed_section_keeps_its_index_among_all_body_media() {
+        let body = "<details><summary>A</summary>\n\n![a](https://x.test/a.png)\n\n</details>\n\n![b](https://x.test/b.png)";
+
+        assert_eq!(
+            rendered(body),
+            vec![
+                row("▶ A", Some(RowAction::Details(0))),
+                row("", None),
+                row("[image: b]", Some(RowAction::Media(1)))
+            ]
+        );
     }
 }

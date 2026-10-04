@@ -511,6 +511,7 @@ impl App {
             search_highlight_visible: false,
             search_highlight_enabled: true,
             render_markdown: true,
+            pr_details_toggled: std::collections::BTreeSet::new(),
             pr_info_rows_cache: std::cell::RefCell::new(None),
             comment_rows_cache: std::cell::RefCell::new(None),
             search_return_mode: InputMode::Normal,
@@ -1005,7 +1006,7 @@ impl App {
         // Wire the forge backend so context expansion routes through it.
         app.forge_backend = Some(backend);
         app.forge_repository = Some(target_repo);
-        app.pr_info = Some(opened.pr_info);
+        app.install_pr_info(opened.pr_info);
         // PR open establishes the target repo directly; no further canonical
         // resolution needed on PR-tab entry (which won't happen anyway since
         // the user came straight from CLI into PR diff mode).

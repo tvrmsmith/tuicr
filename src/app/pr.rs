@@ -1,6 +1,39 @@
 use super::*;
 
 impl App {
+    /// Installs a freshly fetched `pr_info`. Section numbers belong to one
+    /// description, so the toggled set resets with it.
+    pub(crate) fn install_pr_info(&mut self, info: crate::forge::traits::PullRequestInfo) {
+        self.pr_info = Some(info);
+        self.pr_details_toggled.clear();
+    }
+
+    /// Flips one `<details>` section of the PR description. Rows above its
+    /// summary row do not move, so the cursor stays put.
+    pub(crate) fn toggle_pr_details(&mut self, id: usize) {
+        if !self.pr_details_toggled.remove(&id) {
+            self.pr_details_toggled.insert(id);
+        }
+        self.rebuild_annotations();
+    }
+
+    /// Collapses one expanded `<details>` section from a row in its body.
+    /// That row disappears, so the cursor moves to the section's summary row.
+    pub(crate) fn collapse_pr_details(&mut self, id: usize) {
+        use crate::ui::pr_info_panel::{RowAction, pr_info_rows};
+        self.toggle_pr_details(id);
+        let summary = pr_info_rows(self)
+            .iter()
+            .position(|row| row.action == Some(RowAction::Details(id)));
+        let line = self.line_annotations.iter().position(|line| {
+            matches!(line, AnnotatedLine::PrInfoLine { line_idx } if Some(*line_idx) == summary)
+        });
+        if let Some(line) = line {
+            self.diff_state.cursor_line = line;
+            self.ensure_cursor_visible();
+        }
+    }
+
     /// Re-enter PR mode after we've already opened a PR via the selector.
     /// Used by the selector → PR open path and by `:reload` in PR mode.
     ///
@@ -67,7 +100,7 @@ impl App {
         self.range_diff_files = None;
         self.saved_inline_selection = None;
         self.diff_state = DiffState::default();
-        self.pr_info = Some(pr_info);
+        self.install_pr_info(pr_info);
 
         // PR mode populates the inline selector with the PR's commits when
         // there are at least two. Single-commit PRs hide the selector to
@@ -651,7 +684,7 @@ impl App {
                 &opened.review_metadata,
             );
             self.diff_files = opened.diff_files;
-            self.pr_info = Some(opened.pr_info);
+            self.install_pr_info(opened.pr_info);
             self.clear_expanded_gaps();
             for file in &self.diff_files {
                 self.session.add_diff_file(file);
@@ -747,7 +780,7 @@ impl App {
                 &opened.review_metadata,
             );
             self.diff_files = opened.diff_files;
-            self.pr_info = Some(opened.pr_info);
+            self.install_pr_info(opened.pr_info);
             self.clear_expanded_gaps();
             for file in &self.diff_files {
                 self.session.add_diff_file(file);
