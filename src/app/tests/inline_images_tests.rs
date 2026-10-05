@@ -520,6 +520,15 @@ fn a_picker_that_found_nothing_loads_nothing() {
     assert_eq!(fake.load_count(), 0);
 }
 
+// 11b
+#[test]
+fn flag_off_loads_nothing_even_with_a_resolved_picker() {
+    let (mut app, fake) = setup_enabled();
+    app.show_inline_images = false;
+    assert!(!app.poll_inline_images());
+    assert_eq!(fake.load_count(), 0);
+}
+
 // 12
 #[test]
 fn an_empty_box_loads_nothing() {

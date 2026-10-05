@@ -63,8 +63,8 @@ impl Slot {
 
 impl App {
     /// True when the `inline_images` flag is on and the terminal image probe
-    /// found a picker. The flag gates the rows even if `enter_media` resolved
-    /// the picker lazily.
+    /// found a picker. The flag gates the rows and the loads even if
+    /// `enter_media` resolved the picker lazily.
     pub(crate) fn inline_images_enabled(&self) -> bool {
         self.show_inline_images && self.image_picker.as_ref().is_some_and(Option::is_some)
     }
@@ -90,6 +90,9 @@ impl App {
     }
 
     pub(crate) fn poll_inline_images_at(&mut self, now: Instant) -> bool {
+        if !self.show_inline_images {
+            return false;
+        }
         let Some(picker) = self.image_picker.as_ref().and_then(Option::as_ref).cloned() else {
             return false;
         };
