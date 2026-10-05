@@ -16,9 +16,12 @@
 //! formatted spans are measured here with the same outer wrap pass used by
 //! the renderers.
 
+use std::borrow::Cow;
+
 use ratatui::text::{Line, Span};
 
 use crate::app::{AnnotatedLine, App, DiffViewMode, sbs_overhead};
+use crate::model::DiffLine;
 use crate::ui::text_utils::wrap_spans;
 use crate::ui::{comment_panel, diff_view};
 
@@ -101,7 +104,7 @@ pub(crate) fn annotation_row_height(app: &App, idx: usize) -> usize {
             gap_id,
             line_idx: li,
         } if app.diff_view_mode == DiffViewMode::SideBySide => {
-            let content = expanded_line_content(app, gap_id, *li).unwrap_or_default();
+            let content = expanded_line_drawn_text(app, gap_id, *li).unwrap_or_default();
             let content_width = sbs_content_width(app, viewport_width);
             wrap_side_max(&content, &content, content_width)
         }
@@ -172,23 +175,31 @@ fn sbs_row_contents(
         .and_then(|f| f.hunks.get(hunk_idx));
     let get = |i: Option<usize>| -> String {
         i.and_then(|idx| hunk.and_then(|h| h.lines.get(idx)))
-            .map(|dl| dl.content.clone())
+            .map(|dl| drawn_text(dl).into_owned())
             .unwrap_or_default()
     };
     (get(del_line_idx), get(add_line_idx))
 }
 
-fn expanded_line_content(app: &App, gap_id: &crate::app::GapId, idx: usize) -> Option<String> {
+/// The text the renderer draws for `line`: the highlighted spans' text, which
+/// differs from `content` when markdown rendering replaced the source.
+fn drawn_text(line: &DiffLine) -> Cow<'_, str> {
+    match line.highlighted_spans.as_deref() {
+        Some([(_, only)]) => Cow::Borrowed(only),
+        Some(spans) => Cow::Owned(spans.iter().map(|(_, text)| text.as_str()).collect()),
+        None => Cow::Borrowed(&line.content),
+    }
+}
+
+fn expanded_line_drawn_text(app: &App, gap_id: &crate::app::GapId, idx: usize) -> Option<String> {
     let top = app.expanded_top.get(gap_id);
     let top_len = top.map_or(0, |v| v.len());
-    if idx < top_len {
-        top?.get(idx).map(|dl| dl.content.clone())
+    let line = if idx < top_len {
+        top?.get(idx)
     } else {
-        app.expanded_bottom
-            .get(gap_id)?
-            .get(idx - top_len)
-            .map(|dl| dl.content.clone())
-    }
+        app.expanded_bottom.get(gap_id)?.get(idx - top_len)
+    };
+    line.map(|dl| drawn_text(dl).into_owned())
 }
 
 /// Reconstruct the concatenated text of a rendered logical line by calling
@@ -288,7 +299,7 @@ fn full_row_text(app: &App, annotation: &AnnotatedLine) -> String {
             let (lineno, content) = match dl {
                 Some(dl) => (
                     diff_view::expanded_context_lineno_field(&dl, lw),
-                    dl.content,
+                    drawn_text(&dl).into_owned(),
                 ),
                 None => (" ".repeat(lw + 1), String::new()),
             };
@@ -310,7 +321,7 @@ fn full_row_text(app: &App, annotation: &AnnotatedLine) -> String {
                 Some(dl) => {
                     let lineno = diff_view::unified_line_number_field(dl, lw);
                     let prefix = diff_view::unified_line_origin_marker(dl);
-                    format!("{indicator}{lineno}{prefix} {}", dl.content)
+                    format!("{indicator}{lineno}{prefix} {}", drawn_text(dl))
                 }
                 None => format!("{indicator}{}", " ".repeat(lw + 1)),
             }
@@ -533,6 +544,7 @@ mod tests {
             is_too_large: false,
             is_commit_message: false,
             content_hash,
+            full_text: None,
         }
     }
 
@@ -546,6 +558,7 @@ mod tests {
             is_too_large: false,
             is_commit_message: false,
             content_hash: 0,
+            full_text: None,
         }
     }
 

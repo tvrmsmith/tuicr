@@ -5,6 +5,7 @@ struct PrDisplayOptions {
     show_checks: bool,
     show_comments: bool,
     comments_visibility: Option<crate::forge::remote_comments::PrCommentsVisibility>,
+    render_markdown_diffs: bool,
 }
 
 impl App {
@@ -29,6 +30,7 @@ impl App {
                     show_checks: options.show_pr_checks,
                     show_comments: options.show_pr_comments,
                     comments_visibility: options.pr_comments_visibility,
+                    render_markdown_diffs: options.render_markdown_diffs,
                 },
             );
         }
@@ -54,7 +56,8 @@ impl App {
                 Vec::new(),
                 None, // no path_filter
                 options.repo_url_override.clone(),
-            )?;
+            )?
+            .with_render_markdown_diffs(options.render_markdown_diffs);
 
             // Hide the file list only when reviewing a single file; in
             // directory mode the user needs the list to navigate.
@@ -85,7 +88,10 @@ impl App {
             let head_or_none = crate::vcs::pristine::head_short_sha(&cwd);
             let base_commit = format!("pristine:{head_or_none}:{path_hash:016x}");
 
-            let vcs = Box::new(FileBackend::new_pristine(paths, cwd.clone())?);
+            let vcs = Box::new(
+                FileBackend::new_pristine(paths, cwd.clone())?
+                    .with_markdown_full_text(options.render_markdown_diffs),
+            );
             let mut vcs_info = vcs.info().clone();
             vcs_info.head_commit = base_commit;
             let highlighter = theme.syntax_highlighter();
@@ -113,7 +119,8 @@ impl App {
                 Vec::new(),
                 None, // no path_filter
                 options.repo_url_override.clone(),
-            )?;
+            )?
+            .with_render_markdown_diffs(options.render_markdown_diffs);
 
             app.is_pristine_mode = true;
             app.focused_panel = FocusedPanel::Diff;
@@ -138,6 +145,7 @@ impl App {
             detect_vcs(
                 options.git_backend_preference,
                 options.diff_whitespace_mode.clone(),
+                options.render_markdown_diffs,
             )
         })?;
         let vcs_info = vcs.info().clone();
@@ -211,7 +219,8 @@ impl App {
                     options.path_filter,
                     options.repo_url_override.clone(),
                 )?
-                .with_vcs_open_options(options.vcs_open_options());
+                .with_vcs_open_options(options.vcs_open_options())
+                .with_render_markdown_diffs(options.render_markdown_diffs);
 
                 app.range_diff_files = Some(app.diff_files.clone());
                 app.commit_list = all_commits.clone();
@@ -273,7 +282,8 @@ impl App {
                 options.path_filter,
                 options.repo_url_override.clone(),
             )?
-            .with_vcs_open_options(options.vcs_open_options());
+            .with_vcs_open_options(options.vcs_open_options())
+            .with_render_markdown_diffs(options.render_markdown_diffs);
 
             // Set up inline commit selector for multi-commit reviews
             if review_commits.len() > 1 {
@@ -331,7 +341,8 @@ impl App {
                 options.path_filter,
                 options.repo_url_override.clone(),
             )?
-            .with_vcs_open_options(options.vcs_open_options());
+            .with_vcs_open_options(options.vcs_open_options())
+            .with_render_markdown_diffs(options.render_markdown_diffs);
 
             Ok(app)
         } else {
@@ -402,7 +413,8 @@ impl App {
                 options.path_filter,
                 options.repo_url_override.clone(),
             )?
-            .with_vcs_open_options(options.vcs_open_options());
+            .with_vcs_open_options(options.vcs_open_options())
+            .with_render_markdown_diffs(options.render_markdown_diffs);
 
             app.has_more_commit = commits.len() >= VISIBLE_COMMIT_COUNT;
             app.visible_commit_count = app.commit_list.len();
@@ -414,6 +426,14 @@ impl App {
     /// can open its own the same way.
     fn with_vcs_open_options(mut self, vcs_open_options: VcsOpenOptions) -> Self {
         self.vcs_open_options = vcs_open_options;
+        self
+    }
+
+    /// Sets `render_markdown_diffs` on a freshly built App, before it loads
+    /// anything more, and renders the files `build` already holds.
+    fn with_render_markdown_diffs(mut self, on: bool) -> Self {
+        self.render_markdown_diffs = on;
+        self.apply_markdown_diff_renders();
         self
     }
 
@@ -512,6 +532,8 @@ impl App {
             search_highlight_enabled: true,
             render_markdown: true,
             pr_details_toggled: std::collections::BTreeSet::new(),
+            render_markdown_diffs: false,
+            markdown_diff_cache: Default::default(),
             pr_info_rows_cache: std::cell::RefCell::new(None),
             comment_rows_cache: std::cell::RefCell::new(None),
             search_return_mode: InputMode::Normal,
@@ -858,6 +880,7 @@ impl App {
                 show_checks: false,
                 show_comments: true,
                 comments_visibility: None,
+                render_markdown_diffs: false,
             },
         )
     }
@@ -952,11 +975,12 @@ impl App {
             display_options.show_comments,
         );
         let highlighter = theme.syntax_highlighter();
-        let mut opened = open_pull_request(
+        let (mut opened, unreadable) = open_pull_request(
             backend.as_ref(),
             parsed,
             local_checkout_for_target.as_deref(),
             highlighter,
+            display_options.render_markdown_diffs,
         )?;
         // Seed before the persisted-session restore, which replaces the
         // fresh session wholesale, so a saved visibility always wins.
@@ -995,7 +1019,8 @@ impl App {
             Vec::new(),
             None,
             repo_url_override,
-        )?;
+        )?
+        .with_render_markdown_diffs(display_options.render_markdown_diffs);
         app.show_pr_checks = display_options.show_checks;
         app.show_pr_comments = display_options.show_comments;
 
@@ -1030,6 +1055,7 @@ impl App {
         } else if let Some(message) = since_last_review_message {
             app.set_message(message);
         }
+        app.warn_unreadable_markdown(&unreadable);
         // Spawn thread-fetch on startup; the main event loop will drain
         // the receiver via `poll_pr_threads_events` once it begins.
         app.spawn_pr_threads_fetch(&details_for_threads, local_checkout_for_target);

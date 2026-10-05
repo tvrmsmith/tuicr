@@ -49,7 +49,7 @@ fn create_forge_backend(
     local_checkout: Option<PathBuf>,
     show_pr_checks: bool,
     show_pr_comments: bool,
-) -> Box<dyn ForgeBackend> {
+) -> Box<dyn ForgeBackend + Sync> {
     use crate::forge::traits::ForgeKind;
     match repo.kind {
         ForgeKind::GitHub => {
@@ -979,7 +979,13 @@ pub struct PrRangeReloadRequest {
 pub enum PrRangeReloadEvent {
     Done {
         request: PrRangeReloadRequest,
-        result: std::result::Result<Vec<crate::model::FilePatch>, String>,
+        result: std::result::Result<
+            (
+                Vec<crate::model::FilePatch>,
+                crate::forge::pr_open::UnreadableMarkdown,
+            ),
+            String,
+        >,
     },
 }
 
@@ -1129,7 +1135,10 @@ pub enum MessageType {
 pub struct Message {
     pub content: String,
     pub message_type: MessageType,
-    /// When this message should be auto-cleared. `None` means sticky.
+    /// How long the message stays once drawn. `None` means sticky.
+    pub ttl: Option<Duration>,
+    /// When this message should be auto-cleared. `None` until the message is
+    /// first drawn, so a slow first frame cannot spend its TTL off screen.
     pub expires_at: Option<Instant>,
 }
 
@@ -1280,6 +1289,10 @@ pub struct App {
     /// `<details>` sections of the PR description shown opposite to their
     /// default, by section number. Cleared when a new `pr_info` is installed.
     pub(crate) pr_details_toggled: std::collections::BTreeSet<usize>,
+    /// Render `.md` / `.markdown` diff lines as markdown instead of syntax-highlighted source.
+    pub render_markdown_diffs: bool,
+    /// Rendered rows behind `render_markdown_diffs`, per file and theme.
+    pub(crate) markdown_diff_cache: markdown_diff::MarkdownDiffCache,
     /// Rows last built by `pr_info_rows`, reused while its key still matches.
     pub(crate) pr_info_rows_cache:
         std::cell::RefCell<Option<crate::ui::pr_info_panel::PrInfoRowsCache>>,
@@ -2103,13 +2116,16 @@ pub struct SummaryState {
     pub(crate) selection_needs_scroll: bool,
 }
 
-/// What `detect_vcs` needs to open a backend. Bundled because these two
-/// always travel together: they are chosen once at startup and then replayed
+/// What `detect_vcs` needs to open a backend. Bundled because these always
+/// travel together: they are chosen once at startup and then replayed
 /// verbatim by the diff-watch worker when it opens its own backend.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct VcsOpenOptions {
     git_backend_preference: GitBackendPreference,
     diff_whitespace_mode: DiffWhitespaceMode,
+    /// Whether diff loads read markdown files' full text
+    /// (`render_markdown_diffs`).
+    render_markdown_diffs: bool,
 }
 
 impl Default for VcsOpenOptions {
@@ -2119,6 +2135,7 @@ impl Default for VcsOpenOptions {
         Self {
             git_backend_preference: GitBackendPreference::Libgit2,
             diff_whitespace_mode: DiffWhitespaceMode::default(),
+            render_markdown_diffs: false,
         }
     }
 }
@@ -2148,6 +2165,8 @@ pub struct AppStartupOptions<'a> {
     /// `ForgeRepository`. When `Some`, the canonical resolver short-circuits
     /// the `gh api` parent lookup and uses this value directly.
     pub repo_url_override: Option<ForgeRepository>,
+    /// Render `.md` diffs as markdown; diff loads read their full text.
+    pub render_markdown_diffs: bool,
 }
 
 impl AppStartupOptions<'_> {
@@ -2157,6 +2176,7 @@ impl AppStartupOptions<'_> {
         VcsOpenOptions {
             git_backend_preference: self.git_backend_preference,
             diff_whitespace_mode: self.diff_whitespace_mode.clone(),
+            render_markdown_diffs: self.render_markdown_diffs,
         }
     }
 }
@@ -2172,6 +2192,7 @@ mod gaps;
 mod grouping;
 pub mod grouping_feedback;
 mod init;
+mod markdown_diff;
 pub(crate) mod media;
 mod modes;
 mod navigation;

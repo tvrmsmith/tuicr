@@ -517,6 +517,10 @@ impl ForgeBackend for AzureDevOpsBackend {
         Ok(slice_context_lines(&content, start_line, end_line))
     }
 
+    fn can_read_file_content(&self) -> bool {
+        true
+    }
+
     /// File content at the request's revision: local blob first, REST fallback.
     fn fetch_file_content(&self, request: ForgeFileLinesRequest) -> Result<String> {
         match self

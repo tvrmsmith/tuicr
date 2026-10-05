@@ -61,9 +61,10 @@ fn refusing() -> RefineCall {
 
 /// A call that never answers, which is what a timeout waits through.
 fn silent() -> RefineCall {
-    Arc::new(|_prompt: &str, timeout: Duration| {
-        std::thread::sleep(timeout);
-        Err("unreachable in these tests".to_string())
+    Arc::new(|_prompt: &str, _timeout: Duration| {
+        loop {
+            std::thread::park();
+        }
     })
 }
 

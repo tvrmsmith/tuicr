@@ -66,6 +66,7 @@ fn file(path: &str, hunks: Vec<DiffHunk>) -> DiffFile {
         is_too_large: false,
         is_commit_message: false,
         content_hash,
+        full_text: None,
     }
 }
 
@@ -307,6 +308,9 @@ impl crate::forge::traits::ForgeBackend for FakeForgeBackend {
         _request: crate::forge::traits::CreateReviewRequest<'_>,
     ) -> crate::error::Result<crate::forge::traits::GhCreateReviewResponse> {
         unimplemented!()
+    }
+    fn can_read_file_content(&self) -> bool {
+        true
     }
     fn fetch_file_content(
         &self,

@@ -55,6 +55,7 @@ fn app_with_line_comment(content: &str) -> App {
         is_too_large: false,
         is_commit_message: false,
         content_hash,
+        full_text: None,
     };
     let mut session = empty_session(&stub_vcs_info());
     session.add_diff_file(&file);

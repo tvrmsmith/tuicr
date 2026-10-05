@@ -554,11 +554,18 @@ pub trait ForgeBackend {
     /// stored: unlike [`Self::fetch_file_lines`], tabs are not expanded, so the
     /// result is safe to write back out as a file. `start_line` and `end_line`
     /// are ignored. The default errors; backends able to read a revision
-    /// override it.
+    /// override it, and [`Self::can_read_file_content`] with it.
     fn fetch_file_content(&self, _request: ForgeFileLinesRequest) -> Result<String> {
         Err(TuicrError::Forge(
             "this backend cannot read file contents".to_string(),
         ))
+    }
+    /// Whether [`Self::fetch_file_content`] can read a revision at all. A
+    /// load skips optional reads, and the warning their failure would raise,
+    /// when this is false. Override it to return true alongside
+    /// `fetch_file_content`.
+    fn can_read_file_content(&self) -> bool {
+        false
     }
     /// Return the total number of lines in a file at the revision described by
     /// `request`. The `start_line` and `end_line` fields of the request are

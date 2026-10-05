@@ -32,6 +32,9 @@ pub struct FileBackend {
     /// Which entry point built this backend. Controls per-line rendering
     /// (addition coloring vs context) and the hunk-header math.
     mode: FileMode,
+    /// Attach each pristine markdown file's text as both sides of
+    /// `DiffFile::full_text` (`render_markdown_diffs`).
+    markdown_full_text: bool,
 }
 
 /// How a [`FileBackend`] was constructed. Determines rendering semantics.
@@ -101,7 +104,12 @@ impl FileBackend {
             vcs_type: VcsType::File,
         };
 
-        Ok(Self { info, files, mode })
+        Ok(Self {
+            info,
+            files,
+            mode,
+            markdown_full_text: false,
+        })
     }
 
     /// Create a [`FileBackend`] in pristine mode from a pre-enumerated
@@ -152,7 +160,14 @@ impl FileBackend {
             info,
             files,
             mode: FileMode::Pristine,
+            markdown_full_text: false,
         })
+    }
+
+    /// Sets whether pristine loads attach markdown files' full text.
+    pub(crate) fn with_markdown_full_text(mut self, on: bool) -> Self {
+        self.markdown_full_text = on;
+        self
     }
 
     fn build_diff_file_for_path(
@@ -186,6 +201,7 @@ impl FileBackend {
                 is_too_large: true,
                 is_commit_message: false,
                 content_hash,
+                full_text: None,
             });
         }
 
@@ -266,6 +282,14 @@ impl FileBackend {
             new_count: total_lines,
         };
 
+        // A pristine file is unchanged, so its text is both sides.
+        let full_text = (self.mode == FileMode::Pristine
+            && self.markdown_full_text
+            && crate::syntax::is_markdown_path(&rel_path))
+        .then(|| super::full_text(Some(&content), Some(&content)))
+        .flatten()
+        .map(std::sync::Arc::new);
+
         let hunks = vec![hunk];
         let content_hash = DiffFile::compute_content_hash(&hunks);
         Some(DiffFile {
@@ -277,6 +301,7 @@ impl FileBackend {
             is_too_large: false,
             is_commit_message: false,
             content_hash,
+            full_text,
         })
     }
 }

@@ -611,6 +611,7 @@ mod tests {
         Message {
             content: "hello".to_string(),
             message_type,
+            ttl: None,
             expires_at: None,
         }
     }

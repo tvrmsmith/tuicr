@@ -275,6 +275,11 @@ fn main() -> anyhow::Result<()> {
                 commit_selection,
                 pr_target: cli_args.pr_target.as_deref(),
                 repo_url_override,
+                render_markdown_diffs: config_outcome
+                    .config
+                    .as_ref()
+                    .and_then(|cfg| cfg.render_markdown_diffs)
+                    .unwrap_or(false),
             },
         )
     }) {
@@ -617,6 +622,7 @@ fn main() -> anyhow::Result<()> {
                 ui::render(frame, &mut app);
             })?;
             execute!(terminal.backend_mut(), EndSynchronizedUpdate)?;
+            app.start_message_clock();
             needs_redraw = false;
         }
 

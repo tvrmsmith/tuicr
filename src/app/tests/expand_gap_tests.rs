@@ -114,6 +114,7 @@ fn make_file_with_hunks(path: &str, hunks: Vec<DiffHunk>) -> DiffFile {
         is_too_large: false,
         is_commit_message: false,
         content_hash,
+        full_text: None,
     }
 }
 
@@ -1657,6 +1658,7 @@ fn should_not_show_eof_gap_for_deleted_files() {
         is_too_large: false,
         is_commit_message: false,
         content_hash,
+        full_text: None,
     };
     let app = build_app_with_files(vec![file], 100);
     let eof_gap_id = GapId {
