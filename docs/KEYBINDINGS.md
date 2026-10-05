@@ -167,7 +167,7 @@ from the checkout, never copied.
 
 ## Media viewer
 
-Opened by `Enter` on a PR-description media placeholder row, when the terminal
+Opened by `Enter` on a PR-description media placeholder row or inline image, when the terminal
 can draw images.
 
 | Key | Action |
