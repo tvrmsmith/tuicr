@@ -1452,6 +1452,9 @@ pub struct App {
     /// Whether pull-request conversation comments are fetched and rendered.
     /// Defaults to true; configured before the first direct PR load.
     pub show_pr_comments: bool,
+    /// Whether PR description images draw as inline thumbnails. Defaults to
+    /// false; set from config before the startup image probe.
+    pub show_inline_images: bool,
 
     pub should_quit: bool,
     pub dirty: bool,
@@ -1740,6 +1743,8 @@ pub struct App {
     /// Outer `None` = not probed yet. Inner `None` = probed, but no readable
     /// graphics protocol (Enter falls back to the external opener).
     pub(crate) image_picker: Option<Option<ratatui_image::picker::Picker>>,
+    /// Thumbnail load state for the PR description's inline images.
+    pub(crate) inline_images: inline_images::InlineImages,
     /// Open media viewer, or `None` when `input_mode != MediaViewer`.
     pub(crate) media_viewer: Option<media::MediaViewer>,
     /// Background-thread channel for the in-flight `media_jobs.open_external`
@@ -2192,6 +2197,7 @@ mod gaps;
 mod grouping;
 pub mod grouping_feedback;
 mod init;
+mod inline_images;
 mod markdown_diff;
 pub(crate) mod media;
 mod modes;

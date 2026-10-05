@@ -118,7 +118,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
 /// image draws a few percent larger than `area`, and a sixel that reaches the
 /// last screen row scrolls the whole screen. The margin absorbs up to one
 /// pixel of rounding per cell for cells at least 16 pixels tall.
-fn fit_area(area: Rect) -> Rect {
+pub(crate) fn fit_area(area: Rect) -> Rect {
     Rect {
         width: area.width - area.width.div_ceil(16),
         height: area.height - area.height.div_ceil(16),

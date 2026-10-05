@@ -4,12 +4,14 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use ratatui::{
+    Frame,
+    layout::Rect,
     style::Style,
     text::{Line, Span},
 };
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
-use crate::app::{AnnotatedLine, App};
+use crate::app::{AnnotatedLine, App, InputMode};
 use crate::forge::traits::{PullRequestCheckStatus, PullRequestInfo, PullRequestReviewStatus};
 use crate::media::{MediaKind, MediaLine, MediaRef, detect::find_media};
 use crate::model::CommentType;
@@ -18,6 +20,7 @@ use crate::syntax::markdown_render;
 use crate::theme::Theme;
 use crate::ui::comment_panel::{self, CommentTypePresentation};
 use crate::ui::diff_view::{HEADER_RULE, cursor_indicator, cursor_indicator_spaced};
+use crate::ui::media_viewer;
 use crate::ui::styles;
 
 /// What Enter does on a PR-info row.
@@ -47,7 +50,13 @@ pub(crate) struct PrInfoRow {
     pub line: Line<'static>,
     /// Read by `pr_info_action_at_cursor`, the Enter handler's lookup.
     pub action: Option<RowAction>,
+    /// True on the first reserved row under an inline image's caption. The
+    /// image draws over this row and the THUMBNAIL_ROWS - 1 rows below it.
+    pub thumbnail: bool,
 }
+
+/// Rows an inline image reserves below its caption row.
+pub(crate) const THUMBNAIL_ROWS: usize = 10;
 
 /// Every rendered PR-info line is prefixed with a two-column cursor indicator
 /// (`cursor_indicator_spaced`), so the wrapped body has that much less room.
@@ -64,6 +73,63 @@ pub(crate) fn pr_info_content_width(viewport_width: usize) -> usize {
         .max(1)
 }
 
+/// The cell box a thumbnail is encoded for and drawn into, origin (0, 0).
+pub(crate) fn thumbnail_box(viewport_width: usize) -> Rect {
+    let width = u16::try_from(pr_info_content_width(viewport_width)).unwrap_or(u16::MAX);
+    media_viewer::fit_area(Rect::new(0, 0, width, THUMBNAIL_ROWS as u16))
+}
+
+/// Draws every Ready inline thumbnail whose reserved rows are fully on screen
+/// and records each one in `inline_images.drawn`, which `ui::render` empties
+/// at the start of the frame.
+pub(crate) fn draw_inline_images(frame: &mut Frame, app: &mut App) {
+    let Some(inner) = app.diff_inner_area.filter(|_| thumbnails_allowed(app)) else {
+        return;
+    };
+    let area = thumbnail_box(app.diff_state.viewport_width);
+    if area.is_empty() || app.diff_state.scroll_x != 0 {
+        return;
+    }
+    let rows = pr_info_rows(app);
+    let map = &app.diff_row_to_annotation;
+    for (line, row) in rows.iter().enumerate().filter(|(_, row)| row.thumbnail) {
+        let Some(RowAction::Media(index)) = row.action else {
+            continue;
+        };
+        let Some(top) = (0..inner.height as usize).find(|top| {
+            (0..THUMBNAIL_ROWS)
+                .all(|k| *top + k < inner.height as usize && map.get(top + k) == Some(&(line + k)))
+        }) else {
+            continue;
+        };
+        let Some(protocol) = app.inline_image(index, area) else {
+            continue;
+        };
+        let rect = Rect::new(
+            inner.x + PR_INFO_INDICATOR_WIDTH as u16,
+            inner.y + top as u16,
+            area.width,
+            area.height,
+        );
+        frame.render_widget(ratatui_image::Image::new(protocol), rect);
+        app.inline_images.drawn.push((index, rect));
+    }
+}
+
+/// Modes whose frame leaves the diff area uncovered. A popup or overlay over
+/// it would be painted over by the image protocol's pixels.
+fn thumbnails_allowed(app: &App) -> bool {
+    match app.input_mode {
+        InputMode::Normal | InputMode::VisualSelect | InputMode::Comment => true,
+        InputMode::Search => !app.searching_help(),
+        InputMode::Command => !app
+            .command_completion
+            .as_ref()
+            .is_some_and(|completion| !completion.matches.is_empty()),
+        _ => false,
+    }
+}
+
 /// Rows and the inputs they were built from. The panel is rebuilt several
 /// times per frame (and once per `PrInfoLine` under wrap), so `pr_info_rows`
 /// reuses these while every input is unchanged. Tests assign `App` fields
@@ -73,6 +139,7 @@ pub(crate) struct PrInfoRowsCache {
     info: PullRequestInfo,
     width: usize,
     render: CachedRender,
+    inline_images: bool,
     highlighter: Arc<SyntaxHighlighter>,
     rows: Rc<Vec<PrInfoRow>>,
 }
@@ -113,10 +180,12 @@ pub(crate) fn pr_info_rows(app: &App) -> Rc<Vec<PrInfoRow>> {
     let width = pr_info_content_width(app.diff_state.viewport_width);
     let highlighter = app.theme.syntax_highlighter_arc();
     let render = CachedRender::of(app);
+    let inline_images = app.inline_images_enabled();
     let mut cache = app.pr_info_rows_cache.borrow_mut();
     if let Some(hit) = cache.as_ref().filter(|hit| {
         hit.width == width
             && hit.render == render
+            && hit.inline_images == inline_images
             && Arc::ptr_eq(&hit.highlighter, &highlighter)
             && hit.info == *info
     }) {
@@ -127,11 +196,13 @@ pub(crate) fn pr_info_rows(app: &App) -> Rc<Vec<PrInfoRow>> {
         width,
         &app.theme,
         render.as_body_render(),
+        inline_images,
     ));
     *cache = Some(PrInfoRowsCache {
         info: info.clone(),
         width,
         render,
+        inline_images,
         highlighter,
         rows: Rc::clone(&rows),
     });
@@ -269,6 +340,7 @@ pub(crate) fn build_pr_info_rows(
     width: usize,
     theme: &Theme,
     render: BodyRender,
+    inline_images: bool,
 ) -> Vec<PrInfoRow> {
     let mut rows = Vec::new();
     let content_width = width.max(1);
@@ -285,7 +357,15 @@ pub(crate) fn build_pr_info_rows(
     } else {
         details.body.clone()
     };
-    push_body_rows(&mut rows, info, theme, &body, content_width, render);
+    push_body_rows(
+        &mut rows,
+        info,
+        theme,
+        &body,
+        content_width,
+        render,
+        inline_images,
+    );
 
     push_blank(&mut rows);
     push_section_header(
@@ -459,6 +539,7 @@ fn push_body_rows(
     body: &str,
     content_width: usize,
     render: BodyRender,
+    inline_images: bool,
 ) {
     // Summary rows stand in for headers, so media sharing a line only with
     // headers and tags is media-only.
@@ -478,7 +559,7 @@ fn push_body_rows(
         .collect();
     let placeholder = |pos: usize| {
         let (idx, entry) = shown[pos];
-        placeholder_row(theme, idx, &entry.media, content_width)
+        placeholder_rows(theme, idx, &entry.media, content_width, inline_images)
     };
     let (blocks, inline) = plan_media(&shown.iter().map(|&(_, entry)| entry).collect::<Vec<_>>());
     let body_rows = if let BodyRender::Markdown { toggled } = render {
@@ -511,7 +592,7 @@ fn push_body_rows(
     let mut drain_blocks = |rows: &mut Vec<PrInfoRow>, line: usize| {
         let mut end = None;
         while let Some(block) = pending.next_if(|block| block.lines.start <= line) {
-            rows.extend(block.media.clone().map(&placeholder));
+            rows.extend(block.media.clone().flat_map(&placeholder));
             end = Some(block.lines.end);
         }
         end
@@ -534,22 +615,42 @@ fn push_body_rows(
             action: summary
                 .map(RowAction::Details)
                 .or(row.inside.map(RowAction::Collapse)),
+            thumbnail: false,
         });
         // A media block covering a header lands after its last summary row.
         if summary.is_some() && details_ids.get(at + 1) != Some(&summary) {
             skip_until = drain_blocks(rows, row.source.start).unwrap_or(skip_until);
         }
-        rows.extend(after.into_iter().map(&placeholder));
+        rows.extend(after.into_iter().flat_map(&placeholder));
     }
 }
 
-fn placeholder_row(theme: &Theme, media_idx: usize, media: &MediaRef, width: usize) -> PrInfoRow {
+/// The caption row, then, for an image under `inline_images`, the rows its
+/// thumbnail draws over.
+fn placeholder_rows(
+    theme: &Theme,
+    media_idx: usize,
+    media: &MediaRef,
+    width: usize,
+    inline_images: bool,
+) -> impl Iterator<Item = PrInfoRow> {
     let label = format!("[{}: {}]", media_kind_word(&media.kind), media.label);
     let text = truncate_placeholder(&label, width);
-    PrInfoRow {
+    let caption = PrInfoRow {
         line: Line::from(Span::styled(text, styles::branch_style(theme))),
         action: Some(RowAction::Media(media_idx)),
-    }
+        thumbnail: false,
+    };
+    let reserved = if inline_images && media.kind == MediaKind::Image {
+        THUMBNAIL_ROWS
+    } else {
+        0
+    };
+    std::iter::once(caption).chain((0..reserved).map(move |row| PrInfoRow {
+        line: Line::default(),
+        action: Some(RowAction::Media(media_idx)),
+        thumbnail: row == 0,
+    }))
 }
 
 fn media_kind_word(kind: &MediaKind) -> &'static str {
@@ -583,7 +684,11 @@ fn truncate_placeholder(text: &str, width: usize) -> String {
 }
 
 fn push_row(rows: &mut Vec<PrInfoRow>, line: Line<'static>) {
-    rows.push(PrInfoRow { line, action: None });
+    rows.push(PrInfoRow {
+        line,
+        action: None,
+        thumbnail: false,
+    });
 }
 
 fn push_section_header(rows: &mut Vec<PrInfoRow>, theme: &Theme, title: String) {
@@ -780,7 +885,7 @@ mod tests {
     ) -> Vec<(String, Option<RowAction>)> {
         let mut info = sample_info();
         info.details.body = body.to_string();
-        let rows = build_pr_info_rows(&info, width, &Theme::dark(), render);
+        let rows = build_pr_info_rows(&info, width, &Theme::dark(), render, false);
         let status_header = rows
             .iter()
             .position(|row| row_text(row).starts_with(&format!("═══ PR #{} Status ", 42)))
@@ -946,7 +1051,7 @@ mod tests {
 
         let mut info = sample_info();
         info.details.body = "Intro\n![shot](https://x.test/a.png)\nOutro".to_string();
-        let full_rows = build_pr_info_rows(&info, 80, &Theme::dark(), BodyRender::Source);
+        let full_rows = build_pr_info_rows(&info, 80, &Theme::dark(), BodyRender::Source, false);
         let intro_row = &full_rows[1];
         let placeholder_row = &full_rows[2];
         assert_eq!(placeholder_row.action, Some(RowAction::Media(0)));
@@ -958,7 +1063,13 @@ mod tests {
 
     #[test]
     fn header_status_and_checks_rows_carry_no_media() {
-        let rows = build_pr_info_rows(&sample_info(), 80, &Theme::dark(), BodyRender::Source);
+        let rows = build_pr_info_rows(
+            &sample_info(),
+            80,
+            &Theme::dark(),
+            BodyRender::Source,
+            false,
+        );
         assert!(rows[0].action.is_none());
         for row in &rows {
             let text = row_text(row);
@@ -971,7 +1082,13 @@ mod tests {
 
     #[test]
     fn should_build_title_and_status_sections() {
-        let rows = build_pr_info_rows(&sample_info(), 80, &Theme::dark(), BodyRender::Source);
+        let rows = build_pr_info_rows(
+            &sample_info(),
+            80,
+            &Theme::dark(),
+            BodyRender::Source,
+            false,
+        );
         let rendered = rows.iter().map(row_text).collect::<Vec<_>>();
         assert!(
             rendered
@@ -991,7 +1108,7 @@ mod tests {
     fn should_highlight_pr_description_source_when_rendering_is_off() {
         let mut info = sample_info();
         info.details.body = "plain `code` plain".to_string();
-        let lines = build_pr_info_rows(&info, 80, &Theme::dark(), BodyRender::Source);
+        let lines = build_pr_info_rows(&info, 80, &Theme::dark(), BodyRender::Source, false);
         let description = &lines[1].line;
 
         assert_eq!(
@@ -1008,7 +1125,7 @@ mod tests {
         );
 
         info.details.body = "plain description".to_string();
-        let lines = build_pr_info_rows(&info, 80, &Theme::dark(), BodyRender::Source);
+        let lines = build_pr_info_rows(&info, 80, &Theme::dark(), BodyRender::Source, false);
         let description = &lines[1].line;
 
         assert_eq!(
@@ -1034,6 +1151,7 @@ mod tests {
             BodyRender::Markdown {
                 toggled: &BTreeSet::new(),
             },
+            false,
         );
 
         assert_eq!(row_text(&rows[1]), "plain  code  plain");

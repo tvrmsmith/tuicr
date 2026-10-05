@@ -37,6 +37,7 @@ commit_order = "descending"
 initial_commit_selection = "all"
 show_file_list = true
 show_pr_checks = false
+inline_images = false
 show_pr_comments = true
 pr_comments_visibility = "unresolved"
 file_tree = "nested"
@@ -107,7 +108,7 @@ session_header = true
 | `theme_dark`               | (none)       | Theme name for dark appearance (paired with `theme_light`).                                                                                                |
 | `theme_light`              | (none)       | Theme name for light appearance (paired with `theme_dark`).                                                                                                |
 | `diff_view`                | `unified`    | `unified` or `side-by-side`. Toggle in-app with `:diff`.                                                                                                   |
-| `image_protocol`           | `auto`       | Controls what `Enter` on a PR-description media row does: `auto`, `kitty`, `sixel`, or `iterm2` open the in-TUI media viewer; `off` always falls back to the external opener. `auto` uses the terminal's detected protocol, except that a detected `kitty` under Orca or zellij, where kitty graphics don't render, becomes `sixel` when the terminal supports it and the external opener otherwise; a terminal with no graphics protocol also gets the external opener. |
+| `image_protocol`           | `auto`       | Controls how PR-description images show: `auto`, `kitty`, `sixel`, or `iterm2` make `Enter` on a media row open the in-TUI media viewer, and draw inline thumbnails when `inline_images` is on; `off` keeps one-line placeholders and always falls back to the external opener. `auto` uses the terminal's detected protocol, except that a detected `kitty` under Orca or zellij, where kitty graphics don't render, becomes `sixel` when the terminal supports it and the external opener otherwise; a terminal with no graphics protocol also gets the external opener. |
 | `commit_order`             | `descending` | Inline commit selector order: `descending` (newest on top, the default) or `ascending` (oldest on top).                                                    |
 | `initial_commit_selection` | `all`        | Which commits are selected when a multi-commit review first opens: `all`, or `oldest` to start on just the oldest commit and walk forward with `(` / `)`.  |
 | `ignore_whitespace`        | `false`      | Whitespace comparison for local Git, jj, and hg diffs: `false` compares normally, `true` ignores all whitespace, and `"auto"` chooses by file extension. PR diffs are unchanged. See [Whitespace comparison](#whitespace-comparison). |
@@ -115,6 +116,7 @@ session_header = true
 | `show_file_list`           | `true`       | Whether the file list panel is visible on startup. Toggle with `<leader>e`.                                                                                |
 | `compact_folders` | `false` | Deprecated alias for `file_tree = "compact"`. Honoured only when `file_tree` is unset. |
 | `show_pr_checks`           | `false`      | Whether PR CI checks are fetched and shown. Set to `true` to include GitHub check rollups.                                                           |
+| `inline_images`            | `false`      | Whether PR-description images draw as thumbnails in the PR panel, probing the terminal at startup. The cursor skips over a thumbnail. Needs a graphics protocol (see `image_protocol`). |
 | `show_pr_comments`         | `true`       | Whether PR conversation comments are fetched and shown. Set to `false` to skip PR comments.                                                         |
 | `pr_comments_visibility`   | `unresolved` | Default visibility for PR review comment threads: `unresolved` (default), `all` (resolved/outdated threads shown muted), or `hide`. Seeds each review that starts at the default; `:comments` still switches mid-session and a restored session keeps its saved visibility. |
 | `file_tree`                | `nested`     | File list layout. `nested` gives every directory its own row; `compact` joins a run of single-child directories into one row (`src/main/github/`); `flat` drops directory rows entirely and labels each file with its full path. **Ungrouped tree only** — the grouped sidebar has no directory rows in any mode. Fixed for the session. |

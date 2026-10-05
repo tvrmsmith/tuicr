@@ -262,6 +262,9 @@ pub struct AppConfig {
     /// Whether pull-request CI checks are fetched and shown.
     /// Defaults to false.
     pub show_pr_checks: Option<bool>,
+    /// Whether PR description images draw as inline thumbnails.
+    /// Defaults to false.
+    pub inline_images: Option<bool>,
     /// Whether pull-request conversation comments are fetched and shown.
     /// Defaults to true.
     pub show_pr_comments: Option<bool>,
@@ -373,6 +376,7 @@ const KNOWN_KEYS: &[&str] = &[
     "show_file_list",
     "compact_folders",
     "show_pr_checks",
+    "inline_images",
     "show_pr_comments",
     "pr_comments_visibility",
     "file_tree",
@@ -730,6 +734,7 @@ fn load_config_from_path(path: &Path) -> Result<ConfigLoadOutcome> {
         show_file_list: read_bool(table, "show_file_list", &mut warnings),
         compact_folders: read_bool(table, "compact_folders", &mut warnings),
         show_pr_checks: read_bool(table, "show_pr_checks", &mut warnings),
+        inline_images: read_bool(table, "inline_images", &mut warnings),
         show_pr_comments: read_bool(table, "show_pr_comments", &mut warnings),
         pr_comments_visibility: read_enum(
             table,
@@ -1396,6 +1401,28 @@ mod tests {
             None
         );
         assert_eq!(outcome.warnings.len(), 1);
+    }
+
+    // inline_images
+
+    #[test]
+    fn should_parse_inline_images_true() {
+        let outcome = parse_config("inline_images = true\n");
+        assert_eq!(
+            outcome.config.as_ref().and_then(|cfg| cfg.inline_images),
+            Some(true)
+        );
+        assert!(outcome.warnings.is_empty());
+    }
+
+    #[test]
+    fn should_leave_inline_images_unset_when_absent() {
+        let outcome = parse_config("show_pr_checks = true\n");
+        assert_eq!(
+            outcome.config.as_ref().and_then(|cfg| cfg.inline_images),
+            None
+        );
+        assert!(outcome.warnings.is_empty());
     }
 
     // show_pr_checks

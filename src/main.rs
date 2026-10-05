@@ -439,6 +439,7 @@ fn main() -> anyhow::Result<()> {
     if let Some(ref cfg) = config_outcome.config {
         app.show_pr_checks = cfg.show_pr_checks.unwrap_or(false);
         app.show_pr_comments = cfg.show_pr_comments.unwrap_or(true);
+        app.show_inline_images = cfg.inline_images.unwrap_or(false);
         app.initial_comments_visibility = pr_comments_visibility;
         // `read_image_protocol` already validated and warned at load time, so
         // this only ever falls back to `Auto` defensively.
@@ -508,6 +509,9 @@ fn main() -> anyhow::Result<()> {
     }
 
     app.set_startup_warnings(startup_warnings);
+    if app.show_inline_images {
+        app.resolve_image_picker();
+    }
 
     // Track pending z command for zz centering
     let mut pending_z = false;
@@ -552,6 +556,7 @@ fn main() -> anyhow::Result<()> {
         // is pending we redraw every tick anyway so spinners animate.
         let pr_pending = app.has_pending_pr_work();
         app.poll_pr_load_events();
+        needs_redraw |= app.poll_inline_images();
         app.poll_pr_open_events();
         app.poll_pr_reload_events();
         app.poll_pr_range_reload_events();

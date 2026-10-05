@@ -46,6 +46,9 @@ impl App {
             self.down_released_since_arm = false;
         }
         self.diff_state.cursor_line = target.min(max_line);
+        if let Some((_, end)) = self.inline_image_block(self.diff_state.cursor_line) {
+            self.diff_state.cursor_line = end.min(max_line);
+        }
         if self.diff_state.cursor_line != prev_cursor {
             // Nothing caps how far the scroll moves. When lines wrap, one
             // logical line covers several rows, so a single `j` can need a
@@ -89,6 +92,9 @@ impl App {
             self.up_released_since_arm = false;
         }
         self.diff_state.cursor_line = self.diff_state.cursor_line.saturating_sub(lines);
+        if let Some((start, _)) = self.inline_image_block(self.diff_state.cursor_line) {
+            self.diff_state.cursor_line = start.saturating_sub(1);
+        }
         let visible_lines = self.diff_state.effective_visible_lines();
         let scroll_margin = self.diff_state.effective_scroll_margin(self.scroll_offset);
         // Enforce top margin

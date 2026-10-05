@@ -21,6 +21,7 @@ src/
 │   ├── editor_target.rs # Read-only snapshots of a PR revision for `$EDITOR`
 │   ├── file_filter.rs   # File-tree include/exclude regex filters + `/` path search
 │   ├── grouping.rs      # enable_grouping(), the grouping source ranking, group row state
+│   ├── inline_images.rs # Startup graphics probe, PR-description thumbnail loads
 │   ├── markdown_diff.rs # Rendered .md diff and expanded gap rows from load-time full text, old side rebuilt if absent, cached per text and theme
 │   ├── media.rs         # Media viewer state, the lazy graphics probe, MediaJobs loader port
 │   ├── pr_head_watch.rs # PR head poll; reloads onto a moved head once the reviewer is in Normal mode
@@ -144,7 +145,8 @@ src/
     ├── mod.rs
     ├── app_layout.rs    # Main render function, file list, diff view with inline comments
     ├── pr_info_panel.rs # PR description panel (status, reviewers, checks, body, media rows);
-    │                    # pr_info_rows builds its rows once and caches them on App
+    │                    # pr_info_rows builds its rows once and caches them on App;
+    │                    # draw_inline_images draws image thumbnails over reserved rows
     ├── media_viewer.rs  # Full-screen in-TUI image viewer (InputMode::MediaViewer)
     ├── comment_navigator.rs # Sidebar comment index for jumping local/remote comments
     ├── status_bar.rs    # Header, status bar, command line rendering
@@ -234,7 +236,7 @@ Repository-managed agent integrations:
 - `VisualSelect` - visual mode for range comments
 - `ThemePicker` - runtime `:theme` picker (`src/app/theme_picker.rs`, `src/ui/theme_picker.rs`): `j`/`k` live-previews a theme by reassigning `App::theme` (cheap, no extra invalidation — every renderer reads `&app.theme` per frame); `/` opens a filter draft (same shape as the file tree's `i`/`e`/`/` prompts, committed on `Enter`, discarded on `Esc` without touching the applied filter); `Enter` on the picker keeps the preview for the session — like every other `:set`/`:vim`/`:wrap` toggle it never writes `config.toml`; `Esc` on the picker reverts to a `Theme` snapshot taken on entry (`Theme` has a manual `Clone` impl since its `OnceLock` syntax-highlighter cache isn't `Clone`) `:theme <name>` applies directly without opening the picker.
 - `GroupingFeedback` - the verdict prompt (`gd-26r.42`). `map_grouping_feedback_mode` shapes keys into focus-agnostic `Action::Feedback*` variants and `handle_grouping_feedback_action` resolves them against `draft.focus`, because `j` moves the tag cursor under one field and types a literal `j` under another
-- `MediaViewer` - full-screen image viewer opened by `Enter` on a PR-description media placeholder row (`src/app/media.rs`, `src/ui/media_viewer.rs`). Entered only when the lazy graphics probe finds a usable protocol; otherwise `Enter` hands the item to the external opener instead
+- `MediaViewer` - full-screen image viewer opened by `Enter` on a PR-description media placeholder row (`src/app/media.rs`, `src/ui/media_viewer.rs`). Entered only when the graphics probe (at startup under `inline_images`, otherwise on the first `Enter`) found a usable protocol; otherwise `Enter` hands the item to the external opener instead
 
 **ReviewSession** (`src/model/review.rs`):
 

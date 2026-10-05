@@ -19,7 +19,21 @@ const FILE_LIST_MIN_HEIGHT: u16 = 4;
 const COMMENT_NAVIGATOR_MIN_HEIGHT: u16 = 4;
 const COMMENT_NAVIGATOR_MAX_HEIGHT: u16 = 12;
 
+/// Draws one frame. Inline thumbnails are image-protocol pixels that only a
+/// full repaint clears, so a thumbnail drawn last frame and not at the same
+/// place this frame forces one, whichever screen this frame drew.
 pub fn render(frame: &mut Frame, app: &mut App) {
+    let previous = std::mem::take(&mut app.inline_images.drawn);
+    render_screen(frame, app);
+    if previous
+        .iter()
+        .any(|pair| !app.inline_images.drawn.contains(pair))
+    {
+        app.force_full_repaint = true;
+    }
+}
+
+fn render_screen(frame: &mut Frame, app: &mut App) {
     frame.render_widget(
         Block::default().style(styles::panel_style(&app.theme)),
         frame.area(),

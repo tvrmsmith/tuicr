@@ -145,7 +145,7 @@ Shown below the file tree when local comments or visible remote PR threads exist
 | `e` | Open focused file in `$EDITOR` |
 | `y` | Copy review to clipboard |
 | `Y` | Copy the comment at cursor to clipboard |
-| `Enter` | On a media placeholder in the PR description: open the media viewer, or the OS viewer when the terminal cannot draw images |
+| `Enter` | On a media placeholder or inline image in the PR description: open the media viewer, or the OS viewer when the terminal cannot draw images |
 | `Enter` | On a collapsible section's summary row (`▶`/`▼`) in the PR description: expand or collapse it |
 | `Enter` | Inside an expanded section's body in the PR description: collapse the innermost section and move to its summary row |
 

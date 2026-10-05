@@ -197,6 +197,7 @@ fn should_build_pr_info_panel_lines() {
         crate::ui::pr_info_panel::BodyRender::Markdown {
             toggled: &std::collections::BTreeSet::new(),
         },
+        false,
     );
     assert!(rows.len() > 5);
 }
@@ -977,4 +978,155 @@ fn toggling_a_section_rebuilds_the_cached_rows() {
 
     app.toggle_pr_details(0);
     assert_eq!(summary(&app).as_deref(), Some("▼ Coverage report"));
+}
+
+const THUMBNAIL_BODY: &str = "Intro\n![one](https://x.test/1.png)\n![two](https://x.test/2.png)\n<video src=\"https://x.test/v.mp4\"></video>";
+
+fn thumbnail_app(picker: Option<Option<ratatui_image::picker::Picker>>) -> App {
+    let mut info = sample_pr_info();
+    info.details.body = THUMBNAIL_BODY.to_string();
+    let mut app = build_pr_app();
+    app.pr_info = Some(info);
+    app.diff_state.viewport_width = 82;
+    app.image_picker = picker;
+    app.show_inline_images = true;
+    app
+}
+
+fn halfblocks_app() -> App {
+    thumbnail_app(Some(Some(ratatui_image::picker::Picker::halfblocks())))
+}
+
+fn rows_summary(app: &App) -> Vec<(String, Option<usize>, bool)> {
+    crate::ui::pr_info_panel::pr_info_rows(app)
+        .iter()
+        .map(|row| {
+            let text: String = row.line.spans.iter().map(|s| s.content.as_ref()).collect();
+            let media = match row.action {
+                Some(crate::ui::pr_info_panel::RowAction::Media(index)) => Some(index),
+                _ => None,
+            };
+            (text, media, row.thumbnail)
+        })
+        .collect()
+}
+
+#[test]
+fn should_reserve_no_thumbnail_rows_without_inline_images() {
+    for picker in [None, Some(None)] {
+        let rows = rows_summary(&thumbnail_app(picker));
+        let texts: Vec<&str> = rows[..5].iter().map(|r| r.0.as_str()).collect();
+        assert_eq!(
+            texts[1..],
+            ["Intro", "[image: one]", "[image: two]", "[video: v.mp4]"]
+        );
+        assert!(rows.iter().all(|r| !r.2));
+    }
+}
+
+#[test]
+fn should_reserve_thumbnail_rows_under_each_image_caption() {
+    let rows = rows_summary(&halfblocks_app());
+    assert_eq!(rows[2], ("[image: one]".to_string(), Some(0), false));
+    for (i, row) in rows.iter().enumerate().take(13).skip(3) {
+        assert_eq!(*row, (String::new(), Some(0), i == 3), "row {i}");
+    }
+    assert_eq!(rows[13], ("[image: two]".to_string(), Some(1), false));
+    for (i, row) in rows.iter().enumerate().take(24).skip(14) {
+        assert_eq!(*row, (String::new(), Some(1), i == 14), "row {i}");
+    }
+    assert_eq!(rows[24], ("[video: v.mp4]".to_string(), Some(2), false));
+    assert_eq!(rows[25].1, None);
+}
+
+#[test]
+fn should_key_the_pr_info_rows_cache_on_inline_images() {
+    let mut app = thumbnail_app(None);
+    let plain = crate::ui::pr_info_panel::pr_info_render_height(&app);
+    app.image_picker = Some(Some(ratatui_image::picker::Picker::halfblocks()));
+    assert_eq!(
+        crate::ui::pr_info_panel::pr_info_render_height(&app),
+        plain + 20
+    );
+}
+
+#[test]
+fn should_reserve_thumbnail_rows_after_an_inline_image_in_prose() {
+    let mut app = halfblocks_app();
+    app.pr_info.as_mut().unwrap().details.body = "See ![shot](https://x.test/s.png) here".into();
+    let rows = rows_summary(&app);
+    assert!(rows[1].0.starts_with("See"));
+    assert_eq!(rows[1].1, None);
+    assert_eq!(rows[2], ("[image: shot]".to_string(), Some(0), false));
+    for (i, row) in rows.iter().enumerate().take(13).skip(3) {
+        assert_eq!(*row, (String::new(), Some(0), i == 3), "row {i}");
+    }
+    assert_eq!(rows[13].1, None);
+}
+
+#[test]
+fn should_leave_an_attachment_placeholder_without_thumbnail_rows() {
+    let mut app = halfblocks_app();
+    app.pr_info.as_mut().unwrap().details.body =
+        "https://github.com/user-attachments/assets/abc123".into();
+    let rows = rows_summary(&app);
+    assert_eq!(rows[1].1, Some(0));
+    assert!(rows[1].0.starts_with("[attachment"));
+    assert_eq!(rows[2].1, None);
+    assert!(rows.iter().all(|r| !r.2));
+}
+
+#[test]
+fn should_reserve_thumbnail_rows_without_markdown_rendering() {
+    let mut app = halfblocks_app();
+    app.render_markdown = false;
+    let rows = rows_summary(&app);
+    assert_eq!(rows[2], ("[image: one]".to_string(), Some(0), false));
+    for (i, row) in rows.iter().enumerate().take(13).skip(3) {
+        assert_eq!(*row, (String::new(), Some(0), i == 3), "row {i}");
+    }
+}
+
+#[test]
+fn should_open_the_viewer_on_enter_in_a_thumbnail_row() {
+    let mut app = halfblocks_app();
+    app.rebuild_annotations();
+    app.diff_state.cursor_line = 7;
+    crate::handler::handle_diff_action(&mut app, crate::input::Action::SelectFile);
+    assert_eq!(app.input_mode, InputMode::MediaViewer);
+    assert_eq!(app.media_viewer.as_ref().map(|v| v.index), Some(0));
+}
+
+#[test]
+fn should_size_the_thumbnail_box_from_the_viewport_width() {
+    use crate::ui::pr_info_panel::thumbnail_box;
+    use ratatui::layout::Rect;
+    assert_eq!(thumbnail_box(82), Rect::new(0, 0, 75, 9));
+    assert_eq!(thumbnail_box(102), Rect::new(0, 0, 93, 9));
+    assert_eq!(thumbnail_box(3).width, 0);
+}
+
+#[test]
+fn should_reserve_thumbnail_rows_only_once_a_details_section_expands() {
+    let mut app = halfblocks_app();
+    app.pr_info.as_mut().unwrap().details.body =
+        "Intro\n\n<details>\n<summary>Shots</summary>\n\n![one](https://x.test/1.png)\n\n</details>\n\nOutro".into();
+    let rows = rows_summary(&app);
+    assert!(rows.iter().all(|r| r.1.is_none() && !r.2));
+
+    app.toggle_pr_details(0);
+    let rows = rows_summary(&app);
+    let caption = rows
+        .iter()
+        .position(|r| r.0 == "[image: one]")
+        .expect("caption row once expanded");
+    assert_eq!(rows[caption].1, Some(0));
+    for (i, row) in rows
+        .iter()
+        .enumerate()
+        .skip(caption + 1)
+        .take(crate::ui::pr_info_panel::THUMBNAIL_ROWS)
+    {
+        assert_eq!(*row, (String::new(), Some(0), i == caption + 1), "row {i}");
+    }
 }

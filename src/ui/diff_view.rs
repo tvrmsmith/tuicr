@@ -188,6 +188,7 @@ pub(super) fn render_diff_view(frame: &mut Frame, app: &mut App, area: Rect) {
         DiffViewMode::Unified => render_unified_diff(frame, app, area),
         DiffViewMode::SideBySide => render_side_by_side_diff(frame, app, area),
     }
+    crate::ui::pr_info_panel::draw_inline_images(frame, app);
 }
 
 /// Build the diff view's left title: ` <path> ` when a file is in view, or
